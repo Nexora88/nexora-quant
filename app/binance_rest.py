@@ -169,6 +169,18 @@ class BinanceRestClient:
             raise RuntimeError("Unexpected myTrades response")
         return raw
 
+    def all_order_lists(self, symbol: str, *, limit: int = 1000) -> list[dict[str, Any]]:
+        """Fetch recent historical OCO lists for recovery after a lost local snapshot."""
+        if not 1 <= limit <= 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        raw = self._request(
+            "GET", "/api/v3/allOrderList",
+            {"symbol": symbol.upper(), "limit": limit}, signed=True,
+        )
+        if not isinstance(raw, list):
+            raise RuntimeError("Unexpected allOrderList response")
+        return raw
+
     def get_order_list(self, order_list_id: int) -> dict[str, Any]:
         """Fetch historical/current OCO list state, including child order reports."""
         raw = self._request(
