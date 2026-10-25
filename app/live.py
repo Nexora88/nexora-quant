@@ -83,6 +83,8 @@ class LiveExecutor:
             self.order_lists_reconciled = False
             log.error("Could not reconcile exchange order lists; live actions blocked", exc_info=True)
             raise RuntimeError("Exchange order-list state could not be reconciled")
+        if self.open_orders_snapshot and self.protective_order_list_id is None:
+            raise RuntimeError("Unmanaged exchange open orders found; live trading blocked")
         if self.starting_cash_usdt <= 0:
             self.starting_cash_usdt = self.cash_usdt + self.locked_quote_balance
         log.info(
