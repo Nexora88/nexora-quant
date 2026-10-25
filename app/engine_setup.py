@@ -86,8 +86,12 @@ def _event_key(key: str, trade: dict) -> str:
     return f"{key}:{oid}:{trade['side']}:{trade['quantity']:.12f}"
 
 
-async def _paper_fill(side: str, price: float, quantity: float) -> object:
-    fill = simulator.fill(side=side, reference_price=price, quantity=quantity)
+async def _paper_fill(
+    side: str, price: float, quantity: float, *, book_levels=None
+) -> object:
+    fill = simulator.fill(
+        side=side, reference_price=price, quantity=quantity, book_levels=book_levels
+    )
     if fill.latency_ms:
         await asyncio.sleep(fill.latency_ms / 1000)
     return fill

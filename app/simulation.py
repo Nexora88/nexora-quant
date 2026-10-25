@@ -1,9 +1,14 @@
-"""Deterministic execution friction + square-root market impact for paper research."""
+"""Depth-aware execution friction for paper-trading research.
+
+This models visible-book walking and adverse costs. It is not a matching-engine,
+queue-priority, hidden-liquidity, or exchange-fill simulator.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
 import math
 import random
+from typing import Sequence
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,13 +29,14 @@ def market_impact_bps(
     coefficient: float = 0.1,
     linear_coefficient: float = 0.05,
 ) -> float:
-    """Temporary impact in bps: linear participation + Almgren sqrt participation."""
+    """Temporary impact estimate: linear participation plus square-root participation."""
     if notional_usdt <= 0 or visible_liquidity_usdt <= 0:
         return 0.0
     x = notional_usdt / visible_liquidity_usdt
-    sqrt_part = max(0.0, coefficient) * math.sqrt(x)
-    lin_part = max(0.0, linear_coefficient) * x
-    return (sqrt_part + lin_part) * 100.0
+    return (
+        max(0.0, coefficient) * math.sqrt(x)
+        + max(0.0, linear_coefficient) * x
+    ) * 100.0
 
 
 def liquidity_based_slippage_bps(
@@ -41,24 +47,48 @@ def liquidity_based_slippage_bps(
     base_slippage_bps: float = 2.0,
     impact_coefficient: float = 0.1,
 ) -> float:
-    """Walk visible levels; remaining size raises impact penalty."""
+    """Estimate friction from visible levels; accepts asks for buys, bids for sells."""
+    if side not in {"buy", "sell"}:
+        raise ValueError("side must be 'buy' or 'sell'")
     if not levels or notional_usdt <= 0:
         return base_slippage_bps
-    remaining = notional_usdt
     visible = 0.0
     for row in levels:
         if isinstance(row, (list, tuple)) and len(row) >= 2:
             px, qty = float(row[0]), float(row[1])
-            visible += px * qty
-            remaining -= px * qty
-            if remaining <= 0:
-                break
+            if px > 0 and qty > 0:
+                visible += px * qty
     impact = market_impact_bps(
         notional_usdt=notional_usdt,
         visible_liquidity_usdt=max(visible, 1.0),
         coefficient=impact_coefficient,
     )
     return base_slippage_bps + impact
+
+
+def _walk_book(
+    *, side: str, quantity: float, levels: Sequence[Sequence[float]]
+) -> tuple[float, float, float]:
+    """Return (filled quantity, visible-book VWAP, visible notional) for a market order."""
+    remaining = quantity
+    filled = 0.0
+    notional = 0.0
+    visible_notional = 0.0
+    # Caller supplies asks ascending for buys and bids descending for sells.
+    for row in levels:
+        if len(row) < 2:
+            continue
+        price, available = float(row[0]), float(row[1])
+        if not math.isfinite(price) or not math.isfinite(available) or price <= 0 or available <= 0:
+            continue
+        take = min(remaining, available)
+        filled += take
+        notional += take * price
+        visible_notional += available * price
+        remaining -= take
+        if remaining <= 1e-12:
+            break
+    return filled, (notional / filled if filled > 0 else 0.0), visible_notional
 
 
 class ExecutionSimulator:
@@ -76,8 +106,8 @@ class ExecutionSimulator:
             raise ValueError("slippage and latency cannot be negative")
         if not 0 <= partial_fill_probability <= 1:
             raise ValueError("partial_fill_probability must be in [0, 1]")
-        if impact_coefficient < 0:
-            raise ValueError("impact_coefficient cannot be negative")
+        if impact_coefficient < 0 or default_visible_liquidity_usdt <= 0:
+            raise ValueError("impact coefficient must be non-negative and default liquidity positive")
         self.slippage_bps = slippage_bps
         self.latency_ms = latency_ms
         self.partial_fill_probability = partial_fill_probability
@@ -92,11 +122,13 @@ class ExecutionSimulator:
         reference_price: float,
         quantity: float,
         visible_liquidity_usdt: float | None = None,
+        book_levels: Sequence[Sequence[float]] | None = None,
     ) -> SimulatedFill:
         if side not in {"buy", "sell"}:
             raise ValueError("side must be 'buy' or 'sell'")
-        if reference_price <= 0 or quantity <= 0:
-            raise ValueError("reference_price and quantity must be positive")
+        if not math.isfinite(reference_price) or not math.isfinite(quantity) or reference_price <= 0 or quantity <= 0:
+            raise ValueError("reference_price and quantity must be finite and positive")
+
         latency = (
             max(0, round(self._random.gauss(self.latency_ms, self.latency_ms * 0.1)))
             if self.latency_ms else 0
@@ -105,34 +137,49 @@ class ExecutionSimulator:
             max(0.0, self._random.gauss(self.slippage_bps, self.slippage_bps * 0.2))
             if self.slippage_bps else 0.0
         )
-        notional = quantity * reference_price
-        vis = (
-            visible_liquidity_usdt
-            if visible_liquidity_usdt and visible_liquidity_usdt > 0
-            else self.default_visible_liquidity_usdt
-        )
-        impact = market_impact_bps(
-            notional_usdt=notional,
-            visible_liquidity_usdt=vis,
-            coefficient=self.impact_coefficient,
-        )
-        slip = base_slip + impact
-        direction = 1 if side == "buy" else -1
-        price = reference_price * (1 + direction * slip / 10_000)
-        filled = quantity
+        requested_notional = quantity * reference_price
+
+        if book_levels is not None:
+            book_filled, book_vwap, book_visible = _walk_book(
+                side=side, quantity=quantity, levels=book_levels
+            )
+            # A market order cannot fill more quantity than the supplied visible snapshot.
+            filled = book_filled
+            visible = max(book_visible, 1.0)
+            anchor = book_vwap if book_filled > 0 else reference_price
+        else:
+            filled = quantity
+            visible = (
+                visible_liquidity_usdt
+                if visible_liquidity_usdt and visible_liquidity_usdt > 0
+                else self.default_visible_liquidity_usdt
+            )
+            anchor = reference_price
+
+        if filled <= 0:
+            return SimulatedFill(quantity, 0.0, reference_price, base_slip, latency, False, 0.0)
+
+        # A stochastic partial fill may reduce, but never increase, book-available size.
         if self._random.random() < self.partial_fill_probability:
             filled *= self._random.uniform(0.1, 0.9)
+
+        impact = market_impact_bps(
+            notional_usdt=min(requested_notional, filled * anchor),
+            visible_liquidity_usdt=visible,
+            coefficient=self.impact_coefficient,
+        )
+        direction = 1 if side == "buy" else -1
+        total_slip = base_slip + impact
+        fill_price = anchor * (1 + direction * total_slip / 10_000)
         return SimulatedFill(
             requested_quantity=quantity,
             filled_quantity=filled,
-            fill_price=price,
-            slippage_bps=slip,
+            fill_price=fill_price,
+            slippage_bps=total_slip,
             latency_ms=latency,
             complete=filled >= quantity * 0.999,
             impact_bps=impact,
         )
 
     def fills(self, *, side: str, reference_price: float, quantity: float, **kwargs) -> SimulatedFill:
-        return getattr(self, "fill")(
-            side=side, reference_price=reference_price, quantity=quantity, **kwargs
-        )
+        return self.fill(side=side, reference_price=reference_price, quantity=quantity, **kwargs)
