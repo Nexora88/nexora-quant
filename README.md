@@ -74,10 +74,7 @@ TP/SL thresholds are checked against the current best bid on synchronized depth 
 ## Historical research building blocks
 
 `MarketHistoryWriter` writes compressed JSONL event records and `replay_market_history`
-replays them in timestamp order, rejecting malformed or out-of-order records. The paper runtime now records synchronized public L2 observations to this path. Records
-contain local receive timestamps and top-20 visible levels; they are not exchange-authoritative
-history or a millisecond-accurate full-market simulator. The replay iterator is a foundation
-for offline research, not yet an integrated depth-event backtester.
+replays them in timestamp order, rejecting malformed or out-of-order records. The paper runtime records synchronized public L2 observations to this path. `app/research_replay.py` adds an event-time replay harness that applies depth snapshots and explicit cancellation/depletion events before filling orders after configured latency. It computes visible-book VWAP, partial/unfilled quantity, and fees. Feed quality, missing events, exchange-versus-receive timestamps, and hidden liquidity still limit fidelity; this is a research replay, not exchange-grade execution.
 
 `depth_imbalance` aggregates visible quantities across the best N price levels.
 `liquidity_walls` flags levels whose quantity exceeds a multiple of the side's median.
@@ -98,12 +95,12 @@ L2 feed does not expose individual order identities or true per-order queue posi
 The engine combines several *hypotheses*, not a guaranteed autonomous profit engine:
 
 - **Microstructure:** visible bid/ask imbalance, weighted depth imbalance, micro-price premium, spread, and short-window momentum.
-- **Statistics:** an Ornstein–Uhlenbeck-style mean-reversion tracker and coarse volatility/trend regime labels. These assumptions can fail during trends, news, or structural market changes.
+- **Statistics/regimes:** an Ornstein–Uhlenbeck-style mean-reversion tracker and coarse trend/sideways plus normal/high-volatility labels. The historical `regime_adaptive` baseline follows momentum only in uptrends, tests mean reversion only in normal-volatility sideways conditions, and stays flat in high-volatility or unknown regimes. This is a conservative baseline to compare, not an established best strategy.
 - **Risk and expected edge:** an explainable weighted-vote decision, adverse-selection checks, a cost-aware edge gate, capped sizing, and kill switches. Kelly-style sizing is only as reliable as its estimated win probability and payoff distribution; estimation error can make it dangerously aggressive.
 - **Large displayed orders:** a persistent ask-wall heuristic blocks new long entries when its signal is strong enough. This is deliberately conservative, but displayed size is not proof of a whale, and spoofing/cancellation can defeat the signal. The engine cannot identify individual traders from public aggregate L2 data.
 - **Execution physics approximation:** paper market orders walk the supplied visible L2 levels and use the consumed-level VWAP, then apply adverse slippage/impact. If the visible book cannot cover the requested size, the simulated fill is capped to available quantity. Latency is simulated, but the book is not refreshed during that delay.
 
-The next validation steps are to add recorded depth-event replay with event-time latency, explicit cancellation/depletion scenarios, adverse stress scenarios, and rolling out-of-sample tests across assets and regimes. Do not tune against the final holdout. A model should be judged on net-of-fees expectancy, drawdown, tail losses, turnover, and stability—not on a single profitable run.
+Use `validate_multiple_assets` to run rolling chronological train/test windows independently per supplied asset; it reports the worst test-window return and maximum drawdown across assets. Backtest summaries also report the worst period return and a simple 5% lower-tail mean. Event replay supports latency and cancellation/depletion cases. For a proper stress suite, include sudden spread widening, book thinning, adverse price gaps, fee increases, delayed/cancelled data, and partial fills as explicit fixtures. Do not tune against test windows. Judge net-of-fees expectancy, maximum drawdown, tail losses, turnover, and stability—not a single profitable run. These helpers are research primitives and have not been runtime-validated in this connector session.
 
 ## Historical strategy comparison and walk-forward research
 
