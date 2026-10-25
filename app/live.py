@@ -59,9 +59,44 @@ class LiveExecutor:
         self.processed_oco_list_ids: set[int] = set()
 
     def sync_balances(self) -> None:
-        """Reconcile local balances and open orders against the exchange account."""
+        """Reconcile OCO history before replacing the local ledger with account balances."""
         account = self.client.account()
         balances = {str(b.get("asset", "")).upper(): b for b in account.get("balances", [])}
+        open_orders = self.client.open_orders(self.symbol)
+        try:
+            open_lists = self.client.open_order_lists()
+            history = self.client.all_order_lists(self.symbol, limit=1000)
+        except Exception as exc:
+            self.order_lists_reconciled = False
+            log.error("Could not reconcile exchange order-list history; live actions blocked", exc_info=True)
+            raise RuntimeError("Exchange order-list history could not be reconciled") from exc
+
+        self.open_orders_snapshot = open_orders
+        self.open_order_lists_snapshot = open_lists
+        self.order_lists_reconciled = True
+        active_lists = [
+            item for item in open_lists
+            if str(item.get("symbol", "")).upper() == self.symbol
+            and item.get("listStatusType") in ("EXEC_STARTED", "EXECUTING")
+        ]
+        if active_lists:
+            self.protective_order_list_id = int(active_lists[-1]["orderListId"])
+        else:
+            self.protective_order_list_id = None
+            # Recover the crash window where an OCO was accepted/completed but its
+            # ID was not included in the last local snapshot.
+            candidates = [
+                item for item in history
+                if str(item.get("symbol", "")).upper() == self.symbol
+                and str(item.get("listClientOrderId", "")).startswith("nqoco")
+                and int(item.get("orderListId", 0)) not in self.processed_oco_list_ids
+                and item.get("listStatusType") in {"ALL_DONE", "REJECT", "EXPIRED"}
+            ]
+            if candidates:
+                self.protective_order_list_id = int(candidates[-1]["orderListId"])
+                if not self.reconcile_protective_oco():
+                    raise RuntimeError("Historical OCO fills could not be reconciled; live actions blocked")
+
         quote = balances.get(self.quote_asset, {})
         base = balances.get(self.base_asset, {})
         self.cash_usdt = float(quote.get("free", 0))
@@ -77,46 +112,13 @@ class LiveExecutor:
                 "Existing base-asset position has no restored cost basis; "
                 "reconcile exchange trades and accounting before resuming"
             )
-        self.open_orders_snapshot = self.client.open_orders(self.symbol)
-        try:
-            self.open_order_lists_snapshot = self.client.open_order_lists()
-            self.order_lists_reconciled = True
-            active_lists = [
-                item for item in self.open_order_lists_snapshot
-                if str(item.get("symbol", "")).upper() == self.symbol
-                and item.get("listStatusType") in ("EXEC_STARTED", "EXECUTING")
-            ]
-            self.protective_order_list_id = (
-                int(active_lists[-1]["orderListId"]) if active_lists else None
-            )
-            if self.protective_order_list_id is None:
-                # Recover a terminal OCO that completed while the process was offline,
-                # including the crash window before its ID was persisted locally.
-                history = self.client.all_order_lists(self.symbol, limit=1000)
-                candidates = [
-                    item for item in history
-                    if str(item.get("symbol", "")).upper() == self.symbol
-                    and str(item.get("listClientOrderId", "")).startswith("nqoco")
-                    and int(item.get("orderListId", 0)) not in self.processed_oco_list_ids
-                    and item.get("listStatusType") in {"ALL_DONE", "REJECT", "EXPIRED"}
-                ]
-                if candidates:
-                    self.protective_order_list_id = int(candidates[-1]["orderListId"])
-        except Exception:
-            self.open_order_lists_snapshot = []
-            self.order_lists_reconciled = False
-            log.error("Could not reconcile exchange order lists; live actions blocked", exc_info=True)
-            raise RuntimeError("Exchange order-list state could not be reconciled")
-        if self.open_orders_snapshot and self.protective_order_list_id is None:
+        if open_orders and self.protective_order_list_id is None:
             raise RuntimeError("Unmanaged exchange open orders found; live trading blocked")
         if self.starting_cash_usdt <= 0:
             self.starting_cash_usdt = self.cash_usdt + self.locked_quote_balance
         log.info(
             "Live balances synced: %s=%.8f %s=%.4f (testnet=%s)",
-            self.base_asset,
-            self.base_quantity,
-            self.quote_asset,
-            self.cash_usdt,
+            self.base_asset, self.base_quantity, self.quote_asset, self.cash_usdt,
             self.client.testnet,
         )
 
