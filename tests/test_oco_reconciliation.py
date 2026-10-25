@@ -18,15 +18,15 @@ class FakeClient:
         return {
             "symbol": "BTCUSDT", "orderListId": list_id,
             "listStatusType": self.status,
-            "orderReports": [{"orderId": 41}],
+            "orderReports": [{"orderId": 41}, {"orderId": 42}],
         }
 
     def get_order(self, symbol, order_id):
-        qty = sum(float(x["qty"]) for x in self.fills)
+        qty = sum(float(x["qty"]) for x in self.fills) if order_id == 41 else 0.0
         return OrderResult(
             order_id=order_id, client_order_id="oco-child", symbol=symbol,
-            side="SELL", status="FILLED", price=110.0, orig_qty=qty,
-            executed_qty=qty, cummulative_quote_qty=qty * 110.0,
+            side="SELL", status="FILLED" if qty else "CANCELED", price=110.0,
+            orig_qty=1.0, executed_qty=qty, cummulative_quote_qty=qty * 110.0,
             fills=[], raw={},
         )
 
