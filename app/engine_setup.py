@@ -19,9 +19,11 @@ from app.intelligence.adverse import AdverseSelectionFilter
 from app.intelligence.whale import WhaleTracker
 from app.intelligence.noise import NoiseFilter
 from app.strategy import PriceWindow
+from app.microstructure_costs import ObservedExecutionCostModel
 
 log = logging.getLogger(__name__)
 state = RuntimeState()
+execution_costs = ObservedExecutionCostModel(min_samples=30, horizon_ms=1000, window_size=500)
 
 risk = RiskManager(
     max_order_size_usdt=settings.max_order_size_usdt,
