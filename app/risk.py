@@ -1,13 +1,17 @@
 """Central pre-trade risk gate for simulated orders."""
 from dataclasses import dataclass
 
+
 @dataclass(frozen=True, slots=True)
 class RiskDecision:
     allowed: bool
     reason: str
 
+
 class RiskManager:
-    def __init__(self, *, max_order_size_usdt: float, max_daily_loss_usdt: float, max_consecutive_losses: int, max_spread_bps: float, max_data_age_seconds: float) -> None:
+    def __init__(self, *, max_order_size_usdt: float, max_daily_loss_usdt: float,
+                 max_consecutive_losses: int, max_spread_bps: float,
+                 max_data_age_seconds: float) -> None:
         self.max_order_size_usdt = max_order_size_usdt
         self.max_daily_loss_usdt = max_daily_loss_usdt
         self.max_consecutive_losses = max_consecutive_losses
@@ -17,8 +21,21 @@ class RiskManager:
         self.consecutive_losses = 0
         self.kill_switch = False
         self.kill_switch_reason = None
+        self.day_utc: str | None = None
 
-    def evaluate_entry(self, *, notional_usdt: float, available_cash: float, bid: float, ask: float, data_age_seconds: float | None) -> RiskDecision:
+    def rollover_day(self, day_utc: str) -> bool:
+        """Reset only the daily counter at UTC date change; preserve other risk brakes."""
+        if self.day_utc == day_utc:
+            return False
+        self.day_utc = day_utc
+        self.realized_pnl_today = 0.0
+        if self.kill_switch_reason == "Daily simulated loss limit reached":
+            self.kill_switch = False
+            self.kill_switch_reason = None
+        return True
+
+    def evaluate_entry(self, *, notional_usdt: float, available_cash: float,
+                       bid: float, ask: float, data_age_seconds: float | None) -> RiskDecision:
         if self.kill_switch:
             return RiskDecision(False, self.kill_switch_reason or "Kill switch active")
         if notional_usdt <= 0:
@@ -39,13 +56,19 @@ class RiskManager:
             return RiskDecision(False, self.kill_switch_reason)
         return RiskDecision(True, "Approved for paper execution")
 
-    def record_closed_trade(self, pnl_usdt: float) -> None:
+    def record_realized_pnl(self, pnl_usdt: float, *, position_closed: bool = True) -> None:
+        """Count every realized fill toward daily loss, but only completed exits toward streaks."""
         self.realized_pnl_today += pnl_usdt
-        self.consecutive_losses = self.consecutive_losses + 1 if pnl_usdt < 0 else 0
+        if position_closed:
+            self.consecutive_losses = self.consecutive_losses + 1 if pnl_usdt < 0 else 0
         if self.realized_pnl_today <= -self.max_daily_loss_usdt:
             self.activate_kill_switch("Daily simulated loss limit reached")
-        elif self.consecutive_losses >= self.max_consecutive_losses:
+        elif position_closed and self.consecutive_losses >= self.max_consecutive_losses:
             self.activate_kill_switch("Consecutive-loss limit reached")
+
+    def record_closed_trade(self, pnl_usdt: float) -> None:
+        """Backward-compatible alias for a fully closed simulated position."""
+        self.record_realized_pnl(pnl_usdt, position_closed=True)
 
     def activate_kill_switch(self, reason: str) -> None:
         self.kill_switch = True

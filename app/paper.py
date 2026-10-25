@@ -27,6 +27,8 @@ class PaperExecutor:
             raise ValueError("Paper snapshot has invalid cash")
         if values["base_quantity"] < 0 or values["average_entry_price"] < 0:
             raise ValueError("Paper snapshot has invalid position")
+        if (values["base_quantity"] > 0) != (values["average_entry_price"] > 0):
+            raise ValueError("Paper snapshot position and entry price are inconsistent")
         self.starting_cash_usdt = values["starting_cash_usdt"]
         self.cash_usdt = values["cash_usdt"]
         self.base_quantity = values["base_quantity"]
@@ -53,12 +55,13 @@ class PaperExecutor:
         self.trades.append(trade)
         return trade
 
-    def sell_all(self, *, price: float, reason: str = "manual_paper_exit") -> dict | None:
-        if price <= 0:
-            raise ValueError("Price must be positive")
+    def sell_quantity(self, *, quantity: float, price: float, reason: str) -> dict | None:
+        """Sell a simulated partial quantity while retaining remaining position cost basis."""
+        if price <= 0 or quantity <= 0:
+            raise ValueError("Price and quantity must be positive")
         if self.base_quantity <= 0:
             return None
-        quantity = self.base_quantity
+        quantity = min(quantity, self.base_quantity)
         gross = quantity * price
         fee = gross * self.fee_rate
         pnl = (price - self.average_entry_price) * quantity - fee
@@ -69,9 +72,14 @@ class PaperExecutor:
                  "notional_usdt": gross, "fee_usdt": fee, "pnl_usdt": pnl,
                  "reason": reason, "timestamp": datetime.now(timezone.utc).isoformat()}
         self.trades.append(trade)
-        self.base_quantity = 0.0
-        self.average_entry_price = 0.0
+        self.base_quantity = max(0.0, self.base_quantity - quantity)
+        if self.base_quantity < 1e-12:
+            self.base_quantity = 0.0
+            self.average_entry_price = 0.0
         return trade
+
+    def sell_all(self, *, price: float, reason: str = "manual_paper_exit") -> dict | None:
+        return self.sell_quantity(quantity=self.base_quantity, price=price, reason=reason)
 
     def snapshot(self, mark_price: float | None = None) -> dict:
         mark = mark_price or self.average_entry_price
