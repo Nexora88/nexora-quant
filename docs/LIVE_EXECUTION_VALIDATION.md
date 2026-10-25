@@ -4,9 +4,11 @@ This document records required evidence before any live-execution claim. It does
 
 ## Current status
 
-- [ ] Offline OCO fill reconciliation is complete and idempotent.
-- [ ] Binance Spot Testnet order lifecycle has passed end-to-end validation.
+- [ ] Offline OCO fill reconciliation is complete and idempotent across every exchange history edge case.
+- [ ] Binance Spot Testnet order lifecycle has passed end-to-end validation on the exchange.
 - [ ] Net-of-fees profitability has been independently evaluated.
+- [x] Implemented terminal OCO history discovery, child-order/trade retrieval, quantity reconciliation, trade-ID idempotency, and fail-closed handling for incomplete or unpriced commissions.
+- [x] Added mocked recovery tests and an opt-in Testnet market/OCO-create/cancel/history smoke test; the live Testnet smoke test has not yet been run.
 - [x] Unknown or inconsistent state fails closed rather than placing a speculative replacement order.
 - [x] Default mode remains paper and the default Binance endpoint remains testnet.
 - [x] Configuration now rejects mainnet live mode even when `LIVE_CONFIRM` is set; regression tests cover this fail-closed gate.
@@ -15,16 +17,15 @@ This document records required evidence before any live-execution claim. It does
 
 The exchange-hosted OCO can execute while the process is offline. On restart, account balances alone are not sufficient to infer realized PnL, cost basis, fees, commission asset, or which OCO leg executed. Do not mark the local ledger reconciled based only on balances or the currently open-order list.
 
-Required implementation and tests:
+Implemented in this branch:
 
-1. Persist the OCO list ID and client order IDs before relying on the protection.
-2. On startup, query the exchange for the historical order-list state and both child-order states, including terminal states; query fills/trades for each child order.
-3. Rebuild each fill from exchange trade IDs, executed quantity, quote quantity, price and commission asset/amount. Deduplicate using stable exchange trade IDs so repeated reconciliation is idempotent.
-4. Apply partial fills and fees to the local position/ledger exactly once. Reconcile free and locked balances after applying fills.
-5. If the exchange history is unavailable, incomplete, contradictory, or cannot be matched to the persisted position, keep order placement disabled and surface a clear manual-reconciliation state. Never guess the cost basis or automatically submit a replacement sell.
-6. Test stop-leg execution, take-profit execution, partial fills where supported, cancel/replace races, app downtime, duplicate responses, API timeout, and repeated restart.
+1. The REST client retrieves historical order lists, individual OCO list details, child orders, and trade fills.
+2. Startup discovers bot-owned terminal OCO lists even if the last local snapshot missed the list ID, and reconciles them before overwriting the ledger with current account balances.
+3. Child order executed quantities must match the sum of exchange trades. Exchange trade IDs and OCO list IDs are persisted as idempotency keys.
+4. Actual quote/base commissions are accounted for; unpriced third-asset commissions, missing/truncated history, nonterminal child orders, and mismatches fail closed before accounting mutations.
+5. Added unit tests cover a completed OCO fill, repeated recovery after snapshot restore, unpriced commission, and active OCO behavior.
 
-**Known limitation:** this checklist is not implemented merely by the existing fail-closed startup guard. Full offline OCO accounting remains incomplete until the above behavior is implemented and covered by tests.
+**Remaining limitation:** mocked tests do not establish every exchange edge case. Stop-leg/TP-leg fills under real testnet conditions, partial-fill scenarios, and restart/timeout races still require exchange-side validation. The bot intentionally stays fail-closed on ambiguous history.
 
 ## 2. Binance Spot Testnet end-to-end validation
 
@@ -34,10 +35,9 @@ Run this only with a dedicated Binance Spot Testnet account and testnet-only cre
 
 Acceptance matrix:
 
-- [ ] Public connectivity, server time and exchange-info/filter parsing.
-- [ ] Signed account/balance request and insufficient/invalid request handling.
-- [ ] Small testnet market order; assert terminal order state and reconcile every returned fill/trade.
-- [ ] Exchange-hosted OCO creation; verify list ID, both child orders, and open-order-list state.
+- [x] Added an opt-in smoke test that verifies testnet endpoint identity, public connectivity, signed account/balance, symbol filters, a small testnet market buy, OCO creation/cancel, and historical list lookup; it is gated by `NEXORA_RUN_SPOT_TESTNET_E2E=1`.
+- [ ] Run the opt-in test with dedicated Spot Testnet credentials and capture its actual result.
+- [ ] Verify both child-order states and reconcile every returned fill/trade against the local ledger.
 - [ ] Exercise both OCO outcomes in isolated testnet scenarios where the exchange permits; verify child states, trade IDs, commissions, balances and local ledger.
 - [ ] Simulate network timeout after submission and reconnect; resolve by client order ID without submitting a duplicate.
 - [ ] Restart with open OCO, completed OCO, and ambiguous exchange history; ambiguous cases must fail closed.
