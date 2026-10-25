@@ -65,7 +65,7 @@ class LiveExecutor:
         open_orders = self.client.open_orders(self.symbol)
         try:
             open_lists = self.client.open_order_lists()
-            history = self.client.all_order_lists(self.symbol, limit=1000)
+            history = self.client.all_order_lists(limit=1000)
         except Exception as exc:
             self.order_lists_reconciled = False
             log.error("Could not reconcile exchange order-list history; live actions blocked", exc_info=True)
