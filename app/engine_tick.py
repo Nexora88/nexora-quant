@@ -18,7 +18,6 @@ from app.engine_setup import (
     regime_clf,
     risk,
     shadows,
-    simulator,
     state,
     sustained,
     wall_tracker,
