@@ -4,7 +4,7 @@
 
 Nexora Quant is an early-stage research project for learning market microstructure and testing strategies with reproducible simulated execution. It is not investment advice and makes no profit claims.
 
-> **Safety by default:** Binance is used for public market data only. The runtime is paper-only; it rejects any mode other than `TRADING_MODE=paper`. It does not submit real exchange orders or use exchange API credentials.
+> **Default safety:** `TRADING_MODE=paper` is the default and uses simulated fills. The codebase also contains an explicitly gated `live` adapter that can submit real Binance Spot orders if configured. This branch does not remove or validate that adapter. Keep paper mode enabled, do not add real API keys, and do not treat this project as a profit-proven system.
 
 ## Current runtime
 
@@ -12,7 +12,7 @@ Nexora Quant is an early-stage research project for learning market microstructu
 - Evaluates the top-of-book bid/ask imbalance only when depth is synchronized.
 - Requires a configurable number of consecutive buy signals to reduce one-tick reactions.
 - Applies capped free-cash sizing and a centralized pre-trade risk gate.
-- Integrates deterministic-configurable simulated adverse slippage, latency, and partial fills into paper entries and exits.
+- Simulates configurable latency, adverse slippage, square-root/linear impact, visible-book walking and partial fills for paper entries and exits. When a synchronized L2 snapshot is available, paper market orders consume the supplied visible ask levels (buys) or bid levels (sells) and use the consumed levels’ VWAP before applying the impact/slippage penalty.
 - Supports partial paper exits while preserving the remaining position's cost basis.
 - Evaluates paper TP/SL on synchronized best-bid updates while the process is running.
 - Persists account and risk state in SQLite, restores on restart, and writes an idempotent paper trade ledger.
@@ -52,7 +52,7 @@ Run the read-only API: `uvicorn app.api:app --host 127.0.0.1 --port 8000`. Keep 
 | Variable | Default | Meaning |
 |---|---:|---|
 | `SYMBOL` | `btcusdt` | Binance Spot market |
-| `TRADING_MODE` | `paper` | Only supported mode |
+| `TRADING_MODE` | `paper` | `paper` or gated `live`; use paper for research only |
 | `STARTING_CASH_USDT` | `1000` | Initial paper cash if no saved state exists |
 | `ORDER_SIZE_USDT` | `25` | Configured maximum paper entry notional |
 | `MAX_ORDER_SIZE_USDT` | `50` | Risk gate cap |
@@ -67,7 +67,7 @@ Run the read-only API: `uvicorn app.api:app --host 127.0.0.1 --port 8000`. Keep 
 | `MARKET_HISTORY_PATH` | `data/market-history.jsonl.gz` | Compressed local L2 observation log |
 | `NEXORA_API_TOKEN` | unset | Optional bearer token required for non-loopback API requests; never commit real tokens |
 
-The simulator uses a configurable random seed to make test runs reproducible. Simulated latency delays the paper execution path; it is not a full exchange queue-position or market-impact model.
+The simulator uses a configurable random seed to make test runs reproducible. Simulated latency delays the paper execution path. Visible-book walking is snapshot-based: it does not replay order-book changes during the delay, infer hidden liquidity, or reproduce matching-engine queue priority. Impact is a heuristic penalty, not a calibrated market-impact law.
 
 TP/SL thresholds are checked against the current best bid on synchronized depth updates. They are simulated exits, not exchange-hosted orders; when the process is offline, no exit can trigger until it is running again. If a partial exit occurs, the remaining position continues to be monitored.
 
@@ -86,9 +86,9 @@ L2 feed does not expose individual order identities or true per-order queue posi
 
 ## Safety and limitations
 
-- No live order adapter is implemented; actual order submission remains disabled. Do not add API keys to source control or enable real-money trading based only on passing tests.
+- A live order adapter exists behind `TRADING_MODE=live` and configuration checks; it can submit real Binance Spot orders. It is not the default. This research change does not exercise, certify, or recommend live execution. Never commit API keys. Keep `TRADING_MODE=paper` for testing.
 - This strategy is an educational experiment, not validated or guaranteed to be profitable. Signal confirmation can reduce noise but can also delay entries; it does not establish an edge.
-- Top-of-book imbalance is a very simple research signal. It does not yet include a validated backtest, walk-forward testing, out-of-sample evaluation, or market-regime detection.
+- The strategy is a collection of research heuristics, not an independently validated trading edge. Visible-book execution is still only an approximation; no simulator can reproduce all cancellations, hidden liquidity, queue priority, network jitter, matching-engine rules, or sudden market shocks. Ask-wall/whale detection is a heuristic and cannot identify the owner or intent behind displayed orders. It can miss spoofing and can block valid entries.
 - Persisted paper state is local to the configured SQLite file. Protect and back up that file; deleting it resets the paper account.
 - UTC day rollover resets daily realized PnL only; consecutive-loss and non-daily safety switches remain active.
 - CI and unit tests are quality checks, not proof of exchange correctness, production readiness, or profitability.
