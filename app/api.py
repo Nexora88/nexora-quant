@@ -49,7 +49,14 @@ main{max-width:1100px;margin:auto;padding:28px 18px 60px}.top{display:flex;justi
 <div class="row"><span>Base quantity</span><strong id="qty">—</strong></div>
 <div class="row"><span>Average entry</span><strong id="entry">—</strong></div>
 <div class="row"><span>Fees paid</span><strong id="fees">—</strong></div></div>
-<div class="foot">Research software, not financial advice. Signals are experimental and do not imply profitability. Simulated fills omit realistic slippage, latency, and partial fills. Runtime state is in memory. This dashboard is read-only and should remain on localhost.</div>
+<div class="section card"><h2>Decision monitor</h2>
+<div class="row"><span>Last action</span><strong id="decisionAction">Waiting</strong></div>
+<div class="row"><span>Market regime</span><strong id="regime">—</strong></div>
+<div class="row"><span>Signal score / confidence</span><strong id="decisionScore">—</strong></div>
+<div class="row"><span>Decision rationale</span><span id="decisionReason" class="muted">Waiting for analysis</span></div>
+<div id="decisionHistory"></div></div>
+<div class="section card"><h2>Recent executions</h2><div id="fills"><span class="muted">No fills recorded yet</span></div></div>
+<div class="foot">Research software, not financial advice. This dashboard is observational; it does not certify a strategy or guarantee profitability. Paper fills are estimates, not exchange fills. Keep this API on localhost and keep research in paper mode.</div>
 </main>
 <script>
 const el=id=>document.getElementById(id);
