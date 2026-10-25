@@ -83,6 +83,8 @@ async def handle_tick(
     except Exception:
         pass
     state.record_analysis(analysis)
+    now_ms = int(time.time() * 1000)
+    es.execution_costs.observe_mid(analysis.mid, now_ms)
     try:
         features.append(
             ts_ns=time.time_ns(), symbol=settings.symbol, mid=analysis.mid,
@@ -121,9 +123,17 @@ async def handle_tick(
                     )
                 else:
                     trade = ex.sell_quantity(
-                        quantity=ex.base_quantity, price=bid, reason=f"{reason}; live_market_sell",
+                        quantity=ex.base_quantity, price=bid,
+                        reason=f"{reason}; live_market_sell", decision_mid=analysis.mid,
                     )
                 if trade:
+                    if mode == "live" and trade.get("decision_mid") and trade.get("execution_latency_ms") is not None:
+                        es.execution_costs.record_fill(
+                            side=trade["side"], decision_mid=float(trade["decision_mid"]),
+                            fill_price=float(trade["price"]),
+                            latency_ms=float(trade["execution_latency_ms"]),
+                            filled_at_ms=int(time.time() * 1000),
+                        )
                     store.append_trade(trade, event_key=_event_key(key, trade))
                     state.record_fill(trade)
                     pnl_v = float(trade.get("pnl_usdt", 0))
@@ -158,14 +168,17 @@ async def handle_tick(
         visible_liquidity_usdt=max(ask * max(ask_qty, 1e-9), 1.0),
         coefficient=getattr(settings, "impact_coefficient", 0.1),
     )
+    calibrated_latency_cost = es.execution_costs.estimate_cost_bps() if mode == "live" else None
     edge = score_edge(
         votes=_pre.votes,
         spread_bps=analysis.spread_bps,
         impact_bps=2.0 * impact_est,
         fee_bps=2.0 * settings.fee_rate * 10_000,
-        # Latency cost is not calibrated yet; use zero instead of inventing a value.
-        latency_bps=0.0,
+        # For live mode, use only empirically observed execution/adverse-selection
+        # cost. The decision gate below blocks entries until the model is calibrated.
+        latency_bps=calibrated_latency_cost or 0.0,
     )
+    execution_costs_calibrated = mode != "live" or calibrated_latency_cost is not None
     adv = adverse_filter.check(intend_long=True)
     whale_block = whale.side == "ask" and whale.strength >= 0.5
     adverse_reasons = list(adv.reasons)
@@ -176,7 +189,8 @@ async def handle_tick(
         kill_switch=bool(risk.kill_switch), kill_reason=risk.kill_switch_reason,
         kelly_fraction=kd_preview.fraction, suggested_notional=kd_preview.notional_usdt,
         entry_min_score=settings.entry_min_score,
-        edge_tradeable=edge.tradeable, edge_notes=edge.notes,
+        edge_tradeable=edge.tradeable and execution_costs_calibrated,
+        edge_notes=edge.notes + ([] if execution_costs_calibrated else ["execution_cost_uncalibrated"]),
         adverse_toxic=adv.toxic or whale_block, adverse_reasons=adverse_reasons,
     )
     state.record_decision(decision)
@@ -220,6 +234,13 @@ async def handle_tick(
                         trade = ex.buy(
                             notional_usdt=sizing_n, price=ask,
                             reason=f"{signal.reason}; score={analysis.score:.2f}; live_buy",
+                            decision_mid=analysis.mid,
+                        )
+                        es.execution_costs.record_fill(
+                            side=trade["side"], decision_mid=float(trade["decision_mid"]),
+                            fill_price=float(trade["price"]),
+                            latency_ms=float(trade["execution_latency_ms"]),
+                            filled_at_ms=int(time.time() * 1000),
                         )
                         store.append_trade(trade, event_key=_event_key(key, trade))
                         state.record_fill(trade)
