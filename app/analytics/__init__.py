@@ -6,6 +6,8 @@ from app.analytics.microstructure import (
     calculate_weighted_obi,
 )
 from app.analytics.regime import MarketRegime, RegimeClassifier
+from app.analytics.sustained import SustainedDecision, SustainedSignalGate
+from app.analytics.walls import WallHit, WallTracker
 
 __all__ = [
     "MicrostructureSnapshot",
@@ -14,4 +16,8 @@ __all__ = [
     "calculate_weighted_obi",
     "MarketRegime",
     "RegimeClassifier",
+    "SustainedDecision",
+    "SustainedSignalGate",
+    "WallHit",
+    "WallTracker",
 ]
