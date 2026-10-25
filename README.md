@@ -93,6 +93,18 @@ L2 feed does not expose individual order identities or true per-order queue posi
 - UTC day rollover resets daily realized PnL only; consecutive-loss and non-daily safety switches remain active.
 - CI and unit tests are quality checks, not proof of exchange correctness, production readiness, or profitability.
 
+## Research intelligence: mathematics, market physics, and large-order risk
+
+The engine combines several *hypotheses*, not a guaranteed autonomous profit engine:
+
+- **Microstructure:** visible bid/ask imbalance, weighted depth imbalance, micro-price premium, spread, and short-window momentum.
+- **Statistics:** an Ornstein–Uhlenbeck-style mean-reversion tracker and coarse volatility/trend regime labels. These assumptions can fail during trends, news, or structural market changes.
+- **Risk and expected edge:** an explainable weighted-vote decision, adverse-selection checks, a cost-aware edge gate, capped sizing, and kill switches. Kelly-style sizing is only as reliable as its estimated win probability and payoff distribution; estimation error can make it dangerously aggressive.
+- **Large displayed orders:** a persistent ask-wall heuristic blocks new long entries when its signal is strong enough. This is deliberately conservative, but displayed size is not proof of a whale, and spoofing/cancellation can defeat the signal. The engine cannot identify individual traders from public aggregate L2 data.
+- **Execution physics approximation:** paper market orders walk the supplied visible L2 levels and use the consumed-level VWAP, then apply adverse slippage/impact. If the visible book cannot cover the requested size, the simulated fill is capped to available quantity. Latency is simulated, but the book is not refreshed during that delay.
+
+The next validation steps are to add recorded depth-event replay with event-time latency, explicit cancellation/depletion scenarios, adverse stress scenarios, and rolling out-of-sample tests across assets and regimes. Do not tune against the final holdout. A model should be judged on net-of-fees expectancy, drawdown, tail losses, turnover, and stability—not on a single profitable run.
+
 ## Historical strategy comparison and walk-forward research
 
 ```python
@@ -123,5 +135,4 @@ funding, borrow, spread, market impact, delisted assets, survivorship bias, or i
 stop execution. The unseen segment is chronological and kept separate from parameter
 selection, but one holdout is not enough: repeat rolling walk-forward windows across
 multiple assets and market periods. Never select a strategy from its training score alone.
-Positive historical results do not guarantee future profits. The live trading adapter
-remains intentionally disabled; this research code cannot submit exchange orders.
+Positive historical results do not guarantee future profits. A gated live adapter exists elsewhere in the codebase; the OHLCV backtester does not test it, and this paper simulator does not establish that live results will match simulated results.
