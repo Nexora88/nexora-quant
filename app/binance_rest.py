@@ -109,6 +109,13 @@ class BinanceRestClient:
                 return float(bal.get("free", 0))
         return 0.0
 
+    def ticker_price(self, symbol: str) -> float:
+        raw = self._request("GET", "/api/v3/ticker/price", {"symbol": symbol.upper()})
+        price = float(raw.get("price", 0))
+        if price <= 0:
+            raise RuntimeError("Invalid ticker price response")
+        return price
+
     def exchange_info_symbol(self, symbol: str) -> dict[str, Any]:
         data = self._request("GET", "/api/v3/exchangeInfo", {"symbol": symbol.upper()})
         symbols = data.get("symbols") or []
