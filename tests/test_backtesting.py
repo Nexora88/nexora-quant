@@ -3,7 +3,7 @@ import math
 import pytest
 
 from app.backtesting import (
-    BacktestConfig, Candle, backtest, compare_strategies, market_regime, rolling_walk_forward, walk_forward,
+    BacktestConfig, Candle, backtest, compare_strategies, market_regime, rolling_walk_forward, validate_multiple_assets, walk_forward,
 )
 
 
@@ -84,3 +84,28 @@ def test_rolling_walk_forward_rejects_invalid_window_sizes():
     with pytest.raises(ValueError):
         rolling_walk_forward(rows, [{"strategy": "buy_and_hold", "params": {}}],
                              train_bars=30, test_bars=20)
+
+
+
+def test_regime_adaptive_and_multiple_asset_validation():
+    rows_a = candles_from_closes([100 + i * 0.15 + math.sin(i / 5) for i in range(180)])
+    rows_b = candles_from_closes([80 + i * 0.08 + math.sin(i / 4) for i in range(180)])
+    candidates = [
+        {"strategy": "regime_adaptive", "params": {
+            "regime_window": 20, "momentum_lookback": 8, "mean_window": 15, "entry_z": 1,
+        }},
+        {"strategy": "buy_and_hold", "params": {}},
+    ]
+    result = backtest(rows_a, "regime_adaptive", candidates[0]["params"],
+                      BacktestConfig(fee_rate=0.001, slippage_bps=3))
+    assert result["strategy"] == "regime_adaptive"
+    assert "worst_period_return_pct" in result
+    assert "expected_shortfall_5_pct" in result
+    report = validate_multiple_assets(
+        {"ASSET_A": rows_a, "ASSET_B": rows_b}, candidates,
+        train_bars=100, test_bars=20,
+        config=BacktestConfig(min_train_bars=50, fee_rate=0.001, slippage_bps=3),
+    )
+    assert report["asset_count"] == 2
+    assert "worst_asset_window_return_pct" in report
+    assert "worst_asset_max_drawdown_pct" in report
