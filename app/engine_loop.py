@@ -8,6 +8,7 @@ from app.engine_setup import (
     state, risk, _build_executor, log, executor as _ex,
 )
 from app.storage import PaperStore
+from app.io_queue import AsyncIoQueue
 from app.market_history import MarketHistoryWriter
 from app.ts_store import FeatureTimeSeriesStore
 from app.binance_depth import stream_synchronized_depth
@@ -20,6 +21,8 @@ async def run() -> None:
     es.executor = es._build_executor()
     state.executor = es.executor
     store = PaperStore(settings.store_path)
+    io_q = AsyncIoQueue(store)
+    io_q.start()
     history = MarketHistoryWriter(settings.market_history_path)
     features = FeatureTimeSeriesStore(getattr(settings, "features_db_path", "data/features.sqlite3"))
     mode = settings.trading_mode
@@ -53,22 +56,20 @@ async def run() -> None:
     )
 
     def persist() -> None:
-        store.save_state(
-            key,
-            {
-                "account": es.executor.snapshot(),
-                "risk": {
-                    "realized_pnl_today": risk.realized_pnl_today,
-                    "consecutive_losses": risk.consecutive_losses,
-                    "kill_switch": risk.kill_switch,
-                    "kill_switch_reason": risk.kill_switch_reason,
-                    "day_utc": risk.day_utc,
-                },
-                "peak_price": state.peak_price,
-                "mode": mode,
-                "saved_at": datetime.now(timezone.utc).isoformat(),
+        payload = {
+            "account": es.executor.snapshot(),
+            "risk": {
+                "realized_pnl_today": risk.realized_pnl_today,
+                "consecutive_losses": risk.consecutive_losses,
+                "kill_switch": risk.kill_switch,
+                "kill_switch_reason": risk.kill_switch_reason,
+                "day_utc": risk.day_utc,
             },
-        )
+            "peak_price": state.peak_price,
+            "mode": mode,
+            "saved_at": datetime.now(timezone.utc).isoformat(),
+        }
+        io_q.enqueue_state(key, payload)
 
     confirmations = 0
     ticks = 0
@@ -80,6 +81,7 @@ async def run() -> None:
             await __import__("asyncio").sleep(0)
     finally:
         persist()
+        await io_q.stop()
         store.close()
         try:
             features.close()
