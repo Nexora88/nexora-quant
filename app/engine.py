@@ -102,7 +102,10 @@ async def run() -> None:
                     )
                     if trade:
                         store.append_trade(trade, event_key=_event_key(key, trade))
-                        risk.record_closed_trade(float(trade.get("pnl_usdt", 0)))
+                        risk.record_realized_pnl(
+                            float(trade.get("pnl_usdt", 0)),
+                            position_closed=executor.base_quantity <= 0,
+                        )
                     persist()
                     continue
 
