@@ -62,6 +62,7 @@ def liquidity_based_slippage_bps(
         notional_usdt=notional_usdt,
         visible_liquidity_usdt=max(visible, 1.0),
         coefficient=impact_coefficient,
+        linear_coefficient=0.05 if impact_coefficient > 0 else 0.0,
     )
     return base_slippage_bps + impact
 
@@ -143,7 +144,6 @@ class ExecutionSimulator:
             book_filled, book_vwap, book_visible = _walk_book(
                 side=side, quantity=quantity, levels=book_levels
             )
-            # A market order cannot fill more quantity than the supplied visible snapshot.
             filled = book_filled
             visible = max(book_visible, 1.0)
             anchor = book_vwap if book_filled > 0 else reference_price
@@ -159,7 +159,6 @@ class ExecutionSimulator:
         if filled <= 0:
             return SimulatedFill(quantity, 0.0, reference_price, base_slip, latency, False, 0.0)
 
-        # A stochastic partial fill may reduce, but never increase, book-available size.
         if self._random.random() < self.partial_fill_probability:
             filled *= self._random.uniform(0.1, 0.9)
 
@@ -167,6 +166,7 @@ class ExecutionSimulator:
             notional_usdt=min(requested_notional, filled * anchor),
             visible_liquidity_usdt=visible,
             coefficient=self.impact_coefficient,
+            linear_coefficient=0.05 if self.impact_coefficient > 0 else 0.0,
         )
         direction = 1 if side == "buy" else -1
         total_slip = base_slip + impact
