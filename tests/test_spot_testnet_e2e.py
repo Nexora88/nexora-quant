@@ -52,7 +52,6 @@ def test_spot_testnet_market_oco_cancel_and_recovery_flow():
         pytest.fail("Testnet market buy did not execute")
 
     base_asset = str(info.get("baseAsset", "BTC")).upper()
-    quote_asset = str(info.get("quoteAsset", "USDT")).upper()
     base_fee = sum(
         float(fill.get("commission", 0))
         for fill in buy.fills
