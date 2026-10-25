@@ -147,13 +147,12 @@ async def handle_tick(
                         mode == "live" and trade.get("decision_mid")
                         and trade.get("execution_latency_measured", False)
                     ):
-                        if trade.get("execution_latency_measured", False):
-                            es.execution_costs.record_fill(
-                                side=trade["side"], decision_mid=float(trade["decision_mid"]),
-                                fill_price=float(trade["price"]),
-                                latency_ms=float(trade["execution_latency_ms"]),
-                                filled_at_ms=int(time.time() * 1000),
-                            )
+                        es.execution_costs.record_fill(
+                            side=trade["side"], decision_mid=float(trade["decision_mid"]),
+                            fill_price=float(trade["price"]),
+                            latency_ms=float(trade["execution_latency_ms"]),
+                            filled_at_ms=int(time.time() * 1000),
+                        )
                     store.append_trade(trade, event_key=_event_key(key, trade))
                     state.record_fill(trade)
                     pnl_v = float(trade.get("pnl_usdt", 0))
@@ -264,12 +263,13 @@ async def handle_tick(
                             reason=f"{signal.reason}; score={analysis.score:.2f}; live_buy",
                             decision_mid=analysis.mid,
                         )
-                        es.execution_costs.record_fill(
-                            side=trade["side"], decision_mid=float(trade["decision_mid"]),
-                            fill_price=float(trade["price"]),
-                            latency_ms=float(trade["execution_latency_ms"]),
-                            filled_at_ms=int(time.time() * 1000),
-                        )
+                        if trade.get("execution_latency_measured", False):
+                            es.execution_costs.record_fill(
+                                side=trade["side"], decision_mid=float(trade["decision_mid"]),
+                                fill_price=float(trade["price"]),
+                                latency_ms=float(trade["execution_latency_ms"]),
+                                filled_at_ms=int(time.time() * 1000),
+                            )
                         if not trade.get("accounting_complete", False):
                             risk.activate_kill_switch("Exchange commission accounting incomplete")
                             state.last_error = "commission_accounting_incomplete"
