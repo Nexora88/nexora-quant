@@ -5,7 +5,7 @@ from app.analytics.microstructure import (
 )
 from app.analytics.regime import MarketRegime, RegimeClassifier
 from app.dynamic_gate import DynamicKellyGate
-from app.strategy import PriceWindow, analyze_market, entry_signal_from_analysis
+from app.strategy import PriceWindow, analyze_market
 
 
 def test_weighted_obi_bid_pressure():
