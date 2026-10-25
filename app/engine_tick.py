@@ -83,6 +83,8 @@ async def handle_tick(
     except Exception:
         pass
     state.record_analysis(analysis)
+    now_ms = int(time.time() * 1000)
+    es.execution_costs.observe_mid(analysis.mid, now_ms)
     try:
         features.append(
             ts_ns=time.time_ns(), symbol=settings.symbol, mid=analysis.mid,
@@ -120,10 +122,37 @@ async def handle_tick(
                         reason=f"{reason}; sim_fill={fill.filled_quantity / fill.requested_quantity:.4f}",
                     )
                 else:
+                    if getattr(ex, "protective_order_list_id", None) is not None:
+                        if not ex.cancel_protective_oco():
+                            risk.activate_kill_switch("Could not safely cancel/reconcile protective OCO")
+                            state.last_error = "protective_oco_reconciliation_failed"
+                            persist()
+                            return confirmations, ticks
+                    if ex.base_quantity <= 0:
+                        # An exchange-side OCO may have executed while the bot was
+                        # disconnected. Do not invent a local fill; stop for reconciliation.
+                        risk.activate_kill_switch("Position changed on exchange; reconcile fills")
+                        state.last_error = "exchange_position_changed_requires_reconciliation"
+                        persist()
+                        return confirmations, ticks
                     trade = ex.sell_quantity(
-                        quantity=ex.base_quantity, price=bid, reason=f"{reason}; live_market_sell",
+                        quantity=ex.base_quantity, price=bid,
+                        reason=f"{reason}; live_market_sell", decision_mid=analysis.mid,
                     )
                 if trade:
+                    if not trade.get("accounting_complete", True):
+                        risk.activate_kill_switch("Exchange commission accounting incomplete")
+                        state.last_error = "commission_accounting_incomplete"
+                    if (
+                        mode == "live" and trade.get("decision_mid")
+                        and trade.get("execution_latency_measured", False)
+                    ):
+                        es.execution_costs.record_fill(
+                            side=trade["side"], decision_mid=float(trade["decision_mid"]),
+                            fill_price=float(trade["price"]),
+                            latency_ms=float(trade["execution_latency_ms"]),
+                            filled_at_ms=int(time.time() * 1000),
+                        )
                     store.append_trade(trade, event_key=_event_key(key, trade))
                     state.record_fill(trade)
                     pnl_v = float(trade.get("pnl_usdt", 0))
@@ -137,6 +166,8 @@ async def handle_tick(
             except Exception:
                 log.exception("Exit order failed (%s)", reason)
                 state.last_error = f"exit_failed:{reason}"
+                if getattr(ex, "order_state_uncertain", False):
+                    risk.activate_kill_switch("Exchange order outcome uncertain")
             persist()
             return confirmations, ticks
 
@@ -158,7 +189,21 @@ async def handle_tick(
         visible_liquidity_usdt=max(ask * max(ask_qty, 1e-9), 1.0),
         coefficient=getattr(settings, "impact_coefficient", 0.1),
     )
-    edge = score_edge(votes=_pre.votes, spread_bps=analysis.spread_bps, impact_bps=impact_est)
+    estimated_latency_ms = es.execution_costs.estimate_latency_ms() if mode == "live" else None
+    calibrated_latency_cost = (
+        es.execution_costs.estimate_cost_bps(latency_ms=estimated_latency_ms)
+        if mode == "live" and estimated_latency_ms is not None else None
+    )
+    edge = score_edge(
+        votes=_pre.votes,
+        spread_bps=analysis.spread_bps,
+        impact_bps=2.0 * impact_est,
+        fee_bps=2.0 * settings.fee_rate * 10_000,
+        # For live mode, use only empirically observed execution/adverse-selection
+        # cost. The decision gate below blocks entries until the model is calibrated.
+        latency_bps=calibrated_latency_cost or 0.0,
+    )
+    execution_costs_calibrated = mode != "live" or calibrated_latency_cost is not None
     adv = adverse_filter.check(intend_long=True)
     whale_block = whale.side == "ask" and whale.strength >= 0.5
     adverse_reasons = list(adv.reasons)
@@ -169,7 +214,8 @@ async def handle_tick(
         kill_switch=bool(risk.kill_switch), kill_reason=risk.kill_switch_reason,
         kelly_fraction=kd_preview.fraction, suggested_notional=kd_preview.notional_usdt,
         entry_min_score=settings.entry_min_score,
-        edge_tradeable=edge.tradeable, edge_notes=edge.notes,
+        edge_tradeable=edge.tradeable and execution_costs_calibrated,
+        edge_notes=edge.notes + ([] if execution_costs_calibrated else ["execution_cost_uncalibrated"]),
         adverse_toxic=adv.toxic or whale_block, adverse_reasons=adverse_reasons,
     )
     state.record_decision(decision)
@@ -185,6 +231,8 @@ async def handle_tick(
                 free_cash = ex.cash_usdt
             except Exception:
                 log.exception("Balance sync failed")
+                risk.activate_kill_switch("Exchange balance sync failed")
+                state.last_error = "exchange_balance_sync_failed"
         kd = kelly.size(free_usdt=free_cash, fee_rate=settings.fee_rate)
         sizing_n = kd.notional_usdt if kd.notional_usdt > 0 else size_from_free_cash(
             free_usdt=free_cash, allocation_fraction=0.8, fee_rate=settings.fee_rate,
@@ -213,12 +261,32 @@ async def handle_tick(
                         trade = ex.buy(
                             notional_usdt=sizing_n, price=ask,
                             reason=f"{signal.reason}; score={analysis.score:.2f}; live_buy",
+                            decision_mid=analysis.mid,
                         )
+                        if trade.get("execution_latency_measured", False):
+                            es.execution_costs.record_fill(
+                                side=trade["side"], decision_mid=float(trade["decision_mid"]),
+                                fill_price=float(trade["price"]),
+                                latency_ms=float(trade["execution_latency_ms"]),
+                                filled_at_ms=int(time.time() * 1000),
+                            )
+                        if not trade.get("accounting_complete", False):
+                            risk.activate_kill_switch("Exchange commission accounting incomplete")
+                            state.last_error = "commission_accounting_incomplete"
+                        if not ex.ensure_protective_oco(
+                            current_price=ask,
+                            take_profit_pct=settings.take_profit_pct,
+                            stop_loss_pct=settings.stop_loss_pct,
+                        ):
+                            risk.activate_kill_switch("Exchange-hosted TP/SL OCO unavailable")
+                            state.last_error = "protective_oco_install_failed"
                         store.append_trade(trade, event_key=_event_key(key, trade))
                         state.record_fill(trade)
                 except Exception:
                     log.exception("Entry order failed")
                     state.last_error = "entry_failed"
+                    if getattr(ex, "order_state_uncertain", False):
+                        risk.activate_kill_switch("Exchange order outcome uncertain")
                 confirmations = 0
     persist()
     return confirmations, ticks

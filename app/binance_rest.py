@@ -152,6 +152,56 @@ class BinanceRestClient:
         )
         return _parse_order(raw)
 
+    def get_order_by_client_id(self, symbol: str, client_order_id: str) -> OrderResult:
+        raw = self._request(
+            "GET", "/api/v3/order",
+            {"symbol": symbol.upper(), "origClientOrderId": client_order_id}, signed=True,
+        )
+        return _parse_order(raw)
+
+    def order_trades(self, symbol: str, order_id: int) -> list[dict[str, Any]]:
+        """Return exchange trade fills including the actual commission asset."""
+        raw = self._request(
+            "GET", "/api/v3/myTrades",
+            {"symbol": symbol.upper(), "orderId": order_id, "limit": 1000}, signed=True,
+        )
+        if not isinstance(raw, list):
+            raise RuntimeError("Unexpected myTrades response")
+        return raw
+
+    def open_orders(self, symbol: str) -> list[dict[str, Any]]:
+        raw = self._request(
+            "GET", "/api/v3/openOrders", {"symbol": symbol.upper()}, signed=True,
+        )
+        if not isinstance(raw, list):
+            raise RuntimeError("Unexpected openOrders response")
+        return raw
+
+    def cancel_order(
+        self, *, symbol: str, order_id: int | None = None,
+        client_order_id: str | None = None,
+    ) -> dict[str, Any]:
+        if order_id is None and not client_order_id:
+            raise ValueError("order_id or client_order_id is required")
+        params: dict[str, Any] = {"symbol": symbol.upper()}
+        if order_id is not None:
+            params["orderId"] = order_id
+        if client_order_id:
+            params["origClientOrderId"] = client_order_id
+        return self._request("DELETE", "/api/v3/order", params, signed=True)
+
+    def open_order_lists(self) -> list[dict[str, Any]]:
+        raw = self._request("GET", "/api/v3/openOrderList", signed=True)
+        if not isinstance(raw, list):
+            raise RuntimeError("Unexpected openOrderList response")
+        return raw
+
+    def cancel_order_list(self, *, symbol: str, order_list_id: int) -> dict[str, Any]:
+        return self._request(
+            "DELETE", "/api/v3/orderList",
+            {"symbol": symbol.upper(), "orderListId": order_list_id}, signed=True,
+        )
+
     def place_oco_order(
         self,
         *,
