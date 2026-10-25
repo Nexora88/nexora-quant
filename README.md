@@ -77,7 +77,7 @@ Strategy modules produce intents only. They must not import exchange order clien
 
 ## Configuration
 
-Copy `.env.example` to `.env`. Settings are validated at startup. Never put real credentials in the repository. The app deliberately rejects any mode other than `paper`.
+Copy `.env.example` to `.env`. Settings are validated at startup. Never put real credentials in the repository. The app deliberately rejects any mode other than `paper`. New research helpers in this branch provide capped free-cash sizing, a SQLite paper ledger, deterministic execution-friction simulation, and sequence-aware depth-book primitives. These are library components; they are not yet wired into the running engine or the dashboard.
 
 ## Risk and safety defaults
 
@@ -92,7 +92,7 @@ Copy `.env.example` to `.env`. Settings are validated at startup. Never put real
 
 - The `bookTicker` stream supplies best bid/ask, not a full depth book. This is not a synchronized order-book depth implementation.
 - The initial strategy is an educational top-of-book imbalance experiment, not a validated trading strategy.
-- Persistence/restart recovery, exchange-depth snapshot/diff synchronization, realistic partial fills, slippage/latency models, and multi-user authentication are planned but not yet complete. The included dashboard is an initial read-only monitor, not a full trading workstation.
+- The new SQLite ledger, execution simulator, and depth-book synchronizer are standalone research components with unit tests; runtime integration, REST snapshot fetching/buffer replay, automatic TP/SL exits, and restart recovery of the live engine are not yet complete. Multi-user authentication is also absent. The included dashboard is an initial read-only monitor, not a full trading workstation.
 - CI and local tests are quality checks, not proof of profitability or production safety.
 
 ## Development
