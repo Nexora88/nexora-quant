@@ -247,8 +247,8 @@ class LiveExecutor:
                 self.order_lists_reconciled = True
                 return True
             reports = order_list.get("orderReports")
-            if not isinstance(reports, list) or not reports:
-                raise RuntimeError("OCO history has no child order reports")
+            if not isinstance(reports, list) or len(reports) != 2:
+                raise RuntimeError("OCO history must contain both child order reports")
             recovered: list[dict[str, Any]] = []
             for report in reports:
                 order_id = int(report.get("orderId", 0))
