@@ -72,9 +72,9 @@ class PaperStore:
         with self._lock:
             if before_id is None:
                 rows = self._db.execute(
-                "SELECT id, event_key, trade_json, created_at FROM paper_trades ORDER BY id DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
+                    "SELECT id, event_key, trade_json, created_at FROM paper_trades ORDER BY id DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
             else:
                 rows = self._db.execute(
                     """SELECT id, event_key, trade_json, created_at FROM paper_trades
