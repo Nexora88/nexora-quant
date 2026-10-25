@@ -107,4 +107,4 @@ class ExecutionSimulator:
 
     def fills(self, *, side: str, reference_price: float, quantity: float, **kwargs) -> SimulatedFill:
         """Alias for fill() kept for engine call sites."""
-        return ExecutionSimulator.fill(self, side=side, reference_price=reference_price, quantity=quantity, **kwargs)
+        return getattr(self, "fill")(side=side, reference_price=reference_price, quantity=quantity, **kwargs)
