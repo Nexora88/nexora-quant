@@ -55,6 +55,10 @@ def build_decision(
     kelly_fraction: float | None = None,
     suggested_notional: float | None = None,
     entry_min_score: float = 0.55,
+    edge_tradeable: bool | None = None,
+    edge_notes: list[str] | None = None,
+    adverse_toxic: bool = False,
+    adverse_reasons: list[str] | None = None,
 ) -> DecisionRecord:
     votes: list[FeatureVote] = []
     blockers: list[str] = []
@@ -90,11 +94,6 @@ def build_decision(
             direction = "long" if "bid_walls" in r else "short" if "ask_walls" in r else "flat"
             votes.append(_vote("liquidity_walls", direction, 0.18, None, r))
 
-    if analysis.target_bias == "approach_buy":
-        votes.append(_vote("target_price", "long", 0.12, analysis.distance_to_target_pct, "below target"))
-    elif analysis.target_bias == "approach_sell":
-        votes.append(_vote("target_price", "short", 0.12, analysis.distance_to_target_pct, "above target"))
-
     long_w = sum(v.weight for v in votes if v.direction == "long")
     short_w = sum(v.weight for v in votes if v.direction == "short")
     net = long_w - short_w
@@ -110,6 +109,14 @@ def build_decision(
         blockers.append(f"sustained:{sustained.reason}")
     if analysis.score < entry_min_score and not in_position:
         blockers.append(f"score_below_{entry_min_score}")
+    if edge_tradeable is False:
+        blockers.append("edge_quality_insufficient")
+        if edge_notes:
+            rationale.extend(edge_notes[:3])
+    if adverse_toxic:
+        blockers.append("adverse_selection")
+        if adverse_reasons:
+            rationale.extend(adverse_reasons[:3])
 
     if in_position:
         action = "hold"
@@ -119,31 +126,31 @@ def build_decision(
         rationale.extend(blockers)
     elif analysis.score >= entry_min_score and net > 0.15:
         action = "enter_long"
-        rationale.append(f"score={analysis.score:.2f} net_vote={net:.2f} conf={conf:.2f}")
-        rationale.extend(v.note for v in votes if v.direction == "long")
+        rationale.append(f"score={analysis.score:.2f} net_vote={net:.2f}")
+        rationale.extend(analysis.reasons[:4])
     else:
         action = "block"
-        rationale.append(f"insufficient_edge score={analysis.score:.2f} net={net:.2f}")
-
-    sus_dict = None
-    if sustained is not None:
-        sus_dict = {
-            "ready": sustained.ready,
-            "hold_seconds": sustained.hold_seconds,
-            "consecutive": sustained.consecutive,
-            "avg_score": sustained.avg_score,
-            "reason": sustained.reason,
-        }
+        rationale.append("insufficient_edge")
 
     return DecisionRecord(
         action=action,
-        confidence=round(conf, 4),
+        confidence=round(conf, 3),
         regime=analysis.regime,
         score=analysis.score,
         votes=votes,
         blockers=blockers,
-        rationale=rationale[:12],
-        sustained=sus_dict,
+        rationale=rationale[:8],
+        sustained=(
+            {
+                "ready": sustained.ready,
+                "hold_seconds": round(sustained.hold_seconds, 2),
+                "consecutive": sustained.consecutive,
+                "avg_score": round(sustained.avg_score, 3),
+                "reason": sustained.reason,
+            }
+            if sustained
+            else None
+        ),
         kelly_fraction=kelly_fraction,
         suggested_notional_usdt=suggested_notional,
     )
