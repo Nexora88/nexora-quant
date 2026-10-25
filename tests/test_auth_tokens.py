@@ -1,5 +1,3 @@
-import os
-
 from app.auth import issue_token, verify_bearer
 
 
