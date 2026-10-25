@@ -256,7 +256,6 @@ class LiveExecutor:
     ) -> OrderResult:
         """Use a stable client ID and fail closed if an order's outcome is unknown."""
         with self._order_lock:
-            started = time.perf_counter()
             if self.order_state_uncertain:
                 raise RuntimeError(
                     "Order state is uncertain; reconcile exchange orders before new orders"
@@ -273,14 +272,18 @@ class LiveExecutor:
                     raise
             else:
                 self._order_sequence += 1
-                self._last_order_latency_ms = (time.perf_counter() - started) * 1000.0
+                self._last_order_latency_ms = 0.0
+                self._last_order_latency_measured = False
                 return existing
+            order_started = time.perf_counter()
             try:
                 result = self.client.place_market_order(
                     symbol=self.symbol, side=side, quantity=quantity,
                     quote_order_qty=quote_order_qty, client_order_id=client_id,
                 )
             except Exception:
+                self._last_order_latency_ms = (time.perf_counter() - order_started) * 1000.0
+                self._last_order_latency_measured = False
                 try:
                     result = self.client.get_order_by_client_id(self.symbol, client_id)
                 except Exception:
@@ -292,7 +295,8 @@ class LiveExecutor:
                     )
                     raise
             self._order_sequence += 1
-            self._last_order_latency_ms = (time.perf_counter() - started) * 1000.0
+            self._last_order_latency_ms = (time.perf_counter() - order_started) * 1000.0
+            self._last_order_latency_measured = True
             return result
 
     def reconcile_uncertain_order(self) -> bool:
@@ -387,6 +391,7 @@ class LiveExecutor:
             "testnet": self.client.testnet,
             "decision_mid": decision_mid,
             "execution_latency_ms": getattr(self, "_last_order_latency_ms", 0.0),
+            "execution_latency_measured": getattr(self, "_last_order_latency_measured", False),
         }
         if side == "buy":
             net_base = max(0.0, executed_qty - base_fee)
@@ -439,6 +444,7 @@ class LiveExecutor:
             "trades": self.trades[-100:],
             "order_sequence": self._order_sequence,
             "last_order_latency_ms": getattr(self, "_last_order_latency_ms", 0.0),
+            "last_order_latency_measured": getattr(self, "_last_order_latency_measured", False),
             "order_state_uncertain": self.order_state_uncertain,
             "unresolved_client_order_id": self.unresolved_client_order_id,
             "locked_base_quantity": self.locked_base_quantity,
