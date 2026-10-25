@@ -25,5 +25,5 @@ Kalıcı veri: `nexora-data` volume (`paper.sqlite3`, history).
 ## Güvenlik
 
 - Mainnet için `LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY` ve `BINANCE_TESTNET=false`.
-- API key’lerde withdraw kapalı olsun.
-- Dashboard’u internete açmadan önce token kullan.
+- API key'lerde withdraw kapalı olsun.
+- Dashboard'u internete açmadan önce token kullan.
