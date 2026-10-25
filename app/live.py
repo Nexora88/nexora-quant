@@ -123,7 +123,10 @@ class LiveExecutor:
         mn = filters.get("NOTIONAL") or filters.get("MIN_NOTIONAL") or {}
         return float(mn.get("minNotional") or mn.get("notional") or 5.0)
 
-    def buy(self, *, notional_usdt: float, price: float, reason: str) -> dict:
+    def buy(
+        self, *, notional_usdt: float, price: float, reason: str,
+        decision_mid: float | None = None,
+    ) -> dict:
         if notional_usdt <= 0 or price <= 0:
             raise ValueError("Price and notional must be positive")
         if notional_usdt < self._min_notional():
@@ -131,9 +134,15 @@ class LiveExecutor:
         result = self._place_market_order_once(
             side="BUY", reason=reason, quote_order_qty=notional_usdt,
         )
-        return self._apply_fill(result, reason=reason, fallback_price=price)
+        return self._apply_fill(
+            result, reason=reason, fallback_price=price,
+            decision_mid=decision_mid if decision_mid is not None else price,
+        )
 
-    def sell_quantity(self, *, quantity: float, price: float, reason: str) -> dict | None:
+    def sell_quantity(
+        self, *, quantity: float, price: float, reason: str,
+        decision_mid: float | None = None,
+    ) -> dict | None:
         if price <= 0 or quantity <= 0:
             raise ValueError("Price and quantity must be positive")
         if self.base_quantity <= 0:
@@ -145,7 +154,10 @@ class LiveExecutor:
         result = self._place_market_order_once(
             side="SELL", reason=reason, quantity=qty,
         )
-        return self._apply_fill(result, reason=reason, fallback_price=price)
+        return self._apply_fill(
+            result, reason=reason, fallback_price=price,
+            decision_mid=decision_mid if decision_mid is not None else price,
+        )
 
     def _place_market_order_once(
         self, *, side: str, reason: str,
@@ -153,6 +165,7 @@ class LiveExecutor:
     ) -> OrderResult:
         """Use a stable client ID and fail closed if an order's outcome is unknown."""
         with self._order_lock:
+            started = time.perf_counter()
             if self.order_state_uncertain:
                 raise RuntimeError(
                     "Order state is uncertain; reconcile exchange orders before new orders"
@@ -169,6 +182,7 @@ class LiveExecutor:
                     raise
             else:
                 self._order_sequence += 1
+                self._last_order_latency_ms = (time.perf_counter() - started) * 1000.0
                 return existing
             try:
                 result = self.client.place_market_order(
@@ -187,6 +201,7 @@ class LiveExecutor:
                     )
                     raise
             self._order_sequence += 1
+            self._last_order_latency_ms = (time.perf_counter() - started) * 1000.0
             return result
 
     def reconcile_uncertain_order(self) -> bool:
@@ -213,7 +228,10 @@ class LiveExecutor:
     def sell_all(self, *, price: float, reason: str = "manual_live_exit") -> dict | None:
         return self.sell_quantity(quantity=self.base_quantity, price=price, reason=reason)
 
-    def _apply_fill(self, result: OrderResult, *, reason: str, fallback_price: float) -> dict:
+    def _apply_fill(
+        self, result: OrderResult, *, reason: str, fallback_price: float,
+        decision_mid: float,
+    ) -> dict:
         executed_qty = float(result.executed_qty)
         quote = float(result.cummulative_quote_qty)
         if executed_qty <= 0:
@@ -252,6 +270,8 @@ class LiveExecutor:
             "client_order_id": result.client_order_id,
             "status": result.status,
             "testnet": self.client.testnet,
+            "decision_mid": decision_mid,
+            "execution_latency_ms": getattr(self, "_last_order_latency_ms", 0.0),
         }
         if side == "buy":
             old_cost = self.base_quantity * self.average_entry_price
@@ -297,6 +317,7 @@ class LiveExecutor:
             "trade_count": len(self.trades),
             "trades": self.trades[-100:],
             "order_sequence": self._order_sequence,
+            "last_order_latency_ms": getattr(self, "_last_order_latency_ms", 0.0),
             "order_state_uncertain": self.order_state_uncertain,
             "unresolved_client_order_id": self.unresolved_client_order_id,
             "locked_base_quantity": self.locked_base_quantity,
