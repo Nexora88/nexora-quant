@@ -3,7 +3,7 @@ import math
 import pytest
 
 from app.backtesting import (
-    BacktestConfig, Candle, backtest, compare_strategies, market_regime, walk_forward,
+    BacktestConfig, Candle, backtest, compare_strategies, market_regime, rolling_walk_forward, walk_forward,
 )
 
 
@@ -59,3 +59,28 @@ def test_validation_rejects_bad_candles_and_config():
         BacktestConfig(fee_rate=-1).validate()
     with pytest.raises(ValueError):
         market_regime([1, 2], 1, window=1)
+
+
+def test_rolling_walk_forward_reports_multiple_unseen_windows():
+    rows = candles_from_closes([100 + i * 0.1 + math.sin(i / 4) for i in range(180)])
+    candidates = [
+        {"strategy": "buy_and_hold", "params": {}},
+        {"strategy": "momentum", "params": {"lookback": 5}},
+        {"strategy": "sma_cross", "params": {"fast": 3, "slow": 10}},
+    ]
+    report = rolling_walk_forward(
+        rows, candidates, train_bars=80, test_bars=20, step_bars=20,
+        config=BacktestConfig(min_train_bars=50, fee_rate=0.001, slippage_bps=2),
+    )
+    assert report["window_count"] == 5
+    assert len(report["windows"]) == 5
+    assert 0 <= report["positive_test_window_fraction"] <= 1
+    assert report["worst_max_drawdown_pct"] >= 0
+    assert "not a guarantee" in report["warning"]
+
+
+def test_rolling_walk_forward_rejects_invalid_window_sizes():
+    rows = candles_from_closes([100 + i for i in range(40)])
+    with pytest.raises(ValueError):
+        rolling_walk_forward(rows, [{"strategy": "buy_and_hold", "params": {}}],
+                             train_bars=30, test_bars=20)
