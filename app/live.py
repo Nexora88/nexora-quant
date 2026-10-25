@@ -208,6 +208,8 @@ class LiveExecutor:
         Repeated calls are idempotent by exchange trade ID.
         """
         list_id = self.protective_order_list_id
+        if self.order_state_uncertain and self.unresolved_client_order_id:
+            return False
         if list_id is None:
             return self.order_lists_reconciled
         try:
@@ -288,8 +290,6 @@ class LiveExecutor:
                 self.processed_exchange_trade_ids.add(trade_id)
             self.protective_order_list_id = None
             self.order_lists_reconciled = True
-            self.order_state_uncertain = False
-            self.unresolved_client_order_id = None
             return True
         except Exception:
             self.order_state_uncertain = True
