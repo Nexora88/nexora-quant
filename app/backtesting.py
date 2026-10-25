@@ -10,9 +10,8 @@ import csv
 import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from statistics import mean, pstdev
+from statistics import mean, median, pstdev
 from typing import Iterable, Sequence
-
 
 @dataclass(frozen=True, slots=True)
 class Candle:
