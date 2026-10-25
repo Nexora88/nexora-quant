@@ -124,7 +124,9 @@ def strategy_signal(strategy: str, closes: Sequence[float], index: int, params: 
 
 def market_regime(closes: Sequence[float], index: int, window: int = 20) -> str:
     """Coarse descriptive regime: uptrend/downtrend/sideways plus high/normal vol."""
-    if index < window or window < 2:
+    if window < 2:
+        raise ValueError("window must be >= 2")
+    if index < window:
         return "unknown"
     sample = closes[index - window : index + 1]
     trend = sample[-1] / sample[0] - 1
@@ -193,6 +195,7 @@ def backtest(candles: Sequence[Candle], strategy: str, params: dict[str, int] | 
             equity -= cost
             costs_total += cost
             trades += 1
+        position = target
         period_return = rows[i].close / rows[i - 1].close - 1
         pnl_return = period_return * position
         equity *= max(0.0, 1 + pnl_return)
