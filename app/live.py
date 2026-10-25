@@ -53,6 +53,7 @@ class LiveExecutor:
         self.open_orders_snapshot: list[dict[str, Any]] = []
         self.open_order_lists_snapshot: list[dict[str, Any]] = []
         self.protective_order_list_id: int | None = None
+        self.order_lists_reconciled = False
 
     def sync_balances(self) -> None:
         """Reconcile local balances and open orders against the exchange account."""
@@ -68,6 +69,7 @@ class LiveExecutor:
         self.open_orders_snapshot = self.client.open_orders(self.symbol)
         try:
             self.open_order_lists_snapshot = self.client.open_order_lists()
+            self.order_lists_reconciled = True
             active_lists = [
                 item for item in self.open_order_lists_snapshot
                 if str(item.get("symbol", "")).upper() == self.symbol
@@ -78,8 +80,9 @@ class LiveExecutor:
             )
         except Exception:
             self.open_order_lists_snapshot = []
-            self.protective_order_list_id = None
-            log.warning("Could not reconcile exchange order lists", exc_info=True)
+            self.order_lists_reconciled = False
+            log.error("Could not reconcile exchange order lists; live actions blocked", exc_info=True)
+            raise RuntimeError("Exchange order-list state could not be reconciled")
         if self.starting_cash_usdt <= 0:
             self.starting_cash_usdt = self.cash_usdt + self.locked_quote_balance
         log.info(
@@ -185,6 +188,8 @@ class LiveExecutor:
 
     def cancel_protective_oco(self) -> bool:
         """Cancel the protective order list and reconcile balances before market exit."""
+        if not self.order_lists_reconciled:
+            return False
         if self.protective_order_list_id is None:
             return True
         order_list_id = self.protective_order_list_id
@@ -439,6 +444,7 @@ class LiveExecutor:
             "open_orders_count": len(self.open_orders_snapshot),
             "open_order_lists_count": len(self.open_order_lists_snapshot),
             "protective_order_list_id": self.protective_order_list_id,
+            "order_lists_reconciled": self.order_lists_reconciled,
             "mode": "live",
             "testnet": self.client.testnet,
         }
