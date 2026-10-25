@@ -8,13 +8,15 @@ Nexora Quant is an early-stage research project for learning market microstructu
 
 ## Current runtime
 
-- Connects to the public Binance Spot depth diff stream.
-- Buffers depth events while fetching the REST snapshot, bridges the snapshot update ID, rejects sequence gaps, and reconnects/re-synchronizes after gaps.
-- Evaluates the existing top-level bid/ask imbalance strategy only while the depth book is synchronized.
-- Applies the central risk gate and capped free-cash sizing for simulated entries.
-- Applies configurable paper take-profit and stop-loss exits.
-- Persists account and risk state to SQLite, restores them on restart, and writes an idempotent paper trade ledger.
-- Exposes the existing local read-only dashboard/API. Keep it bound to localhost unless authentication and deployment hardening have been added.
+- Connects to the public Binance Spot depth diff stream, buffers updates during snapshot acquisition, bridges update IDs, rejects sequence gaps, and resynchronizes after gaps.
+- Evaluates the top-of-book bid/ask imbalance only when depth is synchronized.
+- Requires a configurable number of consecutive buy signals to reduce one-tick reactions.
+- Applies capped free-cash sizing and a centralized pre-trade risk gate.
+- Integrates deterministic-configurable simulated adverse slippage, latency, and partial fills into paper entries and exits.
+- Supports partial paper exits while preserving the remaining position's cost basis.
+- Evaluates paper TP/SL on synchronized best-bid updates while the process is running.
+- Persists account and risk state in SQLite, restores on restart, and writes an idempotent paper trade ledger.
+- Rolls the daily realized-PnL counter at UTC date change. Consecutive-loss and other non-daily kill switches remain active across the rollover.
 
 ## Quick start
 
@@ -49,20 +51,27 @@ Run the read-only API: `uvicorn app.api:app --host 127.0.0.1 --port 8000`
 |---|---:|---|
 | `SYMBOL` | `btcusdt` | Binance Spot market |
 | `TRADING_MODE` | `paper` | Only supported mode |
-| `STARTING_CASH_USDT` | `1000` | Initial paper cash, used only if no state exists |
-| `ORDER_SIZE_USDT` | `25` | Maximum configured paper entry notional |
+| `STARTING_CASH_USDT` | `1000` | Initial paper cash if no saved state exists |
+| `ORDER_SIZE_USDT` | `25` | Configured maximum paper entry notional |
 | `MAX_ORDER_SIZE_USDT` | `50` | Risk gate cap |
-| `TAKE_PROFIT_PCT` | `1.0` | Exit threshold above average entry, percent |
-| `STOP_LOSS_PCT` | `0.5` | Exit threshold below average entry, percent |
+| `SIGNAL_CONFIRMATIONS` | `3` | Consecutive qualifying book updates required before entry |
+| `SIMULATED_SLIPPAGE_BPS` | `2` | Mean adverse simulated slippage |
+| `SIMULATED_LATENCY_MS` | `100` | Mean simulated execution delay |
+| `SIMULATED_PARTIAL_FILL_PROBABILITY` | `0.15` | Probability of a partial simulated fill |
+| `SIMULATION_SEED` | `0` | Reproducible pseudo-random simulation seed |
+| `TAKE_PROFIT_PCT` | `1.0` | Paper exit threshold above average entry, percent |
+| `STOP_LOSS_PCT` | `0.5` | Paper exit threshold below average entry, percent |
 | `PAPER_DB_PATH` | `data/paper.sqlite3` | SQLite state and ledger path |
 
-TP/SL thresholds are checked against the current best bid on each synchronized depth update; they are simulated market exits, not exchange-hosted orders. If the process is offline, no exit can be triggered until it is running again.
+The simulator uses a configurable random seed to make test runs reproducible. Simulated latency delays the paper execution path; it is not a full exchange queue-position or market-impact model.
+
+TP/SL thresholds are checked against the current best bid on synchronized depth updates. They are simulated exits, not exchange-hosted orders; when the process is offline, no exit can trigger until it is running again. If a partial exit occurs, the remaining position continues to be monitored.
 
 ## Safety and limitations
 
 - No live order adapter is implemented; actual order submission remains disabled. Do not add API keys to source control or enable real-money trading based only on passing tests.
-- This strategy is an educational experiment, not validated or guaranteed to be profitable.
-- The synchronized book is used for market data and top-level imbalance; the execution simulator's slippage/partial-fill model is not yet wired into the runtime.
+- This strategy is an educational experiment, not validated or guaranteed to be profitable. Signal confirmation can reduce noise but can also delay entries; it does not establish an edge.
+- Top-of-book imbalance is a very simple research signal. It does not yet include a validated backtest, walk-forward testing, out-of-sample evaluation, or market-regime detection.
 - Persisted paper state is local to the configured SQLite file. Protect and back up that file; deleting it resets the paper account.
-- Daily simulated loss values persist across restarts; automatic calendar-day rollover is not implemented yet.
+- UTC day rollover resets daily realized PnL only; consecutive-loss and non-daily safety switches remain active.
 - CI and unit tests are quality checks, not proof of exchange correctness, production readiness, or profitability.
