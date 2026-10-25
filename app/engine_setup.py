@@ -6,33 +6,21 @@ import logging
 import time
 from datetime import datetime, timezone
 
-from app.binance_depth import stream_synchronized_depth
 from app.config import settings
-from app.events import BookTicker
 from app.paper import PaperExecutor
-from app.portfolio import size_from_free_cash
 from app.risk import RiskManager
-from app.market_history import MarketHistoryWriter
 from app.simulation import ExecutionSimulator
 from app.state import RuntimeState
-from app.storage import PaperStore
-from app.ts_store import FeatureTimeSeriesStore
 from app.analytics.microstructure import OrnsteinUhlenbeckTracker
 from app.analytics.regime import RegimeClassifier
 from app.dynamic_gate import DynamicKellyGate
 from app.shadow import ShadowBook
 from app.analytics.walls import WallTracker
 from app.analytics.sustained import SustainedSignalGate
-from app.decision import build_decision
-from app.intelligence.edge import score_edge
 from app.intelligence.adverse import AdverseSelectionFilter
-from app.simulation import market_impact_bps
-from app.strategy import (
-    PriceWindow,
-    analyze_market,
-    entry_signal_from_analysis,
-    exit_reason,
-)
+from app.intelligence.whale import WhaleTracker
+from app.intelligence.noise import NoiseFilter
+from app.strategy import PriceWindow
 
 log = logging.getLogger(__name__)
 state = RuntimeState()
@@ -64,6 +52,8 @@ kelly = DynamicKellyGate(
 shadows = ShadowBook.default_book(settings.starting_cash_usdt)
 wall_tracker = WallTracker(levels=15, multiple=3.0)
 adverse_filter = AdverseSelectionFilter()
+whale_tracker = WhaleTracker(multiple=4.0, persist_ticks=5)
+noise_filter = NoiseFilter(window=12, min_stability=0.55)
 sustained = SustainedSignalGate(
     min_confirmations=max(settings.signal_confirmations, 4),
     min_hold_seconds=2.0,
