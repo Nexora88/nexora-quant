@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import threading
 import time
 from datetime import datetime, timezone
@@ -51,6 +52,7 @@ class LiveExecutor:
         self.locked_quote_balance = 0.0
         self.open_orders_snapshot: list[dict[str, Any]] = []
         self.open_order_lists_snapshot: list[dict[str, Any]] = []
+        self.protective_order_list_id: int | None = None
 
     def sync_balances(self) -> None:
         """Reconcile local balances and open orders against the exchange account."""
@@ -66,8 +68,17 @@ class LiveExecutor:
         self.open_orders_snapshot = self.client.open_orders(self.symbol)
         try:
             self.open_order_lists_snapshot = self.client.open_order_lists()
+            active_lists = [
+                item for item in self.open_order_lists_snapshot
+                if str(item.get("symbol", "")).upper() == self.symbol
+                and item.get("listStatusType") in ("EXEC_STARTED", "EXECUTING")
+            ]
+            self.protective_order_list_id = (
+                int(active_lists[-1]["orderListId"]) if active_lists else None
+            )
         except Exception:
             self.open_order_lists_snapshot = []
+            self.protective_order_list_id = None
             log.warning("Could not reconcile exchange order lists", exc_info=True)
         if self.starting_cash_usdt <= 0:
             self.starting_cash_usdt = self.cash_usdt + self.locked_quote_balance
@@ -118,6 +129,78 @@ class LiveExecutor:
         precision = max(0, len(f"{step:.12f}".rstrip("0").split(".")[-1]) if "." in f"{step:.12f}" else 0)
         steps = int(quantity / step)
         return round(steps * step, precision)
+
+    def _round_price(self, price: float, *, round_up: bool) -> float:
+        filters = self._load_filters()
+        tick = float((filters.get("PRICE_FILTER") or {}).get("tickSize") or 0.00000001)
+        if tick <= 0:
+            return price
+        units = price / tick
+        rounded = math.ceil(units - 1e-10) if round_up else math.floor(units + 1e-10)
+        precision = max(0, len(f"{tick:.12f}".rstrip("0").split(".")[-1]) if "." in f"{tick:.12f}" else 0)
+        return round(rounded * tick, precision)
+
+    def ensure_protective_oco(
+        self, *, current_price: float, take_profit_pct: float, stop_loss_pct: float,
+    ) -> bool:
+        """Place exchange-hosted sell OCO; protection remains on exchange if app stops."""
+        if current_price <= 0 or not 0 < take_profit_pct < 100 or not 0 < stop_loss_pct < 100:
+            return False
+        if self.order_state_uncertain:
+            return False
+        if self.protective_order_list_id is not None:
+            return True
+        try:
+            available = self._round_step(self.client.free_balance(self.base_asset))
+            if available <= 0:
+                return False
+            take_profit = self._round_price(
+                self.average_entry_price * (1 + take_profit_pct / 100), round_up=True,
+            )
+            stop_price = self._round_price(
+                self.average_entry_price * (1 - stop_loss_pct / 100), round_up=False,
+            )
+            stop_limit = self._round_price(stop_price * 0.999, round_up=False)
+            if take_profit <= current_price or stop_price >= current_price or stop_limit <= 0:
+                log.error("OCO prices invalid relative to current market; protection not installed")
+                return False
+            response = self.client.place_oco_order(
+                symbol=self.symbol, side="SELL", quantity=available,
+                take_profit_price=take_profit, stop_price=stop_price,
+                stop_limit_price=stop_limit,
+                client_order_id=f"nqoco{self._order_sequence:x}"[:36],
+            )
+            self.protective_order_list_id = int(response.get("orderListId", 0)) or None
+            self.open_order_lists_snapshot.append(response)
+            if self.protective_order_list_id is None:
+                return False
+            log.info(
+                "Exchange OCO installed listId=%s qty=%.8f TP=%.8f stop=%.8f",
+                self.protective_order_list_id, available, take_profit, stop_price,
+            )
+            return True
+        except Exception:
+            log.exception("Failed to install exchange-hosted TP/SL OCO")
+            return False
+
+    def cancel_protective_oco(self) -> bool:
+        """Cancel the protective order list and reconcile balances before market exit."""
+        if self.protective_order_list_id is None:
+            return True
+        order_list_id = self.protective_order_list_id
+        try:
+            self.client.cancel_order_list(symbol=self.symbol, order_list_id=order_list_id)
+        except Exception:
+            log.exception("Could not cancel protective OCO listId=%s", order_list_id)
+            try:
+                self.sync_balances()
+            except Exception:
+                return False
+            # If it remains open, never submit a competing market sell.
+            return self.protective_order_list_id is None
+        self.protective_order_list_id = None
+        self.sync_balances()
+        return True
 
     def _min_notional(self) -> float:
         filters = self._load_filters()
@@ -355,6 +438,7 @@ class LiveExecutor:
             "locked_quote_balance": self.locked_quote_balance,
             "open_orders_count": len(self.open_orders_snapshot),
             "open_order_lists_count": len(self.open_order_lists_snapshot),
+            "protective_order_list_id": self.protective_order_list_id,
             "mode": "live",
             "testnet": self.client.testnet,
         }
