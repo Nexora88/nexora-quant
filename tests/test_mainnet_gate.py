@@ -1,4 +1,4 @@
-"""Safety regression tests for the mainnet execution gate."""
+"""Safety regression tests for the explicit mainnet execution gate."""
 import os
 import subprocess
 import sys
@@ -24,7 +24,18 @@ def _import_config_with(**overrides: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_mainnet_live_is_blocked_even_with_confirmation() -> None:
+def test_mainnet_live_requires_explicit_confirmation() -> None:
+    result = _import_config_with(
+        TRADING_MODE="live",
+        BINANCE_TESTNET="false",
+        BINANCE_API_KEY="test-key",
+        BINANCE_API_SECRET="test-secret",
+    )
+    assert result.returncode != 0
+    assert "LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY" in result.stderr
+
+
+def test_mainnet_live_accepts_explicit_confirmation() -> None:
     result = _import_config_with(
         TRADING_MODE="live",
         BINANCE_TESTNET="false",
@@ -32,8 +43,7 @@ def test_mainnet_live_is_blocked_even_with_confirmation() -> None:
         BINANCE_API_SECRET="test-secret",
         LIVE_CONFIRM="I_UNDERSTAND_REAL_MONEY",
     )
-    assert result.returncode != 0
-    assert "Mainnet real-money trading is disabled" in result.stderr
+    assert result.returncode == 0, result.stderr
 
 
 def test_testnet_live_configuration_remains_available() -> None:
