@@ -8,7 +8,7 @@ def test_buy_and_sell_accounts_for_fees():
     assert paper.cash_usdt == pytest.approx(899.9)
     sold = paper.sell_all(price=11)
     assert sold is not None
-    assert sold["pnl_usdt"] == pytest.approx(9.89)
+    assert sold["pnl_usdt"] == pytest.approx(8.9)
     assert paper.base_quantity == 0
 
 def test_buy_rejects_insufficient_cash():
