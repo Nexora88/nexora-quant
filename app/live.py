@@ -4,7 +4,9 @@ Uses the paper-compatible trade dict shape so storage and risk accounting stay s
 """
 from __future__ import annotations
 
+import hashlib
 import logging
+import threading
 from datetime import datetime, timezone
 from typing import Any
 
@@ -40,12 +42,34 @@ class LiveExecutor:
         self.fees_paid_usdt = 0.0
         self.trades: list[dict[str, Any]] = []
         self._filters: dict[str, Any] | None = None
+        self._order_lock = threading.RLock()
+        self._order_sequence = 0
+        self.order_state_uncertain = False
+        self.unresolved_client_order_id: str | None = None
+        self.locked_base_quantity = 0.0
+        self.locked_quote_balance = 0.0
+        self.open_orders_snapshot: list[dict[str, Any]] = []
+        self.open_order_lists_snapshot: list[dict[str, Any]] = []
 
     def sync_balances(self) -> None:
-        self.cash_usdt = self.client.free_balance(self.quote_asset)
-        self.base_quantity = self.client.free_balance(self.base_asset)
+        """Reconcile local balances and open orders against the exchange account."""
+        account = self.client.account()
+        balances = {str(b.get("asset", "")).upper(): b for b in account.get("balances", [])}
+        quote = balances.get(self.quote_asset, {})
+        base = balances.get(self.base_asset, {})
+        self.cash_usdt = float(quote.get("free", 0))
+        self.locked_quote_balance = float(quote.get("locked", 0))
+        base_free = float(base.get("free", 0))
+        self.locked_base_quantity = float(base.get("locked", 0))
+        self.base_quantity = base_free + self.locked_base_quantity
+        self.open_orders_snapshot = self.client.open_orders(self.symbol)
+        try:
+            self.open_order_lists_snapshot = self.client.open_order_lists()
+        except Exception:
+            self.open_order_lists_snapshot = []
+            log.warning("Could not reconcile exchange order lists", exc_info=True)
         if self.starting_cash_usdt <= 0:
-            self.starting_cash_usdt = self.cash_usdt
+            self.starting_cash_usdt = self.cash_usdt + self.locked_quote_balance
         log.info(
             "Live balances synced: %s=%.8f %s=%.4f (testnet=%s)",
             self.base_asset,
@@ -72,6 +96,9 @@ class LiveExecutor:
         self.realized_pnl_usdt = values["realized_pnl_usdt"]
         self.fees_paid_usdt = values["fees_paid_usdt"]
         self.trades = list(snapshot.get("trades", []))
+        self._order_sequence = int(snapshot.get("order_sequence", 0))
+        self.order_state_uncertain = bool(snapshot.get("order_state_uncertain", False))
+        self.unresolved_client_order_id = snapshot.get("unresolved_client_order_id")
 
     def _load_filters(self) -> dict[str, Any]:
         if self._filters is not None:
@@ -101,10 +128,8 @@ class LiveExecutor:
             raise ValueError("Price and notional must be positive")
         if notional_usdt < self._min_notional():
             raise ValueError(f"Notional below exchange minimum ({self._min_notional()})")
-        result = self.client.place_market_order(
-            symbol=self.symbol,
-            side="BUY",
-            quote_order_qty=notional_usdt,
+        result = self._place_market_order_once(
+            side="BUY", reason=reason, quote_order_qty=notional_usdt,
         )
         return self._apply_fill(result, reason=reason, fallback_price=price)
 
@@ -117,12 +142,73 @@ class LiveExecutor:
         qty = self._round_step(qty)
         if qty <= 0:
             return None
-        result = self.client.place_market_order(
-            symbol=self.symbol,
-            side="SELL",
-            quantity=qty,
+        result = self._place_market_order_once(
+            side="SELL", reason=reason, quantity=qty,
         )
         return self._apply_fill(result, reason=reason, fallback_price=price)
+
+    def _place_market_order_once(
+        self, *, side: str, reason: str,
+        quantity: float | None = None, quote_order_qty: float | None = None,
+    ) -> OrderResult:
+        """Use a stable client ID and fail closed if an order's outcome is unknown."""
+        with self._order_lock:
+            if self.order_state_uncertain:
+                raise RuntimeError(
+                    "Order state is uncertain; reconcile exchange orders before new orders"
+                )
+            amount = quote_order_qty if quote_order_qty is not None else quantity
+            digest = hashlib.sha256(
+                f"{self.symbol}|{side}|{reason}|{amount:.12f}|{self._order_sequence}".encode()
+            ).hexdigest()[:18]
+            client_id = f"nq{self._order_sequence:x}{digest}"[:36]
+            try:
+                existing = self.client.get_order_by_client_id(self.symbol, client_id)
+            except Exception as exc:
+                if "-2013" not in str(exc) and "Order does not exist" not in str(exc):
+                    raise
+            else:
+                self._order_sequence += 1
+                return existing
+            try:
+                result = self.client.place_market_order(
+                    symbol=self.symbol, side=side, quantity=quantity,
+                    quote_order_qty=quote_order_qty, client_order_id=client_id,
+                )
+            except Exception:
+                try:
+                    result = self.client.get_order_by_client_id(self.symbol, client_id)
+                except Exception:
+                    self.order_state_uncertain = True
+                    self.unresolved_client_order_id = client_id
+                    log.exception(
+                        "Order submission outcome uncertain; blocking further orders (%s)",
+                        client_id,
+                    )
+                    raise
+            self._order_sequence += 1
+            return result
+
+    def reconcile_uncertain_order(self) -> bool:
+        """Resolve a timed-out submission by its client ID; never blindly resubmit."""
+        with self._order_lock:
+            if not self.order_state_uncertain:
+                return True
+            client_id = self.unresolved_client_order_id
+            if not client_id:
+                return False
+            try:
+                order = self.client.get_order_by_client_id(self.symbol, client_id)
+            except Exception:
+                return False
+            log.warning(
+                "Recovered uncertain order clientId=%s orderId=%s status=%s; "
+                "inspect/reconcile its fill before allowing strategy orders",
+                client_id, order.order_id, order.status,
+            )
+            # A recovered exchange order is not yet proof of local accounting.
+            # Keep the gate closed until a full fill/balance reconciliation occurs.
+            return False
 
     def sell_all(self, *, price: float, reason: str = "manual_live_exit") -> dict | None:
         return self.sell_quantity(quantity=self.base_quantity, price=price, reason=reason)
@@ -210,6 +296,13 @@ class LiveExecutor:
             "fees_paid_usdt": self.fees_paid_usdt,
             "trade_count": len(self.trades),
             "trades": self.trades[-100:],
+            "order_sequence": self._order_sequence,
+            "order_state_uncertain": self.order_state_uncertain,
+            "unresolved_client_order_id": self.unresolved_client_order_id,
+            "locked_base_quantity": self.locked_base_quantity,
+            "locked_quote_balance": self.locked_quote_balance,
+            "open_orders_count": len(self.open_orders_snapshot),
+            "open_order_lists_count": len(self.open_order_lists_snapshot),
             "mode": "live",
             "testnet": self.client.testnet,
         }
