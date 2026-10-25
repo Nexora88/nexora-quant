@@ -16,7 +16,7 @@ Early-stage research software. APIs and strategy behavior may change. Passing un
 - Event-driven, testable strategy interface separated from execution.
 - Central risk gate for all simulated entries.
 - Paper portfolio with fees, realized/unrealized PnL, trade ledger, and configurable assumptions.
-- Local API for health/status and read-only portfolio snapshots.
+- Local read-only dashboard plus API endpoints for health, status, and portfolio snapshots.
 - Reproducible tests, linting, CI, safe configuration, and contributor documentation.
 - Clear provider timestamps, source limitations, and graceful shutdown.
 
@@ -51,7 +51,7 @@ Run the local read-only API:
 ```bash
 uvicorn app.api:app --host 127.0.0.1 --port 8000
 ```
-Open `http://127.0.0.1:8000/health` or `http://127.0.0.1:8000/status`. Keep it bound to localhost unless you have added authentication and deployment hardening.
+Open `http://127.0.0.1:8000/` for the live read-only dashboard, or `/health`, `/status`, and `/portfolio` for JSON endpoints. The API process starts the market-data engine. Keep it bound to localhost unless you have added authentication and deployment hardening.
 
 ## Architecture
 
@@ -92,7 +92,7 @@ Copy `.env.example` to `.env`. Settings are validated at startup. Never put real
 
 - The `bookTicker` stream supplies best bid/ask, not a full depth book. This is not a synchronized order-book depth implementation.
 - The initial strategy is an educational top-of-book imbalance experiment, not a validated trading strategy.
-- Persistence/restart recovery, exchange-depth snapshot/diff synchronization, realistic partial fills, slippage/latency models, a browser dashboard, and multi-user authentication are planned but not yet complete.
+- Persistence/restart recovery, exchange-depth snapshot/diff synchronization, realistic partial fills, slippage/latency models, and multi-user authentication are planned but not yet complete. The included dashboard is an initial read-only monitor, not a full trading workstation.
 - CI and local tests are quality checks, not proof of profitability or production safety.
 
 ## Development
