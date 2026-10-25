@@ -9,6 +9,7 @@ from app.events import BookTicker
 from app.paper import PaperExecutor
 from app.portfolio import size_from_free_cash
 from app.risk import RiskManager
+from app.market_history import MarketHistoryWriter
 from app.simulation import ExecutionSimulator
 from app.state import RuntimeState
 from app.storage import PaperStore
@@ -47,6 +48,7 @@ async def _simulated_fill(side: str, price: float, quantity: float) -> object:
 
 async def run() -> None:
     store = PaperStore(settings.store_path)
+    history = MarketHistoryWriter(settings.market_history_path)
     key = f"paper:{settings.symbol}"
     today = datetime.now(timezone.utc).date().isoformat()
     saved = store.load_state(key)
@@ -80,6 +82,20 @@ async def run() -> None:
                 continue
             bid, bid_qty = depth.best_bid
             ask, ask_qty = depth.best_ask
+            # Record the synchronized public L2 state before strategy evaluation.
+            # The event is a local observation, not exchange-authoritative history.
+            history.append(
+                timestamp_ns=__import__("time").time_ns(),
+                event_type="depth",
+                payload={
+                    "symbol": settings.symbol,
+                    "best_bid": [bid, bid_qty],
+                    "best_ask": [ask, ask_qty],
+                    "update_id": getattr(depth, "last_update_id", None),
+                    "bids": sorted(getattr(depth, "bids", {}).items(), reverse=True)[:20],
+                    "asks": sorted(getattr(depth, "asks", {}).items())[:20],
+                },
+            )
             if bid <= 0 or ask < bid:
                 continue
             risk.rollover_day(datetime.now(timezone.utc).date().isoformat())
