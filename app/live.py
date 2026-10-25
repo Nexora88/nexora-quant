@@ -78,6 +78,10 @@ class LiveExecutor:
             item for item in open_lists
             if str(item.get("symbol", "")).upper() == self.symbol
             and item.get("listStatusType") in ("EXEC_STARTED", "EXECUTING")
+            and (
+                str(item.get("listClientOrderId", "")).startswith("nqoco")
+                or int(item.get("orderListId", 0)) == self.protective_order_list_id
+            )
         ]
         if active_lists:
             self.protective_order_list_id = int(active_lists[-1]["orderListId"])
