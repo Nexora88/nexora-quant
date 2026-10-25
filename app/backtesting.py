@@ -253,3 +253,73 @@ def walk_forward(candles: Sequence[Candle], candidates: Iterable[dict],
         "unseen_test_result": test,
         "warning": "One chronological holdout is not proof of robustness; repeat across rolling windows and assets.",
     }
+
+
+def rolling_walk_forward(
+    candles: Sequence[Candle],
+    candidates: Iterable[dict],
+    *,
+    train_bars: int,
+    test_bars: int,
+    step_bars: int | None = None,
+    config: BacktestConfig | None = None,
+) -> dict:
+    """Evaluate repeated chronological train/test windows without shuffling data.
+
+    Each window selects a candidate using only its training segment, then scores
+    that selection on the immediately following unseen segment. Test windows never
+    overlap by default; step_bars may be smaller for overlapping diagnostic windows.
+    Metrics are per-window and aggregated, not a promise of future performance.
+    """
+    cfg = (config or BacktestConfig()).validate()
+    rows = list(candles)
+    choices = list(candidates)
+    step = test_bars if step_bars is None else step_bars
+    if train_bars < cfg.min_train_bars:
+        raise ValueError("train_bars must be >= configured min_train_bars")
+    if test_bars < 2 or step < 1:
+        raise ValueError("test_bars must be >= 2 and step_bars >= 1")
+    if not choices:
+        raise ValueError("at least one strategy candidate is required")
+    if train_bars + test_bars > len(rows):
+        raise ValueError("not enough candles for one rolling train/test window")
+
+    windows: list[dict] = []
+    start = 0
+    while start + train_bars + test_bars <= len(rows):
+        train = rows[start : start + train_bars]
+        test_start = start + train_bars
+        test = rows[test_start : test_start + test_bars]
+        train_results = compare_strategies(train, choices, cfg)
+        winner = train_results[0]
+        test_result = backtest(test, winner["strategy"], winner["parameters"], cfg)
+        windows.append({
+            "train_start": train[0].timestamp,
+            "train_end": train[-1].timestamp,
+            "test_start": test[0].timestamp,
+            "test_end": test[-1].timestamp,
+            "selected_strategy": winner["strategy"],
+            "selected_parameters": winner["parameters"],
+            "training_net_return_pct": winner["net_return_pct"],
+            "test_result": test_result,
+        })
+        start += step
+
+    if not windows:
+        raise ValueError("no complete rolling windows available")
+    test_returns = [w["test_result"]["net_return_pct"] for w in windows]
+    drawdowns = [w["test_result"]["max_drawdown_pct"] for w in windows]
+    return {
+        "windows": windows,
+        "window_count": len(windows),
+        "mean_test_return_pct": mean(test_returns),
+        "median_test_return_pct": median(test_returns),
+        "positive_test_window_fraction": sum(r > 0 for r in test_returns) / len(test_returns),
+        "worst_test_return_pct": min(test_returns),
+        "worst_max_drawdown_pct": max(drawdowns),
+        "warning": (
+            "Rolling windows are historical diagnostics, not a guarantee. "
+            "Test-window indicator warm-up is local, and bar-based costs/latency "
+            "do not model full order-book execution or market impact."
+        ),
+    }
