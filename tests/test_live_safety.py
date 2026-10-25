@@ -61,6 +61,9 @@ class FakeClient:
     def open_order_lists(self):
         return []
 
+    def all_order_lists(self, *, limit=1000):
+        return []
+
 
 def test_unknown_order_outcome_blocks_further_submissions():
     client = FakeClient(uncertain=True)
