@@ -56,6 +56,12 @@ const el=id=>document.getElementById(id);
 const num=(v,d=2)=>v==null?"—":Number(v).toLocaleString(undefined,{maximumFractionDigits:d,minimumFractionDigits:d});
 async function refresh(){try{
  const r=await fetch('/status',{cache:'no-store'});const s=await r.json();const m=s.market||{};const p=s.portfolio||{};
+ el('decisionAction').textContent=s.last_decision?.action||'Waiting';
+ el('regime').textContent=s.last_decision?.regime||s.analysis?.regime||'—';
+ el('decisionScore').textContent=s.last_decision?num(s.last_decision.score,3)+' / '+num(s.last_decision.confidence,2):'—';
+ el('decisionReason').textContent=[...(s.last_decision?.blockers||[]),...(s.last_decision?.rationale||[])].slice(0,4).join(' · ')||'No decision recorded';
+ el('decisionHistory').innerHTML=(s.decision_history||[]).slice(-6).reverse().map(d=>'<div class="row"><span>'+String(d.created_at||'').replace(/[<>]/g,'')+' · '+String(d.action||'').replace(/[<>]/g,'')+'</span><strong>'+num(d.score,2)+' / '+num(d.confidence,2)+'</strong></div>').join('');
+ el('fills').innerHTML=(s.recent_fills||[]).slice(0,8).map(t=>'<div class="row"><span>'+String(t.side||'').replace(/[<>]/g,'').toUpperCase()+' · '+num(t.quantity,6)+' @ '+num(t.price,4)+'</span><strong>'+num(t.fee_usdt,4)+' fee</strong></div>').join('')||'<span class="muted">No fills recorded yet</span>';
  el('bid').textContent=num(m.bid,4);el('ask').textContent=num(m.ask,4);
  el('bidQty').textContent='Quantity '+num(m.bid_qty,5);el('askQty').textContent='Quantity '+num(m.ask_qty,5);
  el('equity').textContent=num(p.equity_usdt);el('pnl').textContent=num(p.unrealized_pnl_usdt);
