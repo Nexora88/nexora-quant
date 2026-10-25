@@ -21,10 +21,8 @@ class MarketHistoryWriter:
         self._last_timestamp_ns = -1
 
     def append(self, *, timestamp_ns: int, event_type: str, payload: dict[str, Any]) -> None:
-        if isinstance(timestamp_ns, bool) or timestamp_ns < 0:
+        if isinstance(timestamp_ns, bool) or not isinstance(timestamp_ns, int) or timestamp_ns < 0:
             raise ValueError("timestamp_ns must be a non-negative integer")
-        if not isinstance(timestamp_ns, int):
-            raise ValueError("timestamp_ns must be an integer")
         if timestamp_ns < self._last_timestamp_ns:
             raise ValueError("events must be appended in nondecreasing timestamp order")
         if not event_type or not isinstance(event_type, str):
