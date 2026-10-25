@@ -29,7 +29,7 @@ class RiskManager:
             return False
         self.day_utc = day_utc
         self.realized_pnl_today = 0.0
-        if self.kill_switch_reason == "Daily simulated loss limit reached":
+        if self.kill_switch_reason == "Daily loss limit reached":
             self.kill_switch = False
             self.kill_switch_reason = None
         return True
@@ -43,7 +43,7 @@ class RiskManager:
         if notional_usdt > self.max_order_size_usdt:
             return RiskDecision(False, "Order exceeds configured maximum")
         if notional_usdt > available_cash:
-            return RiskDecision(False, "Insufficient paper cash")
+            return RiskDecision(False, "Insufficient available cash")
         if bid <= 0 or ask <= 0 or ask < bid:
             return RiskDecision(False, "Invalid bid/ask market")
         spread_bps = ((ask - bid) / ((ask + bid) / 2)) * 10000
@@ -52,9 +52,9 @@ class RiskManager:
         if data_age_seconds is None or data_age_seconds > self.max_data_age_seconds:
             return RiskDecision(False, "Market data missing or stale")
         if self.realized_pnl_today <= -self.max_daily_loss_usdt:
-            self.activate_kill_switch("Daily simulated loss limit reached")
+            self.activate_kill_switch("Daily loss limit reached")
             return RiskDecision(False, self.kill_switch_reason)
-        return RiskDecision(True, "Approved for paper execution")
+        return RiskDecision(True, "Approved for execution")
 
     def record_realized_pnl(self, pnl_usdt: float, *, position_closed: bool = True) -> None:
         """Count every realized fill toward daily loss, but only completed exits toward streaks."""
@@ -62,7 +62,7 @@ class RiskManager:
         if position_closed:
             self.consecutive_losses = self.consecutive_losses + 1 if pnl_usdt < 0 else 0
         if self.realized_pnl_today <= -self.max_daily_loss_usdt:
-            self.activate_kill_switch("Daily simulated loss limit reached")
+            self.activate_kill_switch("Daily loss limit reached")
         elif position_closed and self.consecutive_losses >= self.max_consecutive_losses:
             self.activate_kill_switch("Consecutive-loss limit reached")
 
