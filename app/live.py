@@ -237,27 +237,47 @@ class LiveExecutor:
         quote = float(result.cummulative_quote_qty)
         if executed_qty <= 0:
             raise RuntimeError(f"Order not filled: status={result.status} id={result.order_id}")
-        fee_usdt = 0.0
-        if result.fills:
-            total_cost = 0.0
-            total_qty = 0.0
-            for f in result.fills:
-                p = float(f.get("price", 0))
-                q = float(f.get("qty", 0))
+
+        fills = list(result.fills or [])
+        if not fills:
+            try:
+                fills = self.client.order_trades(self.symbol, result.order_id)
+            except Exception:
+                log.warning("Actual commission fills unavailable for orderId=%s", result.order_id, exc_info=True)
+
+        fee_by_asset: dict[str, float] = {}
+        total_cost = 0.0
+        total_qty = 0.0
+        for fill in fills:
+            p = float(fill.get("price", 0))
+            q = float(fill.get("qty", 0))
+            if p > 0 and q > 0:
                 total_cost += p * q
                 total_qty += q
-                commission = float(f.get("commission", 0))
-                commission_asset = str(f.get("commissionAsset", "")).upper()
-                if commission_asset == self.quote_asset:
-                    fee_usdt += commission
-                elif commission_asset == self.base_asset:
-                    fee_usdt += commission * p
-            avg_price = (total_cost / total_qty) if total_qty else fallback_price
-            executed_qty = total_qty or executed_qty
-            quote = total_cost or quote
+            asset = str(fill.get("commissionAsset", "")).upper()
+            commission = float(fill.get("commission", 0))
+            if asset and commission:
+                fee_by_asset[asset] = fee_by_asset.get(asset, 0.0) + commission
+
+        if total_qty > 0:
+            avg_price = total_cost / total_qty
+            executed_qty = total_qty
+            quote = total_cost
         else:
             avg_price = (quote / executed_qty) if executed_qty else fallback_price
+
+        base_fee = fee_by_asset.get(self.base_asset, 0.0)
+        quote_fee = fee_by_asset.get(self.quote_asset, 0.0)
+        other_fees = {
+            asset: amount for asset, amount in fee_by_asset.items()
+            if asset not in (self.base_asset, self.quote_asset)
+        }
+        fee_usdt = quote_fee + base_fee * avg_price
+        accounting_complete = not other_fees and bool(fills)
+        fee_estimated = not fills
+        if fee_estimated:
             fee_usdt = quote * self.fee_rate
+
         side = result.side.lower()
         trade: dict[str, Any] = {
             "side": side,
@@ -265,6 +285,10 @@ class LiveExecutor:
             "quantity": executed_qty,
             "notional_usdt": quote,
             "fee_usdt": fee_usdt,
+            "commission_by_asset": fee_by_asset,
+            "unpriced_commission_by_asset": other_fees,
+            "accounting_complete": accounting_complete,
+            "fee_estimated": fee_estimated,
             "reason": reason,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "exchange_order_id": result.order_id,
@@ -275,25 +299,31 @@ class LiveExecutor:
             "execution_latency_ms": getattr(self, "_last_order_latency_ms", 0.0),
         }
         if side == "buy":
+            net_base = max(0.0, executed_qty - base_fee)
             old_cost = self.base_quantity * self.average_entry_price
-            self.base_quantity += executed_qty
-            self.average_entry_price = (old_cost + quote) / self.base_quantity if self.base_quantity else 0.0
-            self.cash_usdt = max(0.0, self.cash_usdt - quote - fee_usdt)
+            self.base_quantity += net_base
+            self.average_entry_price = (
+                (old_cost + quote + quote_fee) / self.base_quantity
+                if self.base_quantity else 0.0
+            )
+            self.cash_usdt = max(0.0, self.cash_usdt - quote - quote_fee)
             self.fees_paid_usdt += fee_usdt
         else:
             pnl = (avg_price - self.average_entry_price) * executed_qty - fee_usdt
-            self.cash_usdt += quote - fee_usdt
+            self.cash_usdt += quote - quote_fee
             self.realized_pnl_usdt += pnl
             self.fees_paid_usdt += fee_usdt
             trade["pnl_usdt"] = pnl
-            self.base_quantity = max(0.0, self.base_quantity - executed_qty)
+            self.base_quantity = max(0.0, self.base_quantity - executed_qty - base_fee)
             if self.base_quantity < 1e-12:
                 self.base_quantity = 0.0
                 self.average_entry_price = 0.0
         self.trades.append(trade)
         log.info(
-            "LIVE %s filled qty=%.8f price=%.4f notional=%.4f fee=%.6f orderId=%s testnet=%s",
-            side.upper(), executed_qty, avg_price, quote, fee_usdt, result.order_id, self.client.testnet,
+            "LIVE %s filled qty=%.8f price=%.4f notional=%.4f fee=%.6f "
+            "orderId=%s status=%s testnet=%s accounting_complete=%s",
+            side.upper(), executed_qty, avg_price, quote, fee_usdt,
+            result.order_id, result.status, self.client.testnet, accounting_complete,
         )
         return trade
 
