@@ -158,7 +158,14 @@ async def handle_tick(
         visible_liquidity_usdt=max(ask * max(ask_qty, 1e-9), 1.0),
         coefficient=getattr(settings, "impact_coefficient", 0.1),
     )
-    edge = score_edge(votes=_pre.votes, spread_bps=analysis.spread_bps, impact_bps=impact_est)
+    edge = score_edge(
+        votes=_pre.votes,
+        spread_bps=analysis.spread_bps,
+        impact_bps=2.0 * impact_est,
+        fee_bps=2.0 * settings.fee_rate * 10_000,
+        # Latency cost is not calibrated yet; use zero instead of inventing a value.
+        latency_bps=0.0,
+    )
     adv = adverse_filter.check(intend_long=True)
     whale_block = whale.side == "ask" and whale.strength >= 0.5
     adverse_reasons = list(adv.reasons)
