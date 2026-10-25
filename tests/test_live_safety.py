@@ -127,3 +127,14 @@ def test_stale_or_disconnected_market_data_blocks_new_orders():
     )
     assert not blocked.allowed
     assert "connection lost" in blocked.reason
+
+
+def test_startup_position_without_restored_cost_basis_fails_closed():
+    client = FakeClient()
+    executor = LiveExecutor(client, symbol="BTCUSDT", fee_rate=0.001)
+    try:
+        executor.sync_balances()
+    except RuntimeError as exc:
+        assert "cost basis" in str(exc).lower()
+    else:
+        raise AssertionError("startup position without cost basis must not be accepted")

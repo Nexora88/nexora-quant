@@ -50,3 +50,47 @@ def test_invalid_fill_is_rejected():
         pass
     else:
         raise AssertionError("invalid fill must be rejected")
+
+
+def test_calibration_survives_restart_and_restores_pending_fills(tmp_path):
+    path = tmp_path / "state" / "execution-costs.json"
+    model = ObservedExecutionCostModel(
+        min_samples=3, horizon_ms=10, persistence_path=path,
+    )
+    for i in range(2):
+        model.record_fill(
+            side="buy", decision_mid=100, fill_price=100.1,
+            latency_ms=50 + i, filled_at_ms=i * 100,
+        )
+        model.observe_mid(99.9, i * 100 + 11)
+    model.record_fill(
+        side="sell", decision_mid=100, fill_price=99.9,
+        latency_ms=80, filled_at_ms=300,
+    )
+
+    restarted = ObservedExecutionCostModel(
+        min_samples=3, horizon_ms=10, persistence_path=path,
+    )
+    assert restarted.sample_count == 2
+    assert len(restarted.pending) == 1
+    assert restarted.estimate_cost_bps() is None
+
+    restarted.observe_mid(99.8, 311)
+    assert restarted.sample_count == 3
+    assert restarted.estimate_cost_bps() is not None
+
+    restarted_again = ObservedExecutionCostModel(
+        min_samples=3, horizon_ms=10, persistence_path=path,
+    )
+    assert restarted_again.sample_count == 3
+    assert restarted_again.estimate_cost_bps() == restarted.estimate_cost_bps()
+
+
+def test_corrupt_or_mismatched_calibration_fails_closed(tmp_path):
+    path = tmp_path / "execution-costs.json"
+    path.write_text('{"schema_version":999,"samples":[{"latency_ms":1,"cost_bps":1}]}')
+    model = ObservedExecutionCostModel(
+        min_samples=2, horizon_ms=10, persistence_path=path,
+    )
+    assert model.sample_count == 0
+    assert model.estimate_cost_bps() is None

@@ -23,7 +23,12 @@ from app.microstructure_costs import ObservedExecutionCostModel
 
 log = logging.getLogger(__name__)
 state = RuntimeState()
-execution_costs = ObservedExecutionCostModel(min_samples=30, horizon_ms=1000, window_size=500)
+execution_costs = ObservedExecutionCostModel(
+    min_samples=30,
+    horizon_ms=1000,
+    window_size=500,
+    persistence_path=settings.execution_costs_path,
+)
 
 risk = RiskManager(
     max_order_size_usdt=settings.max_order_size_usdt,

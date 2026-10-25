@@ -66,6 +66,14 @@ class LiveExecutor:
         base_free = float(base.get("free", 0))
         self.locked_base_quantity = float(base.get("locked", 0))
         self.base_quantity = base_free + self.locked_base_quantity
+        if self.base_quantity > 0 and self.average_entry_price <= 0:
+            # Exchange balances alone do not reconstruct the strategy's cost basis
+            # or historical fills. Never resume strategy management as if accounting
+            # were complete after a restart with an existing position.
+            raise RuntimeError(
+                "Existing base-asset position has no restored cost basis; "
+                "reconcile exchange trades and accounting before resuming"
+            )
         self.open_orders_snapshot = self.client.open_orders(self.symbol)
         try:
             self.open_order_lists_snapshot = self.client.open_order_lists()

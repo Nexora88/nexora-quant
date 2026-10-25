@@ -70,6 +70,7 @@ class Settings:
     live_confirm: str = os.getenv("LIVE_CONFIRM", "")
     impact_coefficient: float = _float("IMPACT_COEFFICIENT", 0.1)
     features_db_path: str = os.getenv("FEATURES_DB_PATH", "data/features.sqlite3")
+    execution_costs_path: str = os.getenv("EXECUTION_COSTS_PATH", "data/execution-costs.json")
     cors_origins: str = os.getenv("CORS_ORIGINS", "")
     jwt_secret: str = os.getenv("NEXORA_JWT_SECRET", "")
     jwt_ttl_seconds: int = int(os.getenv("NEXORA_JWT_TTL_SECONDS", "86400"))
