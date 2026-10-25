@@ -56,13 +56,19 @@ class RiskManager:
             return RiskDecision(False, self.kill_switch_reason)
         return RiskDecision(True, "Approved for paper execution")
 
-    def record_closed_trade(self, pnl_usdt: float) -> None:
+    def record_realized_pnl(self, pnl_usdt: float, *, position_closed: bool = True) -> None:
+        """Count every realized fill toward daily loss, but only completed exits toward streaks."""
         self.realized_pnl_today += pnl_usdt
-        self.consecutive_losses = self.consecutive_losses + 1 if pnl_usdt < 0 else 0
+        if position_closed:
+            self.consecutive_losses = self.consecutive_losses + 1 if pnl_usdt < 0 else 0
         if self.realized_pnl_today <= -self.max_daily_loss_usdt:
             self.activate_kill_switch("Daily simulated loss limit reached")
-        elif self.consecutive_losses >= self.max_consecutive_losses:
+        elif position_closed and self.consecutive_losses >= self.max_consecutive_losses:
             self.activate_kill_switch("Consecutive-loss limit reached")
+
+    def record_closed_trade(self, pnl_usdt: float) -> None:
+        """Backward-compatible alias for a fully closed simulated position."""
+        self.record_realized_pnl(pnl_usdt, position_closed=True)
 
     def activate_kill_switch(self, reason: str) -> None:
         self.kill_switch = True
