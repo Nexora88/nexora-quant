@@ -89,7 +89,7 @@ def test_spot_testnet_market_oco_cancel_and_recovery_flow():
         # Only sell the testnet quantity after confirmed OCO cancellation.
         if cancelled:
             remaining = _round_step(
-                client.free_balance(base_asset), lot["stepSize"], ROUND_DOWN,
+                min(sellable, client.free_balance(base_asset)), lot["stepSize"], ROUND_DOWN,
             )
             if remaining > 0:
                 client.place_market_order(
