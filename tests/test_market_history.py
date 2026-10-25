@@ -48,7 +48,7 @@ def test_multilevel_depth_metrics_and_unsynchronized_guard():
         bids=[(100, 9), (99, 3), (98, 1)],
         asks=[(101, 2), (102, 2), (103, 2)],
     )
-    assert depth_imbalance(book, levels=3) == pytest.approx(11 / 17)
+    assert depth_imbalance(book, levels=3) == pytest.approx(7 / 19)
     walls = liquidity_walls(book, levels=3, multiple=2)
     assert walls is not None
     assert walls["bids"][0]["price"] == 100
