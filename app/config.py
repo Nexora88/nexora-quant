@@ -116,12 +116,12 @@ class Settings:
                 raise ValueError(
                     "TRADING_MODE=live requires BINANCE_API_KEY and BINANCE_API_SECRET."
                 )
-            if not self.binance_testnet:
+            if not self.binance_testnet and self.live_confirm != "I_UNDERSTAND_REAL_MONEY":
                 raise ValueError(
-                    "Mainnet real-money trading is disabled until offline OCO fill "
-                    "reconciliation, Binance Spot Testnet end-to-end validation, and "
-                    "independent net-of-cost profitability evaluation are completed. "
-                    "Use TRADING_MODE=paper or BINANCE_TESTNET=true."
+                    "Mainnet live trading requires LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY "
+                    "and BINANCE_TESTNET=false. Keep withdrawal permissions disabled "
+                    "and use an IP-restricted API key. Testnet validation and "
+                    "independent net-of-cost evaluation are strongly recommended first."
                 )
         return self
 
