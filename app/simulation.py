@@ -139,7 +139,7 @@ class ExecutionSimulator:
         )
         requested_notional = quantity * reference_price
 
-        if book_levels:
+        if book_levels is not None:
             book_filled, book_vwap, book_visible = _walk_book(
                 side=side, quantity=quantity, levels=book_levels
             )
