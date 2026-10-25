@@ -143,13 +143,17 @@ async def handle_tick(
                     if not trade.get("accounting_complete", True):
                         risk.activate_kill_switch("Exchange commission accounting incomplete")
                         state.last_error = "commission_accounting_incomplete"
-                    if mode == "live" and trade.get("decision_mid") and trade.get("execution_latency_ms") is not None:
-                        es.execution_costs.record_fill(
-                            side=trade["side"], decision_mid=float(trade["decision_mid"]),
-                            fill_price=float(trade["price"]),
-                            latency_ms=float(trade["execution_latency_ms"]),
-                            filled_at_ms=int(time.time() * 1000),
-                        )
+                    if (
+                        mode == "live" and trade.get("decision_mid")
+                        and trade.get("execution_latency_measured", False)
+                    ):
+                        if trade.get("execution_latency_measured", False):
+                            es.execution_costs.record_fill(
+                                side=trade["side"], decision_mid=float(trade["decision_mid"]),
+                                fill_price=float(trade["price"]),
+                                latency_ms=float(trade["execution_latency_ms"]),
+                                filled_at_ms=int(time.time() * 1000),
+                            )
                     store.append_trade(trade, event_key=_event_key(key, trade))
                     state.record_fill(trade)
                     pnl_v = float(trade.get("pnl_usdt", 0))
@@ -186,7 +190,11 @@ async def handle_tick(
         visible_liquidity_usdt=max(ask * max(ask_qty, 1e-9), 1.0),
         coefficient=getattr(settings, "impact_coefficient", 0.1),
     )
-    calibrated_latency_cost = es.execution_costs.estimate_cost_bps() if mode == "live" else None
+    estimated_latency_ms = es.execution_costs.estimate_latency_ms() if mode == "live" else None
+    calibrated_latency_cost = (
+        es.execution_costs.estimate_cost_bps(latency_ms=estimated_latency_ms)
+        if mode == "live" and estimated_latency_ms is not None else None
+    )
     edge = score_edge(
         votes=_pre.votes,
         spread_bps=analysis.spread_bps,
