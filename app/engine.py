@@ -57,7 +57,7 @@ async def run() -> None:
         risk.consecutive_losses = int(r.get("consecutive_losses", 0))
         risk.kill_switch = bool(r.get("kill_switch", False))
         risk.kill_switch_reason = r.get("kill_switch_reason")
-        risk.day_utc = r.get("day_utc", today)
+        risk.day_utc = r.get("day_utc")
     risk.rollover_day(today)
 
     def persist() -> None:
@@ -98,7 +98,9 @@ async def run() -> None:
                 if reason:
                     fill = await _simulated_fill("sell", bid, executor.base_quantity)
                     trade = executor.sell_quantity(
-                        quantity=fill.filled_quantity, price=fill.fill_price, reason=reason
+                        quantity=fill.filled_quantity,
+                        price=fill.fill_price,
+                        reason=f"{reason}; simulated_fill={fill.filled_quantity / fill.requested_quantity:.4f}; slippage_bps={fill.slippage_bps:.3f}; latency_ms={fill.latency_ms}",
                     )
                     if trade:
                         store.append_trade(trade, event_key=_event_key(key, trade))
