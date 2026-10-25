@@ -22,17 +22,46 @@ def market_impact_bps(
     notional_usdt: float,
     visible_liquidity_usdt: float,
     coefficient: float = 0.1,
+    linear_coefficient: float = 0.05,
 ) -> float:
-    """Almgren-style square-root temporary impact in basis points."""
-    if notional_usdt <= 0 or visible_liquidity_usdt <= 0 or coefficient < 0:
+    """Temporary impact in bps: linear participation + Almgren sqrt participation."""
+    if notional_usdt <= 0 or visible_liquidity_usdt <= 0:
         return 0.0
-    participation = notional_usdt / visible_liquidity_usdt
-    return coefficient * math.sqrt(participation) * 100.0
+    x = notional_usdt / visible_liquidity_usdt
+    sqrt_part = max(0.0, coefficient) * math.sqrt(x)
+    lin_part = max(0.0, linear_coefficient) * x
+    return (sqrt_part + lin_part) * 100.0
+
+
+def liquidity_based_slippage_bps(
+    *,
+    side: str,
+    notional_usdt: float,
+    levels: list,
+    base_slippage_bps: float = 2.0,
+    impact_coefficient: float = 0.1,
+) -> float:
+    """Walk visible levels; remaining size raises impact penalty."""
+    if not levels or notional_usdt <= 0:
+        return base_slippage_bps
+    remaining = notional_usdt
+    visible = 0.0
+    for row in levels:
+        if isinstance(row, (list, tuple)) and len(row) >= 2:
+            px, qty = float(row[0]), float(row[1])
+            visible += px * qty
+            remaining -= px * qty
+            if remaining <= 0:
+                break
+    impact = market_impact_bps(
+        notional_usdt=notional_usdt,
+        visible_liquidity_usdt=max(visible, 1.0),
+        coefficient=impact_coefficient,
+    )
+    return base_slippage_bps + impact
 
 
 class ExecutionSimulator:
-    """Simulate adverse slippage, latency, partial fills, and size-dependent impact."""
-
     def __init__(
         self,
         *,
@@ -70,13 +99,11 @@ class ExecutionSimulator:
             raise ValueError("reference_price and quantity must be positive")
         latency = (
             max(0, round(self._random.gauss(self.latency_ms, self.latency_ms * 0.1)))
-            if self.latency_ms
-            else 0
+            if self.latency_ms else 0
         )
         base_slip = (
             max(0.0, self._random.gauss(self.slippage_bps, self.slippage_bps * 0.2))
-            if self.slippage_bps
-            else 0.0
+            if self.slippage_bps else 0.0
         )
         notional = quantity * reference_price
         vis = (
@@ -106,5 +133,6 @@ class ExecutionSimulator:
         )
 
     def fills(self, *, side: str, reference_price: float, quantity: float, **kwargs) -> SimulatedFill:
-        """Alias for fill() kept for engine call sites."""
-        return getattr(self, "fill")(side=side, reference_price=reference_price, quantity=quantity, **kwargs)
+        return getattr(self, "fill")(
+            side=side, reference_price=reference_price, quantity=quantity, **kwargs
+        )
