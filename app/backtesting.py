@@ -138,7 +138,8 @@ def market_regime(closes: Sequence[float], index: int, window: int = 20) -> str:
 
 
 def _metrics(equity: Sequence[float], returns: Sequence[float], trades: int,
-             fees_paid: float, regimes: dict[str, dict[str, float]]) -> dict:
+             fees_paid: float, regimes: dict[str, dict[str, float]],
+             annualization_periods: int) -> dict:
     if not equity:
         raise ValueError("empty equity curve")
     peak = equity[0]
@@ -156,7 +157,7 @@ def _metrics(equity: Sequence[float], returns: Sequence[float], trades: int,
         "final_equity": equity[-1],
         "net_return_pct": (equity[-1] / equity[0] - 1) * 100,
         "max_drawdown_pct": max_drawdown * 100,
-        "sharpe_annualized": (avg / vol * math.sqrt(365)) if vol > 0 else 0.0,
+        "sharpe_annualized": (avg / vol * math.sqrt(annualization_periods)) if vol > 0 else 0.0,
         "trade_count": trades,
         "fees_and_slippage_paid": fees_paid,
         "profit_factor": gross_profit / gross_loss if gross_loss > 0 else (math.inf if gross_profit else 0.0),
@@ -208,7 +209,7 @@ def backtest(candles: Sequence[Candle], strategy: str, params: dict[str, int] | 
         name: {"bars": float(len(vals)), "return_pct": (math.prod(1 + v for v in vals) - 1) * 100}
         for name, vals in regime_pnl.items()
     }
-    result = _metrics(curve, period_returns, trades, costs_total, regime_returns)
+    result = _metrics(curve, period_returns, trades, costs_total, regime_returns, cfg.annualization_periods)
     result.update({"strategy": strategy, "parameters": params, "bars": len(rows),
                    "latency_bars": cfg.latency_bars, "fee_rate": cfg.fee_rate,
                    "slippage_bps": cfg.slippage_bps})
