@@ -122,11 +122,27 @@ async def handle_tick(
                         reason=f"{reason}; sim_fill={fill.filled_quantity / fill.requested_quantity:.4f}",
                     )
                 else:
+                    if getattr(ex, "protective_order_list_id", None) is not None:
+                        if not ex.cancel_protective_oco():
+                            risk.activate_kill_switch("Could not safely cancel/reconcile protective OCO")
+                            state.last_error = "protective_oco_reconciliation_failed"
+                            persist()
+                            return confirmations, ticks
+                    if ex.base_quantity <= 0:
+                        # An exchange-side OCO may have executed while the bot was
+                        # disconnected. Do not invent a local fill; stop for reconciliation.
+                        risk.activate_kill_switch("Position changed on exchange; reconcile fills")
+                        state.last_error = "exchange_position_changed_requires_reconciliation"
+                        persist()
+                        return confirmations, ticks
                     trade = ex.sell_quantity(
                         quantity=ex.base_quantity, price=bid,
                         reason=f"{reason}; live_market_sell", decision_mid=analysis.mid,
                     )
                 if trade:
+                    if not trade.get("accounting_complete", True):
+                        risk.activate_kill_switch("Exchange commission accounting incomplete")
+                        state.last_error = "commission_accounting_incomplete"
                     if mode == "live" and trade.get("decision_mid") and trade.get("execution_latency_ms") is not None:
                         es.execution_costs.record_fill(
                             side=trade["side"], decision_mid=float(trade["decision_mid"]),
@@ -147,6 +163,8 @@ async def handle_tick(
             except Exception:
                 log.exception("Exit order failed (%s)", reason)
                 state.last_error = f"exit_failed:{reason}"
+                if getattr(ex, "order_state_uncertain", False):
+                    risk.activate_kill_switch("Exchange order outcome uncertain")
             persist()
             return confirmations, ticks
 
@@ -206,6 +224,8 @@ async def handle_tick(
                 free_cash = ex.cash_usdt
             except Exception:
                 log.exception("Balance sync failed")
+                risk.activate_kill_switch("Exchange balance sync failed")
+                state.last_error = "exchange_balance_sync_failed"
         kd = kelly.size(free_usdt=free_cash, fee_rate=settings.fee_rate)
         sizing_n = kd.notional_usdt if kd.notional_usdt > 0 else size_from_free_cash(
             free_usdt=free_cash, allocation_fraction=0.8, fee_rate=settings.fee_rate,
@@ -242,11 +262,23 @@ async def handle_tick(
                             latency_ms=float(trade["execution_latency_ms"]),
                             filled_at_ms=int(time.time() * 1000),
                         )
+                        if not trade.get("accounting_complete", False):
+                            risk.activate_kill_switch("Exchange commission accounting incomplete")
+                            state.last_error = "commission_accounting_incomplete"
+                        if not ex.ensure_protective_oco(
+                            current_price=ask,
+                            take_profit_pct=settings.take_profit_pct,
+                            stop_loss_pct=settings.stop_loss_pct,
+                        ):
+                            risk.activate_kill_switch("Exchange-hosted TP/SL OCO unavailable")
+                            state.last_error = "protective_oco_install_failed"
                         store.append_trade(trade, event_key=_event_key(key, trade))
                         state.record_fill(trade)
                 except Exception:
                     log.exception("Entry order failed")
                     state.last_error = "entry_failed"
+                    if getattr(ex, "order_state_uncertain", False):
+                        risk.activate_kill_switch("Exchange order outcome uncertain")
                 confirmations = 0
     persist()
     return confirmations, ticks
