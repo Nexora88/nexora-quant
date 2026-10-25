@@ -271,6 +271,12 @@ class LiveExecutor:
                 if "-2013" not in str(exc) and "Order does not exist" not in str(exc):
                     raise
             else:
+                if existing.status not in ("FILLED", "CANCELED", "EXPIRED", "REJECTED"):
+                    self.order_state_uncertain = True
+                    self.unresolved_client_order_id = client_id
+                    raise RuntimeError(
+                        f"Order {client_id} is not terminal ({existing.status}); manual reconciliation required"
+                    )
                 self._order_sequence += 1
                 self._last_order_latency_ms = 0.0
                 self._last_order_latency_measured = False
@@ -294,6 +300,12 @@ class LiveExecutor:
                         client_id,
                     )
                     raise
+            if result.status not in ("FILLED", "CANCELED", "EXPIRED", "REJECTED"):
+                self.order_state_uncertain = True
+                self.unresolved_client_order_id = client_id
+                raise RuntimeError(
+                    f"Order {client_id} is not terminal ({result.status}); manual reconciliation required"
+                )
             self._order_sequence += 1
             self._last_order_latency_ms = (time.perf_counter() - order_started) * 1000.0
             self._last_order_latency_measured = True
