@@ -159,6 +159,16 @@ class BinanceRestClient:
         )
         return _parse_order(raw)
 
+    def order_trades(self, symbol: str, order_id: int) -> list[dict[str, Any]]:
+        """Return exchange trade fills including the actual commission asset."""
+        raw = self._request(
+            "GET", "/api/v3/myTrades",
+            {"symbol": symbol.upper(), "orderId": order_id, "limit": 1000}, signed=True,
+        )
+        if not isinstance(raw, list):
+            raise RuntimeError("Unexpected myTrades response")
+        return raw
+
     def open_orders(self, symbol: str) -> list[dict[str, Any]]:
         raw = self._request(
             "GET", "/api/v3/openOrders", {"symbol": symbol.upper()}, signed=True,
