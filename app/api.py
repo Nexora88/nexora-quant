@@ -49,13 +49,26 @@ main{max-width:1100px;margin:auto;padding:28px 18px 60px}.top{display:flex;justi
 <div class="row"><span>Base quantity</span><strong id="qty">—</strong></div>
 <div class="row"><span>Average entry</span><strong id="entry">—</strong></div>
 <div class="row"><span>Fees paid</span><strong id="fees">—</strong></div></div>
-<div class="foot">Research software, not financial advice. Signals are experimental and do not imply profitability. Simulated fills omit realistic slippage, latency, and partial fills. Runtime state is in memory. This dashboard is read-only and should remain on localhost.</div>
+<div class="section card"><h2>Decision monitor</h2>
+<div class="row"><span>Last action</span><strong id="decisionAction">Waiting</strong></div>
+<div class="row"><span>Market regime</span><strong id="regime">—</strong></div>
+<div class="row"><span>Signal score / confidence</span><strong id="decisionScore">—</strong></div>
+<div class="row"><span>Decision rationale</span><span id="decisionReason" class="muted">Waiting for analysis</span></div>
+<div id="decisionHistory"></div></div>
+<div class="section card"><h2>Recent executions</h2><div id="fills"><span class="muted">No fills recorded yet</span></div></div>
+<div class="foot">Research software, not financial advice. This dashboard is observational; it does not certify a strategy or guarantee profitability. Paper fills are estimates, not exchange fills. Keep this API on localhost and keep research in paper mode.</div>
 </main>
 <script>
 const el=id=>document.getElementById(id);
 const num=(v,d=2)=>v==null?"—":Number(v).toLocaleString(undefined,{maximumFractionDigits:d,minimumFractionDigits:d});
 async function refresh(){try{
  const r=await fetch('/status',{cache:'no-store'});const s=await r.json();const m=s.market||{};const p=s.portfolio||{};
+ el('decisionAction').textContent=s.last_decision?.action||'Waiting';
+ el('regime').textContent=s.last_decision?.regime||s.analysis?.regime||'—';
+ el('decisionScore').textContent=s.last_decision?num(s.last_decision.score,3)+' / '+num(s.last_decision.confidence,2):'—';
+ el('decisionReason').textContent=[...(s.last_decision?.blockers||[]),...(s.last_decision?.rationale||[])].slice(0,4).join(' · ')||'No decision recorded';
+ el('decisionHistory').innerHTML=(s.decision_history||[]).slice(-6).reverse().map(d=>'<div class="row"><span>'+String(d.created_at||'').replace(/[<>]/g,'')+' · '+String(d.action||'').replace(/[<>]/g,'')+'</span><strong>'+num(d.score,2)+' / '+num(d.confidence,2)+'</strong></div>').join('');
+ el('fills').innerHTML=(s.recent_fills||[]).slice(0,8).map(t=>'<div class="row"><span>'+String(t.side||'').replace(/[<>]/g,'').toUpperCase()+' · '+num(t.quantity,6)+' @ '+num(t.price,4)+'</span><strong>'+num(t.fee_usdt,4)+' fee</strong></div>').join('')||'<span class="muted">No fills recorded yet</span>';
  el('bid').textContent=num(m.bid,4);el('ask').textContent=num(m.ask,4);
  el('bidQty').textContent='Quantity '+num(m.bid_qty,5);el('askQty').textContent='Quantity '+num(m.ask_qty,5);
  el('equity').textContent=num(p.equity_usdt);el('pnl').textContent=num(p.unrealized_pnl_usdt);

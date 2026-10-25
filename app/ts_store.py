@@ -11,7 +11,7 @@ import json
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 
 class FeatureTimeSeriesStore:

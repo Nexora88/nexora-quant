@@ -105,6 +105,22 @@ def strategy_signal(strategy: str, closes: Sequence[float], index: int, params: 
         if lookback < 1:
             raise ValueError("momentum lookback must be >= 1")
         return int(index >= lookback and closes[index] > closes[index - lookback])
+    if strategy == "regime_adaptive":
+        # Conservative long/flat policy: trend-follow only in an uptrend,
+        # mean-revert only in normal-volatility sideways markets, flat otherwise.
+        window = int(params.get("regime_window", 20))
+        regime = market_regime(closes, index, window)
+        if regime.endswith("_high_vol") or regime == "unknown":
+            return 0
+        if regime.startswith("uptrend_"):
+            return strategy_signal("momentum", closes, index,
+                                   {"lookback": int(params.get("momentum_lookback", 10))})
+        if regime.startswith("sideways_"):
+            return strategy_signal("mean_reversion", closes, index, {
+                "window": int(params.get("mean_window", 20)),
+                "entry_z": float(params.get("entry_z", 1)),
+            })
+        return 0
     if strategy == "mean_reversion":
         window = params.get("window", 20)
         entry_z = float(params.get("entry_z", 1))
@@ -160,6 +176,11 @@ def _metrics(equity: Sequence[float], returns: Sequence[float], trades: int,
         "trade_count": trades,
         "fees_and_slippage_paid": fees_paid,
         "profit_factor": gross_profit / gross_loss if gross_loss > 0 else (math.inf if gross_profit else 0.0),
+        "worst_period_return_pct": min(returns, default=0.0) * 100,
+        "expected_shortfall_5_pct": (
+            mean(sorted(returns)[:max(1, math.ceil(len(returns) * 0.05))]) * 100
+            if returns else 0.0
+        ),
         "regime_returns_pct": regimes,
     }
 
@@ -320,5 +341,46 @@ def rolling_walk_forward(
             "Rolling windows are historical diagnostics, not a guarantee. "
             "Test-window indicator warm-up is local, and bar-based costs/latency "
             "do not model full order-book execution or market impact."
+        ),
+    }
+
+
+def validate_multiple_assets(
+    datasets: dict[str, Sequence[Candle]],
+    candidates: Iterable[dict],
+    *,
+    train_bars: int,
+    test_bars: int,
+    config: BacktestConfig | None = None,
+) -> dict:
+    """Run rolling out-of-sample validation separately for each supplied asset.
+
+    Asset data must be chronological and must not be concatenated across symbols.
+    The function reports dispersion and worst outcomes rather than picking the
+    best-looking asset. It cannot correct survivorship bias in the supplied data.
+    """
+    if not datasets:
+        raise ValueError("at least one asset dataset is required")
+    choices = list(candidates)
+    if not choices:
+        raise ValueError("at least one candidate is required")
+    results = {}
+    for symbol, candles in datasets.items():
+        if not symbol.strip():
+            raise ValueError("asset symbols must be non-empty")
+        results[symbol] = rolling_walk_forward(
+            candles, choices, train_bars=train_bars, test_bars=test_bars, config=config
+        )
+    worst_return = min(v["worst_test_return_pct"] for v in results.values())
+    worst_drawdown = max(v["worst_max_drawdown_pct"] for v in results.values())
+    return {
+        "assets": results,
+        "asset_count": len(results),
+        "worst_asset_window_return_pct": worst_return,
+        "worst_asset_max_drawdown_pct": worst_drawdown,
+        "warning": (
+            "Out-of-sample historical results are not forecasts. Supply delisted and "
+            "failed assets where possible, preserve chronological splits, include realistic "
+            "fees/slippage, and never tune against test windows."
         ),
     }

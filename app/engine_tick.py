@@ -18,10 +18,10 @@ from app.engine_setup import (
     regime_clf,
     risk,
     shadows,
-    simulator,
     state,
     sustained,
     wall_tracker,
+    whale_tracker,
 )
 from app.events import BookTicker
 from app.intelligence.edge import score_edge
@@ -73,6 +73,7 @@ async def handle_tick(
         target_price=settings.target_price, bids=depth_bids, asks=depth_asks,
         ou=ou_tracker, regime_classifier=regime_clf, wall_bias=wall_tracker.bias(),
     )
+    whale = whale_tracker.update(depth_bids, depth_asks, analysis.mid)
     try:
         shadows.on_tick(
             score=analysis.score, bid=bid, ask=ask, size_usdt=settings.order_size_usdt,
@@ -113,7 +114,7 @@ async def handle_tick(
         if reason:
             try:
                 if mode == "paper":
-                    fill = await _paper_fill("sell", bid, ex.base_quantity)
+                    fill = await _paper_fill("sell", bid, ex.base_quantity, book_levels=depth_bids)
                     trade = ex.sell_quantity(
                         quantity=fill.filled_quantity, price=fill.fill_price,
                         reason=f"{reason}; sim_fill={fill.filled_quantity / fill.requested_quantity:.4f}",
@@ -159,13 +160,17 @@ async def handle_tick(
     )
     edge = score_edge(votes=_pre.votes, spread_bps=analysis.spread_bps, impact_bps=impact_est)
     adv = adverse_filter.check(intend_long=True)
+    whale_block = whale.side == "ask" and whale.strength >= 0.5
+    adverse_reasons = list(adv.reasons)
+    if whale_block:
+        adverse_reasons.append(f"persistent_ask_wall:{whale.note}")
     decision = build_decision(
         analysis=analysis, sustained=sus, in_position=bool(ex and ex.base_quantity > 0),
         kill_switch=bool(risk.kill_switch), kill_reason=risk.kill_switch_reason,
         kelly_fraction=kd_preview.fraction, suggested_notional=kd_preview.notional_usdt,
         entry_min_score=settings.entry_min_score,
         edge_tradeable=edge.tradeable, edge_notes=edge.notes,
-        adverse_toxic=adv.toxic, adverse_reasons=adv.reasons,
+        adverse_toxic=adv.toxic or whale_block, adverse_reasons=adverse_reasons,
     )
     state.record_decision(decision)
 
@@ -195,7 +200,7 @@ async def handle_tick(
                 try:
                     if mode == "paper":
                         qty = sizing_n / ask
-                        fill = await _paper_fill("buy", ask, qty)
+                        fill = await _paper_fill("buy", ask, qty, book_levels=depth_asks)
                         actual = fill.filled_quantity * fill.fill_price
                         if actual > 0:
                             trade = ex.buy(
