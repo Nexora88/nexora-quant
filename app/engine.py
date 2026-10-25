@@ -1,6 +1,7 @@
 """Paper engine with synchronized depth, execution friction and durable risk state."""
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone
 
 from app.binance_depth import stream_synchronized_depth
@@ -85,7 +86,7 @@ async def run() -> None:
             # Record the synchronized public L2 state before strategy evaluation.
             # The event is a local observation, not exchange-authoritative history.
             history.append(
-                timestamp_ns=__import__("time").time_ns(),
+                timestamp_ns=time.time_ns(),
                 event_type="depth",
                 payload={
                     "symbol": settings.symbol,
