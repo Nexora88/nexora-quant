@@ -83,7 +83,7 @@ L2 feed does not expose individual order identities or true per-order queue posi
 
 ## Safety and limitations
 
-- A live order adapter exists behind `TRADING_MODE=live` and configuration checks; it can submit real Binance Spot orders. It is not the default. This research change does not exercise, certify, or recommend live execution. Never commit API keys. Keep `TRADING_MODE=paper` for testing.
+- A live order adapter exists behind `TRADING_MODE=live` and configuration checks; it can submit real Binance Spot orders. It is not the default. Mainnet requires API keys, `BINANCE_TESTNET=false`, and the explicit `LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY` acknowledgement. Keep withdrawals disabled and restrict the API key by IP. Testnet end-to-end validation and independent net-of-cost evaluation have not yet been verified by this change; never commit API keys.
 - This strategy is an educational experiment, not validated or guaranteed to be profitable. Signal confirmation can reduce noise but can also delay entries; it does not establish an edge.
 - The strategy is a collection of research heuristics, not an independently validated trading edge. Visible-book execution is still only an approximation; no simulator can reproduce all cancellations, hidden liquidity, queue priority, network jitter, matching-engine rules, or sudden market shocks. Ask-wall/whale detection is a heuristic and cannot identify the owner or intent behind displayed orders. It can miss spoofing and can block valid entries.
 - Persisted paper state is local to the configured SQLite file. Protect and back up that file; deleting it resets the paper account.
