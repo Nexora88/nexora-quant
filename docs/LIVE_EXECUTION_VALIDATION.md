@@ -7,6 +7,7 @@ This document records required evidence before any live-execution claim. It does
 - [ ] Offline OCO fill reconciliation is complete and idempotent across every exchange history edge case.
 - [ ] Binance Spot Testnet order lifecycle has passed end-to-end validation on the exchange.
 - [ ] Net-of-fees profitability has been independently evaluated.
+- [x] Added `scripts/evaluate_profitability.py` for reproducible multi-asset rolling walk-forward reports from separate chronological CSVs; no report has been produced from verified market data in this task.
 - [x] Implemented terminal OCO history discovery, child-order/trade retrieval, quantity reconciliation, trade-ID idempotency, and fail-closed handling for incomplete or unpriced commissions.
 - [x] Added mocked recovery tests and an opt-in Testnet market/OCO-create/cancel/history smoke test; the live Testnet smoke test has not yet been run.
 - [x] Unknown or inconsistent state fails closed rather than placing a speculative replacement order.
@@ -52,6 +53,7 @@ No profit guarantee or production-readiness claim is permitted from unit tests, 
 
 Minimum research protocol:
 
+- Run `python scripts/evaluate_profitability.py --data-dir data/ohlcv --output reports/profitability.json --train-bars 500 --test-bars 100 --fee-rate 0.001 --slippage-bps 5 --latency-bars 1` with at least two separate, clean, chronological OHLCV CSV files (timestamp,open,high,low,close and optional volume). Review the emitted per-asset and worst-window metrics; the script does not certify a strategy as profitable.
 - Use chronological rolling walk-forward windows across multiple assets and distinct market regimes. Keep final holdout periods out of parameter tuning.
 - Include realistic fees, spread, adverse slippage, latency, partial/unfilled orders, market impact assumptions, and missing/disconnected data scenarios.
 - Report net-of-cost expectancy, drawdown, tail losses, turnover, profit factor, sample size, and dispersion across windows/assets. Compare against simple baselines.
