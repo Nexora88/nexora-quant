@@ -147,12 +147,61 @@ class BinanceRestClient:
 
     def get_order(self, symbol: str, order_id: int) -> OrderResult:
         raw = self._request(
-            "GET",
-            "/api/v3/order",
-            {"symbol": symbol.upper(), "orderId": order_id},
-            signed=True,
+            "GET", "/api/v3/order",
+            {"symbol": symbol.upper(), "orderId": order_id}, signed=True,
         )
         return _parse_order(raw)
+
+    def place_oco_order(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        quantity: float,
+        take_profit_price: float,
+        stop_price: float,
+        stop_limit_price: float | None = None,
+        client_order_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Exchange-hosted OCO so TP/SL survive bot disconnects."""
+        side = side.upper()
+        if side not in ("BUY", "SELL"):
+            raise ValueError("side must be BUY or SELL")
+        stop_limit = stop_limit_price if stop_limit_price is not None else stop_price
+        params: dict[str, Any] = {
+            "symbol": symbol.upper(),
+            "side": side,
+            "quantity": _fmt_qty(quantity),
+            "price": _fmt_qty(take_profit_price),
+            "stopPrice": _fmt_qty(stop_price),
+            "stopLimitPrice": _fmt_qty(stop_limit),
+            "stopLimitTimeInForce": "GTC",
+        }
+        if client_order_id:
+            params["listClientOrderId"] = client_order_id
+        return self._request("POST", "/api/v3/orderList/oco", params, signed=True)
+
+    def place_stop_loss_limit(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        quantity: float,
+        stop_price: float,
+        limit_price: float | None = None,
+    ) -> dict[str, Any]:
+        side = side.upper()
+        limit_price = limit_price if limit_price is not None else stop_price
+        params: dict[str, Any] = {
+            "symbol": symbol.upper(),
+            "side": side,
+            "type": "STOP_LOSS_LIMIT",
+            "quantity": _fmt_qty(quantity),
+            "stopPrice": _fmt_qty(stop_price),
+            "price": _fmt_qty(limit_price),
+            "timeInForce": "GTC",
+        }
+        return self._request("POST", "/api/v3/order", params, signed=True)
 
 
 def _fmt_qty(value: float) -> str:
