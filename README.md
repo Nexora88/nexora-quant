@@ -92,3 +92,36 @@ L2 feed does not expose individual order identities or true per-order queue posi
 - Persisted paper state is local to the configured SQLite file. Protect and back up that file; deleting it resets the paper account.
 - UTC day rollover resets daily realized PnL only; consecutive-loss and non-daily safety switches remain active.
 - CI and unit tests are quality checks, not proof of exchange correctness, production readiness, or profitability.
+
+## Historical strategy comparison and walk-forward research
+
+```python
+from app.backtesting import BacktestConfig, compare_strategies, load_ohlcv_csv, walk_forward
+
+candles = load_ohlcv_csv("data/btcusdt_1h.csv")
+candidates = [
+    {"strategy": "buy_and_hold", "params": {}},
+    {"strategy": "momentum", "params": {"lookback": 12}},
+    {"strategy": "sma_cross", "params": {"fast": 5, "slow": 24}},
+    {"strategy": "mean_reversion", "params": {"window": 20, "entry_z": 1}},
+]
+cfg = BacktestConfig(fee_rate=0.001, slippage_bps=3, latency_bars=1)
+print(compare_strategies(candles, candidates, cfg))
+print(walk_forward(candles, candidates, cfg))
+```
+
+CSV requires `timestamp,open,high,low,close` and optionally `volume`; timestamps must be
+strictly increasing integers. Available baselines are buy-and-hold, simple moving-average
+cross, momentum, and mean-reversion. The engine charges configurable fees and adverse
+slippage on turnover, delays signals by whole bars, reports net return, annualized Sharpe,
+maximum drawdown, trade count, cost estimate, profit factor, and coarse volatility/trend
+regime slices.
+
+**Important research caveats:** this initial simulator uses close-to-close returns and
+bar-delayed execution, not tick-level fills or a full order-book replay. It does not model
+funding, borrow, spread, market impact, delisted assets, survivorship bias, or intrabar
+stop execution. The unseen segment is chronological and kept separate from parameter
+selection, but one holdout is not enough: repeat rolling walk-forward windows across
+multiple assets and market periods. Never select a strategy from its training score alone.
+Positive historical results do not guarantee future profits. The live trading adapter
+remains intentionally disabled; this research code cannot submit exchange orders.
