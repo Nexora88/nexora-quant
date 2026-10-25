@@ -1,4 +1,4 @@
-"""Validated environment configuration. Exchange order submission is intentionally disabled."""
+"""Validated environment configuration; exchange order submission stays disabled."""
 from dataclasses import dataclass
 import os
 
@@ -30,6 +30,11 @@ class Settings:
     imbalance_threshold: float = _float("IMBALANCE_THRESHOLD", 0.70)
     take_profit_pct: float = _float("TAKE_PROFIT_PCT", 1.0)
     stop_loss_pct: float = _float("STOP_LOSS_PCT", 0.5)
+    signal_confirmations: int = int(os.getenv("SIGNAL_CONFIRMATIONS", "3"))
+    simulated_slippage_bps: float = _float("SIMULATED_SLIPPAGE_BPS", 2.0)
+    simulated_latency_ms: int = int(os.getenv("SIMULATED_LATENCY_MS", "100"))
+    simulated_partial_fill_probability: float = _float("SIMULATED_PARTIAL_FILL_PROBABILITY", 0.15)
+    simulation_seed: int = int(os.getenv("SIMULATION_SEED", "0"))
     store_path: str = os.getenv("PAPER_DB_PATH", "data/paper.sqlite3")
     log_level: str = os.getenv("LOG_LEVEL", "INFO").upper()
 
@@ -47,8 +52,12 @@ class Settings:
         if min(self.max_order_size_usdt, self.max_daily_loss_usdt, self.max_spread_bps,
                self.max_data_age_seconds, self.take_profit_pct, self.stop_loss_pct) <= 0:
             raise ValueError("Risk limits and TP/SL percentages must be positive.")
-        if self.max_consecutive_losses < 1:
-            raise ValueError("MAX_CONSECUTIVE_LOSSES must be at least 1.")
+        if self.max_consecutive_losses < 1 or self.signal_confirmations < 1:
+            raise ValueError("Loss and signal confirmation counts must be at least 1.")
+        if self.simulated_latency_ms < 0 or self.simulated_slippage_bps < 0:
+            raise ValueError("Simulated latency and slippage cannot be negative.")
+        if not 0 <= self.simulated_partial_fill_probability <= 1:
+            raise ValueError("SIMULATED_PARTIAL_FILL_PROBABILITY must be in [0, 1].")
         if not 0.5 < self.imbalance_threshold <= 1:
             raise ValueError("IMBALANCE_THRESHOLD must be in (0.5, 1].")
         return self
