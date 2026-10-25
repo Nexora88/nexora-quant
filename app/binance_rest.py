@@ -169,6 +169,19 @@ class BinanceRestClient:
             raise RuntimeError("Unexpected myTrades response")
         return raw
 
+    def get_order_list(self, order_list_id: int) -> dict[str, Any]:
+        """Fetch historical/current OCO list state, including child order reports."""
+        raw = self._request(
+            "GET", "/api/v3/orderList", {"orderListId": order_list_id}, signed=True,
+        )
+        if not isinstance(raw, dict) or not raw.get("orderListId"):
+            raise RuntimeError("Unexpected orderList response")
+        return raw
+
+    def order_list_trades(self, symbol: str, order_id: int) -> list[dict[str, Any]]:
+        """Fetch every trade for a child order; pagination is deliberately not guessed."""
+        return self.order_trades(symbol, order_id)
+
     def open_orders(self, symbol: str) -> list[dict[str, Any]]:
         raw = self._request(
             "GET", "/api/v3/openOrders", {"symbol": symbol.upper()}, signed=True,
