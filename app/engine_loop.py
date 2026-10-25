@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 from app.config import settings
 from app.engine_setup import (
-    state, risk, _build_executor, log, executor as _ex,
+    state, risk, log,
 )
 from app.storage import PaperStore
 from app.io_queue import AsyncIoQueue
