@@ -1,9 +1,11 @@
-"""Validated environment configuration. Live execution is intentionally unsupported."""
+"""Validated environment configuration. Exchange order submission is intentionally disabled."""
 from dataclasses import dataclass
 import os
+
 from dotenv import load_dotenv
 
 load_dotenv()
+
 
 def _float(name: str, default: float) -> float:
     raw = os.getenv(name)
@@ -11,6 +13,7 @@ def _float(name: str, default: float) -> float:
         return default if raw is None else float(raw)
     except ValueError as exc:
         raise ValueError(f"{name} must be numeric") from exc
+
 
 @dataclass(frozen=True, slots=True)
 class Settings:
@@ -25,6 +28,9 @@ class Settings:
     max_spread_bps: float = _float("MAX_SPREAD_BPS", 20.0)
     max_data_age_seconds: float = _float("MAX_DATA_AGE_SECONDS", 5.0)
     imbalance_threshold: float = _float("IMBALANCE_THRESHOLD", 0.70)
+    take_profit_pct: float = _float("TAKE_PROFIT_PCT", 1.0)
+    stop_loss_pct: float = _float("STOP_LOSS_PCT", 0.5)
+    store_path: str = os.getenv("PAPER_DB_PATH", "data/paper.sqlite3")
     log_level: str = os.getenv("LOG_LEVEL", "INFO").upper()
 
     def validate(self) -> "Settings":
@@ -38,12 +44,14 @@ class Settings:
             raise ValueError("ORDER_SIZE_USDT cannot exceed MAX_ORDER_SIZE_USDT.")
         if not 0 <= self.fee_rate < 0.1:
             raise ValueError("FEE_RATE must be between 0 and 0.1.")
-        if min(self.max_order_size_usdt, self.max_daily_loss_usdt, self.max_spread_bps, self.max_data_age_seconds) <= 0:
-            raise ValueError("Risk limits must be positive.")
+        if min(self.max_order_size_usdt, self.max_daily_loss_usdt, self.max_spread_bps,
+               self.max_data_age_seconds, self.take_profit_pct, self.stop_loss_pct) <= 0:
+            raise ValueError("Risk limits and TP/SL percentages must be positive.")
         if self.max_consecutive_losses < 1:
             raise ValueError("MAX_CONSECUTIVE_LOSSES must be at least 1.")
         if not 0.5 < self.imbalance_threshold <= 1:
             raise ValueError("IMBALANCE_THRESHOLD must be in (0.5, 1].")
         return self
+
 
 settings = Settings().validate()
