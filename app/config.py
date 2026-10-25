@@ -36,6 +36,7 @@ class Settings:
     simulated_partial_fill_probability: float = _float("SIMULATED_PARTIAL_FILL_PROBABILITY", 0.15)
     simulation_seed: int = int(os.getenv("SIMULATION_SEED", "0"))
     store_path: str = os.getenv("PAPER_DB_PATH", "data/paper.sqlite3")
+    market_history_path: str = os.getenv("MARKET_HISTORY_PATH", "data/market-history.jsonl.gz")
     log_level: str = os.getenv("LOG_LEVEL", "INFO").upper()
 
     def validate(self) -> "Settings":

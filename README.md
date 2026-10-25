@@ -17,6 +17,8 @@ Nexora Quant is an early-stage research project for learning market microstructu
 - Evaluates paper TP/SL on synchronized best-bid updates while the process is running.
 - Persists account and risk state in SQLite, restores on restart, and writes an idempotent paper trade ledger.
 - Rolls the daily realized-PnL counter at UTC date change. Consecutive-loss and other non-daily kill switches remain active across the rollover.
+- Adds research-only multi-level depth imbalance and heuristic liquidity-wall metrics for synchronized L2 books.
+- Adds a compressed gzip JSONL market-event writer and validated chronological replay iterator for reproducible fixtures.
 
 ## Quick start
 
@@ -43,7 +45,7 @@ python -m app.main
 
 Configuration check: `python -m app.main --once`
 
-Run the read-only API: `uvicorn app.api:app --host 127.0.0.1 --port 8000`
+Run the read-only API: `uvicorn app.api:app --host 127.0.0.1 --port 8000`. Keep it bound to localhost. Direct non-loopback requests are denied unless `NEXORA_API_TOKEN` is set and sent as `Authorization: Bearer <token>`. A local reverse proxy can make remote clients appear loopback; configure authentication at the proxy and do not expose this API publicly without reviewing proxy trust and deployment settings.
 
 ## Configuration
 
@@ -62,10 +64,25 @@ Run the read-only API: `uvicorn app.api:app --host 127.0.0.1 --port 8000`
 | `TAKE_PROFIT_PCT` | `1.0` | Paper exit threshold above average entry, percent |
 | `STOP_LOSS_PCT` | `0.5` | Paper exit threshold below average entry, percent |
 | `PAPER_DB_PATH` | `data/paper.sqlite3` | SQLite state and ledger path |
+| `MARKET_HISTORY_PATH` | `data/market-history.jsonl.gz` | Compressed local L2 observation log |
+| `NEXORA_API_TOKEN` | unset | Optional bearer token required for non-loopback API requests; never commit real tokens |
 
 The simulator uses a configurable random seed to make test runs reproducible. Simulated latency delays the paper execution path; it is not a full exchange queue-position or market-impact model.
 
 TP/SL thresholds are checked against the current best bid on synchronized depth updates. They are simulated exits, not exchange-hosted orders; when the process is offline, no exit can trigger until it is running again. If a partial exit occurs, the remaining position continues to be monitored.
+
+## Historical research building blocks
+
+`MarketHistoryWriter` writes compressed JSONL event records and `replay_market_history`
+replays them in timestamp order, rejecting malformed or out-of-order records. The paper runtime now records synchronized public L2 observations to this path. Records
+contain local receive timestamps and top-20 visible levels; they are not exchange-authoritative
+history or a millisecond-accurate full-market simulator. The replay iterator is a foundation
+for offline research, not yet an integrated depth-event backtester.
+
+`depth_imbalance` aggregates visible quantities across the best N price levels.
+`liquidity_walls` flags levels whose quantity exceeds a multiple of the side's median.
+These are descriptive heuristics only: displayed liquidity can be cancelled, and this
+L2 feed does not expose individual order identities or true per-order queue position.
 
 ## Safety and limitations
 

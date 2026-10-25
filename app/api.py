@@ -1,8 +1,11 @@
 """Read-only local dashboard and API; do not expose publicly without authentication."""
 import asyncio
+import hmac
+import os
 from contextlib import asynccontextmanager, suppress
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.responses import HTMLResponse
 
 from app.engine import run, state
@@ -86,6 +89,24 @@ app = FastAPI(
     description="Local read-only dashboard and API for paper trading.",
     lifespan=lifespan,
 )
+
+@app.middleware("http")
+async def restrict_remote_access(request: Request, call_next):
+    """Keep unauthenticated use local-only; remote access requires a bearer token."""
+    client_host = request.client.host if request.client else ""
+    if client_host not in {"127.0.0.1", "::1", "localhost", "testclient"}:
+        expected = os.getenv("NEXORA_API_TOKEN", "")
+        supplied = request.headers.get("authorization", "")
+        valid = bool(expected) and hmac.compare_digest(
+            supplied, "Bearer " + expected
+        )
+        if not valid:
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Remote access disabled or bearer token invalid"},
+            )
+    return await call_next(request)
+
 
 
 @app.get("/", response_class=HTMLResponse)
