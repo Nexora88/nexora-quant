@@ -1,0 +1,21 @@
+[Unit]
+Description=Nexora Quant trading engine
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/nexora-quant
+EnvironmentFile=/opt/nexora-quant/.env
+ExecStart=/opt/nexora-quant/.venv/bin/python -m app.main
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nexora-quant
+
+[Install]
+WantedBy=multi-user.target
