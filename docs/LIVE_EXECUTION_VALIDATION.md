@@ -9,6 +9,7 @@ This document records required evidence before any live-execution claim. It does
 - [ ] Net-of-fees profitability has been independently evaluated.
 - [x] Unknown or inconsistent state fails closed rather than placing a speculative replacement order.
 - [x] Default mode remains paper and the default Binance endpoint remains testnet.
+- [x] Configuration now rejects mainnet live mode even when `LIVE_CONFIRM` is set; regression tests cover this fail-closed gate.
 
 ## 1. OCO reconciliation after downtime
 
@@ -59,4 +60,4 @@ Minimum research protocol:
 
 ## Safety policy
 
-Keep `TRADING_MODE=paper` for normal development. Do not enable mainnet real-money execution as part of this validation work. Mainnet must remain a separate, explicit operator decision after reconciliation and testnet gates have evidence; this project currently has not established those prerequisites.
+Keep `TRADING_MODE=paper` for normal development. `app/config.py` now rejects `TRADING_MODE=live` with `BINANCE_TESTNET=false`, even if the confirmation string is present. This is an intentional fail-closed guard until reconciliation and Testnet gates have evidence and the profitability evaluation has been reviewed. Testnet live execution remains available for controlled testing; this does not mean its end-to-end run has occurred.
