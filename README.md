@@ -17,6 +17,8 @@ Nexora Quant is an early-stage research project for learning market microstructu
 - Evaluates paper TP/SL on synchronized best-bid updates while the process is running.
 - Persists account and risk state in SQLite, restores on restart, and writes an idempotent paper trade ledger.
 - Rolls the daily realized-PnL counter at UTC date change. Consecutive-loss and other non-daily kill switches remain active across the rollover.
+- Adds research-only multi-level depth imbalance and heuristic liquidity-wall metrics for synchronized L2 books.
+- Adds a compressed gzip JSONL market-event writer and validated chronological replay iterator for reproducible fixtures.
 
 ## Quick start
 
@@ -66,6 +68,19 @@ Run the read-only API: `uvicorn app.api:app --host 127.0.0.1 --port 8000`
 The simulator uses a configurable random seed to make test runs reproducible. Simulated latency delays the paper execution path; it is not a full exchange queue-position or market-impact model.
 
 TP/SL thresholds are checked against the current best bid on synchronized depth updates. They are simulated exits, not exchange-hosted orders; when the process is offline, no exit can trigger until it is running again. If a partial exit occurs, the remaining position continues to be monitored.
+
+## Historical research building blocks
+
+`MarketHistoryWriter` writes compressed JSONL event records and `replay_market_history`
+replays them in timestamp order, rejecting malformed or out-of-order records. A caller
+must explicitly connect the writer to a feed and choose which exchange/receive timestamps
+to preserve; this module is a storage/replay primitive, not yet a complete historical
+provider or a millisecond-accurate full-market simulator.
+
+`depth_imbalance` aggregates visible quantities across the best N price levels.
+`liquidity_walls` flags levels whose quantity exceeds a multiple of the side's median.
+These are descriptive heuristics only: displayed liquidity can be cancelled, and this
+L2 feed does not expose individual order identities or true per-order queue position.
 
 ## Safety and limitations
 
