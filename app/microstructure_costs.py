@@ -101,6 +101,14 @@ class ObservedExecutionCostModel:
         index = min(len(costs) - 1, int(0.75 * (len(costs) - 1) + 0.999999))
         return costs[index]
 
+    def estimate_latency_ms(self) -> float | None:
+        """Return empirical 75th-percentile order latency after enough samples."""
+        if len(self.samples) < self.min_samples:
+            return None
+        latencies = sorted(sample.latency_ms for sample in self.samples)
+        index = min(len(latencies) - 1, int(0.75 * (len(latencies) - 1) + 0.999999))
+        return latencies[index]
+
     @property
     def sample_count(self) -> int:
         return len(self.samples)
