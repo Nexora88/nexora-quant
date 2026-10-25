@@ -56,6 +56,7 @@ class LiveExecutor:
         self.order_lists_reconciled = False
         # Exchange trade IDs are durable idempotency keys for offline OCO recovery.
         self.processed_exchange_trade_ids: set[str] = set()
+        self.processed_oco_list_ids: set[int] = set()
 
     def sync_balances(self) -> None:
         """Reconcile local balances and open orders against the exchange account."""
@@ -88,6 +89,19 @@ class LiveExecutor:
             self.protective_order_list_id = (
                 int(active_lists[-1]["orderListId"]) if active_lists else None
             )
+            if self.protective_order_list_id is None:
+                # Recover a terminal OCO that completed while the process was offline,
+                # including the crash window before its ID was persisted locally.
+                history = self.client.all_order_lists(self.symbol, limit=1000)
+                candidates = [
+                    item for item in history
+                    if str(item.get("symbol", "")).upper() == self.symbol
+                    and str(item.get("listClientOrderId", "")).startswith("nqoco")
+                    and int(item.get("orderListId", 0)) not in self.processed_oco_list_ids
+                    and item.get("listStatusType") in {"ALL_DONE", "REJECT", "EXPIRED"}
+                ]
+                if candidates:
+                    self.protective_order_list_id = int(candidates[-1]["orderListId"])
         except Exception:
             self.open_order_lists_snapshot = []
             self.order_lists_reconciled = False
@@ -128,6 +142,9 @@ class LiveExecutor:
         self.unresolved_client_order_id = snapshot.get("unresolved_client_order_id")
         self.processed_exchange_trade_ids = {
             str(item) for item in snapshot.get("processed_exchange_trade_ids", [])
+        }
+        self.processed_oco_list_ids = {
+            int(item) for item in snapshot.get("processed_oco_list_ids", [])
         }
 
     def _load_filters(self) -> dict[str, Any]:
@@ -186,10 +203,12 @@ class LiveExecutor:
                 symbol=self.symbol, side="SELL", quantity=available,
                 take_profit_price=take_profit, stop_price=stop_price,
                 stop_limit_price=stop_limit,
-                client_order_id=f"nqoco{self._order_sequence:x}"[:36],
+                client_order_id=f"nqoco{time.time_ns():x}"[:36],
             )
             self.protective_order_list_id = int(response.get("orderListId", 0)) or None
             self.open_order_lists_snapshot.append(response)
+            if self.protective_order_list_id is not None:
+                self._order_sequence += 1
             if self.protective_order_list_id is None:
                 return False
             log.info(
@@ -288,6 +307,7 @@ class LiveExecutor:
                     "pnl_usdt": pnl,
                 })
                 self.processed_exchange_trade_ids.add(trade_id)
+            self.processed_oco_list_ids.add(list_id)
             self.protective_order_list_id = None
             self.order_lists_reconciled = True
             return True
@@ -569,6 +589,7 @@ class LiveExecutor:
             "order_state_uncertain": self.order_state_uncertain,
             "unresolved_client_order_id": self.unresolved_client_order_id,
             "processed_exchange_trade_ids": sorted(self.processed_exchange_trade_ids),
+            "processed_oco_list_ids": sorted(self.processed_oco_list_ids),
             "locked_base_quantity": self.locked_base_quantity,
             "locked_quote_balance": self.locked_quote_balance,
             "open_orders_count": len(self.open_orders_snapshot),
