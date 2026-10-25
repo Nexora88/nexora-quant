@@ -1,13 +1,20 @@
-"""Multi-factor research signals: order-book imbalance, micro-momentum, target-price bias.
+"""Multi-factor research signals with microstructure math and regime awareness.
 
-These are heuristics for experimentation, not predictions or guaranteed edge.
+Uses weighted multi-level OBI, micro-price premium, OU z-score mean-reversion,
+momentum, and optional target bias. Heuristics for research — not guaranteed edge.
 """
 from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Sequence
 
+from app.analytics.microstructure import (
+    OrnsteinUhlenbeckTracker,
+    build_snapshot,
+)
+from app.analytics.regime import MarketRegime, RegimeClassifier, RegimeSnapshot
 from app.events import Signal, utc_now
 
 
@@ -31,23 +38,25 @@ def evaluate_imbalance(
 
 @dataclass(slots=True)
 class MarketAnalysis:
-    """Snapshot of book + short-horizon price structure for the dashboard."""
-
     mid: float
     spread_bps: float
     imbalance: float
     momentum_bps: float
-    trend: str  # up | down | flat
+    trend: str
     distance_to_target_pct: float | None
-    target_bias: str  # approach_buy | approach_sell | none
-    score: float  # composite -1..+1 (positive favors long)
+    target_bias: str
+    score: float
     reasons: list[str]
     created_at: datetime
+    weighted_obi: float | None = None
+    micro_price: float | None = None
+    micro_premium_bps: float = 0.0
+    ou_zscore: float | None = None
+    mean_reversion_signal: str = "none"
+    regime: str = "unknown"
 
 
 class PriceWindow:
-    """Rolling mid-price samples for micro-momentum."""
-
     def __init__(self, maxlen: int = 120) -> None:
         self._mids: deque[float] = deque(maxlen=maxlen)
 
@@ -78,48 +87,102 @@ def analyze_market(
     price_window: PriceWindow,
     imbalance_threshold: float,
     target_price: float | None = None,
+    bids: Sequence[tuple[float, float]] | None = None,
+    asks: Sequence[tuple[float, float]] | None = None,
+    ou: OrnsteinUhlenbeckTracker | None = None,
+    regime_classifier: RegimeClassifier | None = None,
+    wall_bias: float = 0.0,
 ) -> MarketAnalysis:
     mid = (bid + ask) / 2 if bid > 0 and ask >= bid else 0.0
     spread_bps = ((ask - bid) / mid * 10_000) if mid > 0 else 0.0
-    imb = imbalance_strength(bid_qty, ask_qty)
-    price_window.push(mid)
-    mom = price_window.momentum_bps(20)
-    if mom > 3:
-        trend = "up"
-    elif mom < -3:
-        trend = "down"
-    else:
-        trend = "flat"
+    if mid > 0:
+        price_window.push(mid)
+    mom = price_window.momentum_bps()
+    trend = "up" if mom > 3 else "down" if mom < -3 else "flat"
 
-    dist: float | None = None
+    snap = build_snapshot(
+        bid=bid, ask=ask, bid_qty=bid_qty, ask_qty=ask_qty,
+        bids=bids, asks=asks, ou=ou, levels=10,
+    )
+    imb = snap.weighted_obi if snap.weighted_obi is not None else imbalance_strength(bid_qty, ask_qty)
+    imb_01 = (imb + 1.0) / 2.0 if snap.weighted_obi is not None else imb
+
+    dist = None
     target_bias = "none"
     if target_price and target_price > 0 and mid > 0:
-        dist = ((target_price / mid) - 1.0) * 100
+        dist = (target_price / mid - 1.0) * 100
         if dist > 0.15:
             target_bias = "approach_buy"
         elif dist < -0.15:
             target_bias = "approach_sell"
 
+    regime_snap: RegimeSnapshot | None = None
+    if regime_classifier is not None:
+        regime_snap = regime_classifier.update(
+            mid=mid, spread_bps=spread_bps, volume_proxy=bid_qty + ask_qty
+        )
+
     reasons: list[str] = []
     score = 0.0
-    if imb >= imbalance_threshold:
-        score += 0.45
-        reasons.append(f"bid_imbalance={imb:.2f}")
-    elif imb <= 1 - imbalance_threshold:
-        score -= 0.35
-        reasons.append(f"ask_imbalance={imb:.2f}")
-    if mom > 5:
-        score += 0.25
-        reasons.append(f"momentum_up={mom:.1f}bps")
-    elif mom < -5:
-        score -= 0.25
-        reasons.append(f"momentum_down={mom:.1f}bps")
+    regime = regime_snap.regime if regime_snap else MarketRegime.UNKNOWN
+
+    if regime == MarketRegime.STRESSED:
+        reasons.append("regime_stressed")
+        score *= 0.0
+    elif regime == MarketRegime.RANGE:
+        if snap.mean_reversion_signal == "fade_ask":
+            score += 0.50
+            reasons.append(f"ou_fade_ask z={snap.ou_zscore:.2f}" if snap.ou_zscore is not None else "ou_fade_ask")
+        elif snap.mean_reversion_signal == "fade_bid":
+            score -= 0.45
+            reasons.append(f"ou_fade_bid z={snap.ou_zscore:.2f}" if snap.ou_zscore is not None else "ou_fade_bid")
+        if snap.micro_premium_bps < -1.5:
+            score += 0.20
+            reasons.append(f"micro_cheap={snap.micro_premium_bps:.1f}bps")
+        elif snap.micro_premium_bps > 1.5:
+            score -= 0.15
+            reasons.append(f"micro_rich={snap.micro_premium_bps:.1f}bps")
+    else:
+        if snap.weighted_obi is not None:
+            if snap.weighted_obi >= (2 * imbalance_threshold - 1):
+                score += 0.40
+                reasons.append(f"w_obi={snap.weighted_obi:.2f}")
+            elif snap.weighted_obi <= -(2 * imbalance_threshold - 1):
+                score -= 0.35
+                reasons.append(f"w_obi={snap.weighted_obi:.2f}")
+        else:
+            if imb_01 >= imbalance_threshold:
+                score += 0.35
+                reasons.append(f"tob_imb={imb_01:.2f}")
+            elif imb_01 <= 1 - imbalance_threshold:
+                score -= 0.30
+                reasons.append(f"tob_imb={imb_01:.2f}")
+        if snap.micro_premium_bps > 1.0:
+            score += 0.20
+            reasons.append(f"micro_up={snap.micro_premium_bps:.1f}bps")
+        elif snap.micro_premium_bps < -1.0:
+            score -= 0.15
+            reasons.append(f"micro_dn={snap.micro_premium_bps:.1f}bps")
+        if mom > 5:
+            score += 0.25
+            reasons.append(f"mom_up={mom:.1f}bps")
+        elif mom < -5:
+            score -= 0.25
+            reasons.append(f"mom_dn={mom:.1f}bps")
+
+    if wall_bias >= 0.25:
+        score += 0.18
+        reasons.append(f"bid_walls={wall_bias:.2f}")
+    elif wall_bias <= -0.25:
+        score -= 0.15
+        reasons.append(f"ask_walls={wall_bias:.2f}")
     if target_bias == "approach_buy":
-        score += 0.30
+        score += 0.20
         reasons.append(f"below_target={dist:.2f}%")
     elif target_bias == "approach_sell":
-        score -= 0.20
+        score -= 0.15
         reasons.append(f"above_target={dist:.2f}%")
+
     if spread_bps > 15:
         score *= 0.5
         reasons.append(f"wide_spread={spread_bps:.1f}bps")
@@ -128,7 +191,7 @@ def analyze_market(
     return MarketAnalysis(
         mid=mid,
         spread_bps=spread_bps,
-        imbalance=imb,
+        imbalance=imb_01 if snap.weighted_obi is None else (snap.weighted_obi + 1) / 2,
         momentum_bps=mom,
         trend=trend,
         distance_to_target_pct=dist,
@@ -136,16 +199,24 @@ def analyze_market(
         score=score,
         reasons=reasons or ["neutral"],
         created_at=utc_now(),
+        weighted_obi=snap.weighted_obi,
+        micro_price=snap.micro_price,
+        micro_premium_bps=snap.micro_premium_bps,
+        ou_zscore=snap.ou_zscore,
+        mean_reversion_signal=snap.mean_reversion_signal,
+        regime=regime.value if isinstance(regime, MarketRegime) else str(regime),
     )
 
 
 def entry_signal_from_analysis(
     analysis: MarketAnalysis, *, min_score: float = 0.55
 ) -> Signal | None:
+    if analysis.regime == MarketRegime.STRESSED.value:
+        return None
     if analysis.score >= min_score:
         return Signal(
             "buy",
-            "composite:" + ",".join(analysis.reasons[:3]),
+            "composite:" + ",".join(analysis.reasons[:4]),
             analysis.score,
             analysis.created_at,
         )
@@ -162,7 +233,6 @@ def exit_reason(
     peak_price: float,
     target_price: float | None,
 ) -> str | None:
-    """Priority: hard stop -> trailing stop -> take profit -> absolute target."""
     if average_entry <= 0 or bid <= 0:
         return None
     move = (bid / average_entry - 1.0) * 100
