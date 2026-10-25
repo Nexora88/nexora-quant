@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
-from statistics import quantiles
 
 
 @dataclass(frozen=True, slots=True)
