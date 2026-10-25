@@ -1,0 +1,19 @@
+# 7/24 cloud / VPS: docker compose up -d
+# PC kapanınca yerel süreç durur; bu stack sunucuda kalır.
+services:
+  nexora:
+    build: .
+    container_name: nexora-quant
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - nexora-data:/app/data
+    environment:
+      - PAPER_DB_PATH=/app/data/paper.sqlite3
+      - MARKET_HISTORY_PATH=/app/data/market-history.jsonl.gz
+
+volumes:
+  nexora-data:
