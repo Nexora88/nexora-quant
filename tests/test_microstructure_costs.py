@@ -21,7 +21,9 @@ def test_cost_model_calibrates_from_fill_and_post_fill_mid():
             latency_ms=50 + i, filled_at_ms=i * 100,
         )
         model.observe_mid(99.9, i * 100 + 11)
-    estimate = model.estimate_cost_bps(latency_ms=50)
+    estimated_latency = model.estimate_latency_ms()
+    assert estimated_latency is not None and estimated_latency >= 50
+    estimate = model.estimate_cost_bps(latency_ms=estimated_latency)
     assert estimate is not None
     assert estimate > 0
 
