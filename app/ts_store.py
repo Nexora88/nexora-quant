@@ -13,6 +13,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from app.sqlite_util import configure_sqlite
+
 
 class FeatureTimeSeriesStore:
     def __init__(self, path: str | Path = "data/features.sqlite3") -> None:
@@ -21,8 +23,7 @@ class FeatureTimeSeriesStore:
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._db = sqlite3.connect(self.path, timeout=30.0, check_same_thread=False)
-        self._db.execute("PRAGMA journal_mode=WAL")
-        self._db.execute("PRAGMA synchronous=NORMAL")
+        configure_sqlite(self._db)
         self._db.executescript(
             """
             CREATE TABLE IF NOT EXISTS l2_features (
