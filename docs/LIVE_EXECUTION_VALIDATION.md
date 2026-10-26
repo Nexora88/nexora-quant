@@ -63,3 +63,12 @@ Minimum research protocol:
 ## Safety policy
 
 Keep `TRADING_MODE=paper` for normal development. `app/config.py` now rejects `TRADING_MODE=live` with `BINANCE_TESTNET=false`, even if the confirmation string is present. This is an intentional fail-closed guard until reconciliation and Testnet gates have evidence and the profitability evaluation has been reviewed. Testnet live execution remains available for controlled testing; this does not mean its end-to-end run has occurred.
+
+
+## GitHub Actions Testnet workflow
+
+The manual workflow `.github/workflows/spot-testnet-e2e.yml` runs only on `workflow_dispatch`. Before running it, add dedicated **Spot Testnet-only** repository Actions secrets named `BINANCE_SPOT_TESTNET_API_KEY` and `BINANCE_SPOT_TESTNET_API_SECRET`. Do not reuse mainnet keys.
+
+The workflow validates the secret presence and requested amount, sets the testnet flag, runs only `tests/test_spot_testnet_e2e.py`, and uploads the JUnit result artifact. It is intentionally not triggered by pull requests or pushes because the E2E test submits a small market order and creates/cancels an OCO on the Testnet account.
+
+A successful workflow run is evidence only for the scenarios exercised by that run. It does not prove strategy profitability or validate mainnet execution. The Testnet E2E remains unverified until the manual workflow completes with dedicated credentials and the resulting artifact/logs are reviewed.
