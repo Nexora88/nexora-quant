@@ -1,4 +1,4 @@
-"""Online adaptation: every closed trade updates gates; system keeps learning."""
+"""Compound growth learner: many small wins > one 100% lottery."""
 from __future__ import annotations
 
 from collections import deque
@@ -19,6 +19,7 @@ class LearnerSnapshot:
     tp_scale: float
     prefer_regime: str
     growth_mode: str
+    compound_fraction: float
     note: str
     updated_at: str
 
@@ -28,23 +29,26 @@ class OnlineLearner:
         self,
         *,
         window: int = 40,
-        base_entry_min: float = 0.35,
-        min_entry: float = 0.25,
-        max_entry: float = 0.70,
+        base_entry_min: float = 0.32,
+        min_entry: float = 0.22,
+        max_entry: float = 0.65,
+        base_compound: float = 0.85,
     ) -> None:
         self.window = window
         self.base_entry_min = base_entry_min
         self.min_entry = min_entry
         self.max_entry = max_entry
+        self.base_compound = base_compound
         self._pnls: deque[float] = deque(maxlen=window)
         self._regimes: deque[str] = deque(maxlen=window)
         self._reasons: deque[str] = deque(maxlen=window)
         self._entry_min = base_entry_min
         self._size_bias = 1.0
-        self._tp_scale = 1.0
+        self._tp_scale = 0.9
+        self._compound = base_compound
         self._prefer = "any"
         self._growth = "rebuild"
-        self._note = "cold_start"
+        self._note = "cold_start_compound"
         self._total_pnl = 0.0
         self._lifetime_trades = 0
         self._lifetime_wins = 0
@@ -70,23 +74,26 @@ class OnlineLearner:
         wr = wins / n
         avg = sum(self._pnls) / n
         total = sum(self._pnls)
-        if wr >= 0.55 and avg > 0 and total > 0:
+        if wr >= 0.52 and avg > 0 and total > 0:
             self._growth = "grow"
-            self._entry_min = max(self.min_entry, self._entry_min - 0.015)
-            self._size_bias = min(1.5, self._size_bias + 0.04)
-            self._tp_scale = min(1.35, self._tp_scale + 0.03)
-            self._note = f"grow wr={wr:.2f} avg={avg:.3f} sum={total:.3f}"
-        elif wr < 0.40 or total < -abs(avg) * 2:
+            self._entry_min = max(self.min_entry, self._entry_min - 0.02)
+            self._size_bias = min(1.6, self._size_bias + 0.05)
+            self._tp_scale = max(0.65, min(1.1, self._tp_scale - 0.02))
+            self._compound = min(0.95, self._compound + 0.02)
+            self._note = f"compound_grow wr={wr:.2f} avg={avg:.3f}"
+        elif wr < 0.38 or total < -abs(avg) * 2:
             self._growth = "protect"
-            self._entry_min = min(self.max_entry, self._entry_min + 0.025)
-            self._size_bias = max(0.45, self._size_bias - 0.07)
-            self._tp_scale = max(0.65, self._tp_scale - 0.04)
-            self._note = f"protect wr={wr:.2f} avg={avg:.3f} sum={total:.3f}"
+            self._entry_min = min(self.max_entry, self._entry_min + 0.03)
+            self._size_bias = max(0.4, self._size_bias - 0.08)
+            self._tp_scale = min(1.2, self._tp_scale + 0.03)
+            self._compound = max(0.5, self._compound - 0.05)
+            self._note = f"protect wr={wr:.2f} avg={avg:.3f}"
         else:
             self._growth = "rebuild"
             self._entry_min = 0.75 * self._entry_min + 0.25 * self.base_entry_min
             self._size_bias = 0.85 * self._size_bias + 0.15 * 1.0
-            self._tp_scale = 0.85 * self._tp_scale + 0.15 * 1.0
+            self._tp_scale = 0.85 * self._tp_scale + 0.15 * 0.9
+            self._compound = 0.85 * self._compound + 0.15 * self.base_compound
             self._note = f"rebuild wr={wr:.2f} avg={avg:.3f}"
         by: dict[str, float] = {}
         for p, r in zip(self._pnls, self._regimes):
@@ -99,10 +106,10 @@ class OnlineLearner:
                 self._prefer = "any"
         win_reasons = [r for p, r in zip(self._pnls, self._reasons) if p > 0 and r]
         if len(win_reasons) >= 3:
-            trail_hits = sum(1 for r in win_reasons if "trail" in r or "trend_break" in r)
-            if trail_hits / len(win_reasons) > 0.6:
-                self._tp_scale = max(0.7, self._tp_scale - 0.02)
-                self._note += " lock_earlier"
+            tp_hits = sum(1 for r in win_reasons if "take_profit" in r)
+            if tp_hits / len(win_reasons) >= 0.5:
+                self._tp_scale = max(0.6, self._tp_scale - 0.01)
+                self._note += " recycle_fast"
 
     @property
     def entry_min_score(self) -> float:
@@ -115,6 +122,10 @@ class OnlineLearner:
     @property
     def tp_scale(self) -> float:
         return float(self._tp_scale)
+
+    @property
+    def compound_fraction(self) -> float:
+        return float(self._compound)
 
     @property
     def prefer_regime(self) -> str:
@@ -138,45 +149,35 @@ class OnlineLearner:
         wins = sum(1 for x in self._pnls if x > 0)
         avg = (sum(self._pnls) / n) if n else 0.0
         return LearnerSnapshot(
-            trades=n,
-            wins=wins,
-            win_rate=(wins / n) if n else 0.0,
-            avg_pnl=avg,
-            total_pnl=float(sum(self._pnls)) if n else 0.0,
-            entry_min_score=self._entry_min,
-            size_bias=self._size_bias,
-            tp_scale=self._tp_scale,
-            prefer_regime=self._prefer,
-            growth_mode=self._growth,
-            note=self._note,
-            updated_at=datetime.now(timezone.utc).isoformat(),
+            trades=n, wins=wins, win_rate=(wins / n) if n else 0.0,
+            avg_pnl=avg, total_pnl=float(sum(self._pnls)) if n else 0.0,
+            entry_min_score=self._entry_min, size_bias=self._size_bias,
+            tp_scale=self._tp_scale, prefer_regime=self._prefer,
+            growth_mode=self._growth, compound_fraction=self._compound,
+            note=self._note, updated_at=datetime.now(timezone.utc).isoformat(),
         )
 
     def to_dict(self) -> dict[str, Any]:
         s = self.snapshot()
-        d = {
+        return {
             "trades": s.trades, "wins": s.wins, "win_rate": s.win_rate,
             "avg_pnl": s.avg_pnl, "total_pnl": s.total_pnl,
             "entry_min_score": s.entry_min_score, "size_bias": s.size_bias,
             "tp_scale": s.tp_scale, "prefer_regime": s.prefer_regime,
-            "growth_mode": s.growth_mode, "note": s.note, "updated_at": s.updated_at,
+            "growth_mode": s.growth_mode, "compound_fraction": s.compound_fraction,
+            "note": s.note, "updated_at": s.updated_at,
+            "lifetime_trades": self._lifetime_trades,
+            "lifetime_wins": self._lifetime_wins,
+            "lifetime_pnl": round(self._total_pnl, 6),
         }
-        d["lifetime_trades"] = self._lifetime_trades
-        d["lifetime_wins"] = self._lifetime_wins
-        d["lifetime_pnl"] = round(self._total_pnl, 6)
-        return d
 
     def export_state(self) -> dict[str, Any]:
         return {
-            "pnls": list(self._pnls),
-            "regimes": list(self._regimes),
-            "reasons": list(self._reasons),
-            "entry_min": self._entry_min,
-            "size_bias": self._size_bias,
-            "tp_scale": self._tp_scale,
-            "prefer": self._prefer,
-            "growth": self._growth,
-            "total_pnl": self._total_pnl,
+            "pnls": list(self._pnls), "regimes": list(self._regimes),
+            "reasons": list(self._reasons), "entry_min": self._entry_min,
+            "size_bias": self._size_bias, "tp_scale": self._tp_scale,
+            "compound": self._compound, "prefer": self._prefer,
+            "growth": self._growth, "total_pnl": self._total_pnl,
             "lifetime_trades": self._lifetime_trades,
             "lifetime_wins": self._lifetime_wins,
         }
@@ -189,7 +190,8 @@ class OnlineLearner:
         self._reasons = deque((str(x) for x in data.get("reasons") or []), maxlen=self.window)
         self._entry_min = float(data.get("entry_min", self.base_entry_min))
         self._size_bias = float(data.get("size_bias", 1.0))
-        self._tp_scale = float(data.get("tp_scale", 1.0))
+        self._tp_scale = float(data.get("tp_scale", 0.9))
+        self._compound = float(data.get("compound", self.base_compound))
         self._prefer = str(data.get("prefer", "any"))
         self._growth = str(data.get("growth", "rebuild"))
         self._total_pnl = float(data.get("total_pnl", 0.0))
