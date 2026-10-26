@@ -36,12 +36,19 @@ Default risk shape is **asymmetric**: `TAKE_PROFIT_PCT=1.20`, `STOP_LOSS_PCT=0.3
 
 See [docs/GO_LIVE_CHECKLIST.md](docs/GO_LIVE_CHECKLIST.md).
 
-## Multi-pair L2 capture (research)
+## Multi-pair L2 capture + accelerated backtest (research)
+
+Prefer a host in **AWS Tokyo (ap-northeast-1)** — [docs/AWS_TOKYO.md](docs/AWS_TOKYO.md).
 
 ```bash
-# .env: SYMBOL=btcusdt  SYMBOLS=ethusdt,solusdt,bnbusdt
+# .env: TRADING_MODE=paper  SYMBOL=btcusdt  SYMBOLS=ethusdt,solusdt,bnbusdt
+# Weekday: leave capture running (or systemd unit deploy/nexora-capture.service)
 python scripts/capture_multi_symbol.py
+
+# Weekend: replay real L2 with research score gate
 python scripts/run_l2_backtest.py data/market-history-ethusdt.jsonl.gz --min-score 0.55
+python scripts/run_l2_backtest.py data/market-history-solusdt.jsonl.gz --min-score 0.55
+python scripts/run_l2_backtest.py data/market-history-bnbusdt.jsonl.gz --min-score 0.55
 ```
 
 ## Design notes

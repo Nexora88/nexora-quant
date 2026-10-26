@@ -1,5 +1,21 @@
 # Paper run → Mainnet live (15 USDT) checklist
 
+## 0. Tokyo prep + weekday L2 harvest (recommended)
+
+1. Launch Ubuntu in **AWS ap-northeast-1** (`t2.micro` / `t3.micro` or small) — [AWS_TOKYO.md](AWS_TOKYO.md).
+2. Week: paper multi-pair capture on that host (`SYMBOLS=ethusdt,solusdt,bnbusdt`):
+
+```bash
+python scripts/capture_multi_symbol.py
+# or: sudo systemctl enable --now nexora-capture
+```
+
+3. Before raising size: replay with research gate:
+
+```bash
+python scripts/run_l2_backtest.py data/market-history-ethusdt.jsonl.gz --min-score 0.55
+```
+
 ## 1. Overnight paper run (VPS)
 
 ```bash
