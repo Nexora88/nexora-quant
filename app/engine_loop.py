@@ -38,7 +38,7 @@ async def run() -> None:
             try:
                 es.executor.restore(saved["account"])
             except Exception as exc:
-                log.warning("Could not restore live local mirror: %s", exc)
+                log.warning("Could not restore live local mirror: %s", exp if False else exc)
         r = saved.get("risk", {})
         risk.realized_pnl_today = float(r.get("realized_pnl_today", 0))
         risk.consecutive_losses = int(r.get("consecutive_losses", 0))
@@ -61,7 +61,7 @@ async def run() -> None:
             getattr(motor, "_ema_fused", 0.0),
         )
     except Exception as exc:
-        log.warning("Motor restore skipped: %s", exp if False else exc)
+        log.warning("Motor restore skipped: %s", exc)
     try:
         memory.load_state((saved or {}).get("memory"))
         state.memory_lessons = memory.to_dict()
