@@ -1,8 +1,4 @@
-"""Decision layer: fuse microstructure, regime, walls, sustained gate into an audited choice.
-
-Produces a structured DecisionRecord every tick for the dashboard and ledger —
-not a black-box score, but an explainable vote of research features.
-"""
+"""Decision layer: fuse microstructure, regime, walls, sustained into audited choice."""
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
@@ -59,6 +55,12 @@ def build_decision(
     edge_notes: list[str] | None = None,
     adverse_toxic: bool = False,
     adverse_reasons: list[str] | None = None,
+    noise_noisy: bool = False,
+    noise_reason: str | None = None,
+    whale_side: str | None = None,
+    whale_strength: float = 0.0,
+    whale_note: str | None = None,
+    autonomous_mode: bool = False,
 ) -> DecisionRecord:
     votes: list[FeatureVote] = []
     blockers: list[str] = []
@@ -80,9 +82,9 @@ def build_decision(
 
     if analysis.ou_zscore is not None:
         if analysis.mean_reversion_signal == "fade_ask":
-            votes.append(_vote("ou_mean_reversion", "long", 0.3, analysis.ou_zscore, f"z={analysis.ou_zscore:.2f} fade_ask"))
+            votes.append(_vote("ou_mean_reversion", "long", 0.3, analysis.ou_zscore, f"z={analysis.ou_zscore:.2f}"))
         elif analysis.mean_reversion_signal == "fade_bid":
-            votes.append(_vote("ou_mean_reversion", "short", 0.3, analysis.ou_zscore, f"z={analysis.ou_zscore:.2f} fade_bid"))
+            votes.append(_vote("ou_mean_reversion", "short", 0.3, analysis.ou_zscore, f"z={analysis.ou_zscore:.2f}"))
 
     if analysis.momentum_bps > 5:
         votes.append(_vote("momentum", "long", 0.15, analysis.momentum_bps, f"mom={analysis.momentum_bps:.1f}bps"))
@@ -93,6 +95,11 @@ def build_decision(
         if "wall" in r:
             direction = "long" if "bid_walls" in r else "short" if "ask_walls" in r else "flat"
             votes.append(_vote("liquidity_walls", direction, 0.18, None, r))
+
+    if whale_side == "bid" and whale_strength >= 0.3:
+        votes.append(_vote("whale_bid", "long", 0.22, whale_strength, whale_note or "whale_bid"))
+    elif whale_side == "ask" and whale_strength >= 0.3:
+        votes.append(_vote("whale_ask", "short", 0.22, whale_strength, whale_note or "whale_ask"))
 
     long_w = sum(v.weight for v in votes if v.direction == "long")
     short_w = sum(v.weight for v in votes if v.direction == "short")
@@ -109,14 +116,31 @@ def build_decision(
         blockers.append(f"sustained:{sustained.reason}")
     if analysis.score < entry_min_score and not in_position:
         blockers.append(f"score_below_{entry_min_score}")
+
     if edge_tradeable is False:
-        blockers.append("edge_quality_insufficient")
-        if edge_notes:
-            rationale.extend(edge_notes[:3])
+        if autonomous_mode:
+            rationale.append("edge_soft:" + (edge_notes[0] if edge_notes else "low"))
+        else:
+            blockers.append("edge_quality_insufficient")
+            if edge_notes:
+                rationale.extend(edge_notes[:3])
     if adverse_toxic:
-        blockers.append("adverse_selection")
-        if adverse_reasons:
-            rationale.extend(adverse_reasons[:3])
+        if autonomous_mode:
+            rationale.append("adverse_soft:" + (adverse_reasons[0] if adverse_reasons else "toxic"))
+        else:
+            blockers.append("adverse_selection")
+            if adverse_reasons:
+                rationale.extend(adverse_reasons[:3])
+    if noise_noisy:
+        if autonomous_mode:
+            rationale.append("noise_soft:" + (noise_reason or "noisy"))
+        else:
+            blockers.append("noise_filter")
+            if noise_reason:
+                rationale.append(noise_reason)
+    if autonomous_mode and sustained is not None and not sustained.ready and not in_position:
+        blockers[:] = [b for b in blockers if not str(b).startswith("sustained:")]
+        rationale.append("sustained_soft:" + sustained.reason)
 
     if in_position:
         action = "hold"
@@ -124,7 +148,7 @@ def build_decision(
     elif blockers:
         action = "block"
         rationale.extend(blockers)
-    elif analysis.score >= entry_min_score and net > 0.15:
+    elif analysis.score >= entry_min_score and net > (0.05 if autonomous_mode else 0.15):
         action = "enter_long"
         rationale.append(f"score={analysis.score:.2f} net_vote={net:.2f}")
         rationale.extend(analysis.reasons[:4])
