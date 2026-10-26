@@ -90,6 +90,13 @@ async def run() -> None:
             confirmations, ticks = await handle_tick(
                 depth, store, history, features, mode, key, persist, confirmations, ticks,
             )
+            if ticks % 50 == 0:
+                try:
+                    state.io_queue_stats = io_q.stats()
+                    if state.io_queue_stats.get("queue_depth", 0) > state.io_queue_stats.get("queue_max", 1) * 0.7:
+                        log.warning("IO queue elevated: %s", state.io_queue_stats)
+                except Exception:
+                    pass
             await __import__("asyncio").sleep(0)
     finally:
         persist()
