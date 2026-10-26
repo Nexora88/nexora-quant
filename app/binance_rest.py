@@ -109,6 +109,13 @@ class BinanceRestClient:
                 return float(bal.get("free", 0))
         return 0.0
 
+    def ticker_price(self, symbol: str) -> float:
+        raw = self._request("GET", "/api/v3/ticker/price", {"symbol": symbol.upper()})
+        price = float(raw.get("price", 0))
+        if price <= 0:
+            raise RuntimeError("Invalid ticker price response")
+        return price
+
     def exchange_info_symbol(self, symbol: str) -> dict[str, Any]:
         data = self._request("GET", "/api/v3/exchangeInfo", {"symbol": symbol.upper()})
         symbols = data.get("symbols") or []
@@ -168,6 +175,42 @@ class BinanceRestClient:
         if not isinstance(raw, list):
             raise RuntimeError("Unexpected myTrades response")
         return raw
+
+    def all_order_lists(self, *, limit: int = 1000, max_pages: int = 100) -> list[dict[str, Any]]:
+        """Paginate historical OCO lists; raise rather than silently return truncated history."""
+        if not 1 <= limit <= 1000 or max_pages < 1:
+            raise ValueError("limit must be 1..1000 and max_pages must be positive")
+        result: list[dict[str, Any]] = []
+        from_id: int | None = None
+        for _ in range(max_pages):
+            params: dict[str, Any] = {"limit": limit}
+            if from_id is not None:
+                params["fromId"] = from_id
+            batch = self._request("GET", "/api/v3/allOrderList", params, signed=True)
+            if not isinstance(batch, list):
+                raise RuntimeError("Unexpected allOrderList response")
+            result.extend(batch)
+            if len(batch) < limit:
+                return result
+            ids = [int(item.get("orderListId", 0)) for item in batch]
+            next_id = max(ids, default=0) + 1
+            if next_id <= (from_id or 0):
+                raise RuntimeError("allOrderList pagination did not advance")
+            from_id = next_id
+        raise RuntimeError("allOrderList history may be truncated; reconciliation blocked")
+
+    def get_order_list(self, order_list_id: int) -> dict[str, Any]:
+        """Fetch historical/current OCO list state, including child order reports."""
+        raw = self._request(
+            "GET", "/api/v3/orderList", {"orderListId": order_list_id}, signed=True,
+        )
+        if not isinstance(raw, dict) or not raw.get("orderListId"):
+            raise RuntimeError("Unexpected orderList response")
+        return raw
+
+    def order_list_trades(self, symbol: str, order_id: int) -> list[dict[str, Any]]:
+        """Fetch every trade for a child order; pagination is deliberately not guessed."""
+        return self.order_trades(symbol, order_id)
 
     def open_orders(self, symbol: str) -> list[dict[str, Any]]:
         raw = self._request(

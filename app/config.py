@@ -2,7 +2,7 @@
 
 Supports:
   TRADING_MODE=paper   — simulated fills only (default, safest)
-  TRADING_MODE=live    — real Binance Spot market orders (requires API keys + confirmation)
+  TRADING_MODE=live    — Testnet execution only; mainnet is disabled in this build
 """
 from dataclasses import dataclass
 import os
@@ -117,11 +117,10 @@ class Settings:
                     "TRADING_MODE=live requires BINANCE_API_KEY and BINANCE_API_SECRET."
                 )
             if not self.binance_testnet:
-                if self.live_confirm != "I_UNDERSTAND_REAL_MONEY":
-                    raise ValueError(
-                        "Mainnet live trading requires LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY "
-                        "and BINANCE_TESTNET=false. Use testnet first."
-                    )
+                raise ValueError(
+                    "Mainnet live trading is disabled in this build. "
+                    "Use Binance Spot Testnet with BINANCE_TESTNET=true."
+                )
         return self
 
 
