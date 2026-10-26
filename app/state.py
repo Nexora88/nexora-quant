@@ -27,6 +27,12 @@ class RuntimeState:
         self.shadow_leaderboard: list[dict[str, Any]] = []
         self.last_decision: dict[str, Any] | None = None
         self.decision_history: deque = deque(maxlen=50)
+        self.emergency: bool = False
+        self.emergency_reason: str | None = None
+        self.io_queue_stats: dict[str, Any] = {}
+        self.learner_snapshot: dict[str, Any] = {}
+        self.memory_lessons: list[dict[str, Any]] = []
+        self.motor_report: dict[str, Any] | None = None
 
     def update_book(self, book: BookTicker) -> None:
         self.latest_book = book
@@ -146,6 +152,12 @@ class RuntimeState:
             "shadow_leaderboard": list(self.shadow_leaderboard)[:5],
             "last_decision": self.last_decision,
             "decision_history": list(self.decision_history)[:15],
+            "emergency": self.emergency,
+            "emergency_reason": self.emergency_reason,
+            "io_queue_stats": dict(self.io_queue_stats) if self.io_queue_stats else {},
+            "learner_snapshot": dict(self.learner_snapshot) if self.learner_snapshot else {},
+            "memory_lessons": list(self.memory_lessons)[:10],
+            "motor_report": self.motor_report,
             "risk_limits": {
                 "max_order_size_usdt": settings.max_order_size_usdt,
                 "max_daily_loss_usdt": settings.max_daily_loss_usdt,

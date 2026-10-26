@@ -1,4 +1,9 @@
-"""Runtime hardening for LiveExecutor: OCO retries + emergency flatten."""
+"""Runtime hardening for LiveExecutor: OCO retries + emergency flatten.
+
+After a live BUY fill, exchange-hosted OCO must be placed within milliseconds.
+HTTP 5xx / transient failures are retried; if all retries fail the position is
+flattened immediately so the bot never holds a naked long.
+"""
 from __future__ import annotations
 
 import logging
@@ -30,8 +35,9 @@ def harden_live_executor() -> None:
         take_profit_pct: float,
         stop_loss_pct: float,
         retries: int = 3,
-        retry_delay_s: float = 0.35,
+        retry_delay_s: float = 0.25,
     ) -> bool:
+        """Place exchange OCO with short retries. Returns True if OCO is live."""
         if current_price <= 0 or not 0 < take_profit_pct < 100 or not 0 < stop_loss_pct < 100:
             return False
         if getattr(self, "order_state_uncertain", False):
@@ -43,6 +49,7 @@ def harden_live_executor() -> None:
             try:
                 available = self._round_step(self.client.free_balance(self.base_asset))
                 if available <= 0:
+                    log.error("OCO: no free base balance to protect")
                     return False
                 take_profit = self._round_price(
                     self.average_entry_price * (1 + take_profit_pct / 100), round_up=True,
@@ -63,14 +70,12 @@ def harden_live_executor() -> None:
                     stop_limit_price=stop_limit,
                     client_order_id=f"nqoco{time.time_ns():x}"[:36],
                 )
-                list_id = int(response.get("orderListId", 0)) or None
-                self.protective_order_list_id = list_id
-                if hasattr(self, "open_order_lists_snapshot"):
-                    self.open_order_lists_snapshot.append(response)
-                if list_id is not None:
-                    self._order_sequence = getattr(self, "_order_sequence", 0) + 1
-                    log.info("Exchange OCO installed listId=%s attempt=%s", list_id, attempt)
+                list_id = int(response.get("orderListId") or response.get("orderListID") or 0)
+                if list_id > 0:
+                    self.protective_order_list_id = list_id
+                    log.info("OCO installed list_id=%s attempt=%s", list_id, attempt)
                     return True
+                last_err = RuntimeError(f"OCO response missing orderListId: {response}")
             except Exception as exc:
                 last_err = exc
                 log.warning("OCO install failed attempt=%s/%s: %s", attempt, retries, exc)
@@ -81,6 +86,7 @@ def harden_live_executor() -> None:
         return False
 
     def emergency_flatten(self, *, reason: str = "oco_failed", mark_price: float = 0.0):
+        """Market-sell entire base position and mark emergency."""
         self.emergency = True
         self.emergency_reason = reason
         try:
@@ -108,11 +114,13 @@ def harden_live_executor() -> None:
         stop_loss_pct: float,
         mark_price: float | None = None,
     ) -> bool:
+        """After BUY: install OCO or immediately flatten. Never leave a naked long."""
         ok = self.ensure_protective_oco(
             current_price=current_price,
             take_profit_pct=take_profit_pct,
             stop_loss_pct=stop_loss_pct,
             retries=3,
+            retry_delay_s=0.25,
         )
         if ok:
             return True
