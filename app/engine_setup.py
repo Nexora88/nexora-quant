@@ -18,6 +18,7 @@ from app.analytics.sustained import SustainedSignalGate
 from app.intelligence.adverse import AdverseSelectionFilter
 from app.intelligence.whale import WhaleTracker
 from app.intelligence.noise import NoiseFilter
+from app.intelligence.learner import OnlineLearner
 from app.strategy import PriceWindow
 
 log = logging.getLogger(__name__)
@@ -52,6 +53,10 @@ wall_tracker = WallTracker(levels=15, multiple=3.0)
 adverse_filter = AdverseSelectionFilter()
 whale_tracker = WhaleTracker(multiple=4.0, persist_ticks=5)
 noise_filter = NoiseFilter(window=12, min_stability=0.55)
+learner = OnlineLearner(
+    window=30,
+    base_entry_min=min(getattr(settings, "entry_min_score", 0.35), 0.35),
+)
 sustained = SustainedSignalGate(
     min_confirmations=(1 if getattr(settings, "autonomous_mode", True) else max(settings.signal_confirmations, 4)),
     min_hold_seconds=(0.3 if getattr(settings, "autonomous_mode", True) else 2.0),
@@ -69,11 +74,7 @@ def _build_executor():
             api_secret=settings.binance_api_secret,
             testnet=settings.binance_testnet,
         )
-        live = LiveExecutor(
-            client,
-            symbol=settings.symbol,
-            fee_rate=settings.fee_rate,
-        )
+        live = LiveExecutor(client, symbol=settings.symbol, fee_rate=settings.fee_rate)
         live.sync_balances()
         return live
     return PaperExecutor(settings.starting_cash_usdt, settings.fee_rate)
