@@ -3,6 +3,9 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+from app.live_hardening import harden_live_executor
+
+harden_live_executor()
 from app.live import LiveExecutor
 
 
