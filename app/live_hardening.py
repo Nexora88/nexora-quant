@@ -100,7 +100,30 @@ def harden_live_executor() -> None:
             self.order_state_uncertain = True
             return None
 
+    def install_protection_or_flatten(
+        self,
+        *,
+        current_price: float,
+        take_profit_pct: float,
+        stop_loss_pct: float,
+        mark_price: float | None = None,
+    ) -> bool:
+        ok = self.ensure_protective_oco(
+            current_price=current_price,
+            take_profit_pct=take_profit_pct,
+            stop_loss_pct=stop_loss_pct,
+            retries=3,
+        )
+        if ok:
+            return True
+        self.emergency_flatten(
+            reason="oco_install_failed",
+            mark_price=float(mark_price or current_price or 0),
+        )
+        return False
+
     LiveExecutor.__init__ = __init__  # type: ignore[method-assign]
+    LiveExecutor.install_protection_or_flatten = install_protection_or_flatten  # type: ignore[method-assign]
     LiveExecutor.ensure_protective_oco = ensure_protective_oco  # type: ignore[method-assign]
     LiveExecutor.emergency_flatten = emergency_flatten  # type: ignore[method-assign]
     LiveExecutor._nexora_hardened = True  # type: ignore[attr-defined]
