@@ -13,6 +13,8 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
+from app.sqlite_util import configure_sqlite
+
 
 class PaperStore:
     """Persist paper snapshots and trades; never stores exchange credentials."""
@@ -31,10 +33,7 @@ class PaperStore:
         self._lock = threading.RLock()
         self._db = sqlite3.connect(self.path, timeout=30.0, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
-        self._db.execute("PRAGMA foreign_keys = ON")
-        self._db.execute("PRAGMA busy_timeout = 30000")
-        self._db.execute("PRAGMA journal_mode = WAL")
-        self._db.execute("PRAGMA synchronous = NORMAL")
+        configure_sqlite(self._db)
         self._db.executescript(
             """
             CREATE TABLE IF NOT EXISTS paper_state (
