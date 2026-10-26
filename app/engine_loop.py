@@ -38,7 +38,7 @@ async def run() -> None:
             try:
                 es.executor.restore(saved["account"])
             except Exception as exc:
-                log.warning("Could not restore live local mirror: %s", exp if False else exc)
+                log.warning("Could not restore live local mirror: %s", exc)
         r = saved.get("risk", {})
         risk.realized_pnl_today = float(r.get("realized_pnl_today", 0))
         risk.consecutive_losses = int(r.get("consecutive_losses", 0))
