@@ -11,6 +11,7 @@ from app.simulation import ExecutionSimulator
 from app.state import RuntimeState
 from app.analytics.microstructure import OrnsteinUhlenbeckTracker
 from app.analytics.regime import RegimeClassifier
+from app.analytics.motor import AnalysisMotor
 from app.dynamic_gate import DynamicKellyGate
 from app.shadow import ShadowBook
 from app.analytics.walls import WallTracker
@@ -55,9 +56,11 @@ adverse_filter = AdverseSelectionFilter()
 whale_tracker = WhaleTracker(multiple=4.0, persist_ticks=5)
 noise_filter = NoiseFilter(window=12, min_stability=0.55)
 trend_follower = TrendFollower(fast=12, slow=48)
+motor = AnalysisMotor(window=120)
 learner = OnlineLearner(
-    window=30,
-    base_entry_min=min(getattr(settings, "entry_min_score", 0.35), 0.35),
+    window=40,
+    base_entry_min=min(getattr(settings, "entry_min_score", 0.32), 0.32),
+    base_compound=float(getattr(settings, "compound_fraction", 0.85)),
 )
 sustained = SustainedSignalGate(
     min_confirmations=(1 if getattr(settings, "autonomous_mode", True) else max(settings.signal_confirmations, 4)),
