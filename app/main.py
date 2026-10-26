@@ -1,9 +1,23 @@
 """Command-line entry point."""
+from __future__ import annotations
+
 import argparse
 import asyncio
 import logging
+
 from app.config import settings
 from app.engine import run
+
+
+def _install_uvloop() -> bool:
+    """Prefer uvloop on Linux for lower WS/event-loop latency (optional dependency)."""
+    try:
+        import uvloop  # type: ignore
+
+        uvloop.install()
+        return True
+    except Exception:
+        return False
 
 
 def main() -> None:
@@ -34,6 +48,8 @@ def main() -> None:
             print(f"Orders: LIVE ({net})")
         print("Dashboard: uvicorn app.api:app --host 0.0.0.0 --port 8000")
         return
+    used = _install_uvloop()
+    logging.getLogger(__name__).info("event_loop=%s", "uvloop" if used else "asyncio")
     try:
         asyncio.run(run())
     except KeyboardInterrupt:

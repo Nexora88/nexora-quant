@@ -13,6 +13,7 @@ dependencies = ["websockets>=12.0,<18", "python-dotenv>=1.0,<2", "fastapi>=0.110
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<10", "pytest-asyncio>=0.23,<2", "ruff>=0.5,<1", "httpx>=0.27,<1"]
+perf = ["uvloop>=0.19,<1"]
 
 [tool.setuptools.packages.find]
 include = ["app*"]
