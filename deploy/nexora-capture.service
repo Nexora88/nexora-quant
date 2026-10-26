@@ -1,0 +1,21 @@
+[Unit]
+Description=Nexora Quant multi-symbol L2 paper capture (Tokyo harvest)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/nexora-quant
+EnvironmentFile=/opt/nexora-quant/.env
+ExecStart=/opt/nexora-quant/.venv/bin/python scripts/capture_multi_symbol.py
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nexora-capture
+
+[Install]
+WantedBy=multi-user.target

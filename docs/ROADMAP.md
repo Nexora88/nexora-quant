@@ -4,8 +4,9 @@
 
 - L2 sync depth stream + paper/live execution paths
 - AnalysisMotor ensemble, TrendFollower, OnlineLearner, TradeMemory
-- Compound-oriented defaults (small TP, redeploy free cash)
-- L2 event backtest CLI, impact model, AsyncIoQueue, feature store export hooks
+- Compound-oriented defaults (asymmetric TP/SL, redeploy free cash)
+- L2 event backtest CLI (`--min-score 0.55`), impact model, AsyncIoQueue, feature store export hooks
+- Multi-pair paper capture + Tokyo ops docs (`AWS_TOKYO.md`, `nexora-capture.service`)
 - Dashboard API + JWT/token auth hooks
 - Deploy templates (systemd / PM2) and go-live checklist
 
