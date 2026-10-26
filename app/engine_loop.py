@@ -12,7 +12,7 @@ from app.market_history import MarketHistoryWriter
 from app.ts_store import FeatureTimeSeriesStore
 from app.binance_depth import stream_synchronized_depth
 from app.engine_tick import handle_tick
-from app.engine_setup import shadows, learner, memory
+from app.engine_setup import shadows, learner, memory, motor
 from app import engine_setup as es
 
 
@@ -54,6 +54,15 @@ async def run() -> None:
     except Exception as exc:
         log.warning("Learner restore skipped: %s", exc)
     try:
+        motor.load_state((saved or {}).get("motor"))
+        log.info(
+            "Motor restored bias=%s ema=%.3f",
+            getattr(motor, "_bias", "?"),
+            getattr(motor, "_ema_fused", 0.0),
+        )
+    except Exception as exc:
+        log.warning("Motor restore skipped: %s", exp if False else exc)
+    try:
         memory.load_state((saved or {}).get("memory"))
         state.memory_lessons = memory.to_dict()
         log.info("Memory restored: %s", memory.to_dict().get("lifetime_trades"))
@@ -83,6 +92,7 @@ async def run() -> None:
             "mode": mode,
             "learner": learner.export_state(),
             "memory": memory.export_state(),
+            "motor": motor.export_state(),
             "saved_at": datetime.now(timezone.utc).isoformat(),
         }
         io_q.enqueue_state(key, payload)
