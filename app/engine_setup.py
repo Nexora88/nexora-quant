@@ -1,10 +1,6 @@
 """Engine globals, executor factory, fill helpers."""
 from __future__ import annotations
 
-from app.live_hardening import harden_live_executor
-
-harden_live_executor()
-
 import asyncio
 import logging
 
@@ -27,6 +23,10 @@ from app.intelligence.learner import OnlineLearner
 from app.intelligence.trend_follow import TrendFollower
 from app.intelligence.memory import TradeMemory
 from app.strategy import PriceWindow
+from app.live_hardening import harden_live_executor
+
+# Apply OCO retry + emergency flatten before any LiveExecutor is constructed.
+harden_live_executor()
 
 log = logging.getLogger(__name__)
 state = RuntimeState()
