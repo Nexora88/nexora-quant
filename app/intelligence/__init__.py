@@ -4,6 +4,7 @@ from app.intelligence.adverse import AdverseSelectionFilter
 from app.intelligence.whale import WhaleTracker, WhaleSignal
 from app.intelligence.noise import NoiseFilter, NoiseVerdict
 from app.intelligence.learner import OnlineLearner, LearnerSnapshot
+from app.intelligence.trend_follow import TrendFollower, TrendState
 
 __all__ = [
     "EdgeReport", "score_edge",
@@ -11,4 +12,5 @@ __all__ = [
     "WhaleTracker", "WhaleSignal",
     "NoiseFilter", "NoiseVerdict",
     "OnlineLearner", "LearnerSnapshot",
+    "TrendFollower", "TrendState",
 ]
