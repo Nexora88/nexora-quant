@@ -19,16 +19,9 @@ from app.intelligence.adverse import AdverseSelectionFilter
 from app.intelligence.whale import WhaleTracker
 from app.intelligence.noise import NoiseFilter
 from app.strategy import PriceWindow
-from app.microstructure_costs import ObservedExecutionCostModel
 
 log = logging.getLogger(__name__)
 state = RuntimeState()
-execution_costs = ObservedExecutionCostModel(
-    min_samples=30,
-    horizon_ms=1000,
-    window_size=500,
-    persistence_path=settings.execution_costs_path,
-)
 
 risk = RiskManager(
     max_order_size_usdt=settings.max_order_size_usdt,
@@ -60,9 +53,9 @@ adverse_filter = AdverseSelectionFilter()
 whale_tracker = WhaleTracker(multiple=4.0, persist_ticks=5)
 noise_filter = NoiseFilter(window=12, min_stability=0.55)
 sustained = SustainedSignalGate(
-    min_confirmations=max(settings.signal_confirmations, 4),
-    min_hold_seconds=2.0,
-    min_score=settings.entry_min_score,
+    min_confirmations=(1 if getattr(settings, "autonomous_mode", True) else max(settings.signal_confirmations, 4)),
+    min_hold_seconds=(0.3 if getattr(settings, "autonomous_mode", True) else 2.0),
+    min_score=(min(settings.entry_min_score, 0.35) if getattr(settings, "autonomous_mode", True) else settings.entry_min_score),
 )
 
 
@@ -91,12 +84,8 @@ def _event_key(key: str, trade: dict) -> str:
     return f"{key}:{oid}:{trade['side']}:{trade['quantity']:.12f}"
 
 
-async def _paper_fill(
-    side: str, price: float, quantity: float, *, book_levels=None
-) -> object:
-    fill = simulator.fill(
-        side=side, reference_price=price, quantity=quantity, book_levels=book_levels
-    )
+async def _paper_fill(side: str, price: float, quantity: float) -> object:
+    fill = simulator.fill(side=side, reference_price=price, quantity=quantity)
     if fill.latency_ms:
         await asyncio.sleep(fill.latency_ms / 1000)
     return fill
