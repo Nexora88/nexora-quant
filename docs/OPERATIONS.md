@@ -1,19 +1,44 @@
-# Local operations guide
+# Operations
 
-## Start and stop
-Run `python -m app.main` to connect to the public Binance stream and run the paper simulation. Stop with Ctrl+C. Run `python -m app.main --once` to validate configuration without opening a network connection.
+## Paper (default)
 
-## Read-only API
-Run `uvicorn app.api:app --host 127.0.0.1 --port 8000`. The health, status, and portfolio endpoints are read-only. Do not bind to 0.0.0.0 or deploy publicly without authentication, request limits, and a security review.
+```bash
+cp .env.example .env
+# TRADING_MODE=paper
+python -m app.main
+```
 
-## Configuration changes
-Copy `.env.example` to `.env` and change non-secret simulation parameters. The app intentionally rejects trading modes other than `paper`. No Binance API key is needed for public streams.
+Stop with Ctrl+C. State: `data/paper.sqlite3`. L2 capture: `MARKET_HISTORY_PATH`.
 
-## Troubleshooting
-- Connection unavailable: check network/firewall, Binance public stream availability, and symbol spelling.
-- No events: verify the configured symbol exists on Binance Spot and check application logs.
-- No paper trade: the signal may not have triggered, the position may already be open, or the risk gate may have rejected entry. Debug logs can explain rejected entries.
-- API status has no market data: the API process does not automatically start the market engine. Run the engine process separately in the current version.
+## Dashboard
 
-## Data and operational caveats
-The ledger and runtime state are in memory and disappear on restart. Paper fills do not model realistic slippage, latency, partial fills, or exchange filters. Never use the simulated ledger as a tax, accounting, or investment record.
+```bash
+uvicorn app.api:app --host 127.0.0.1 --port 8000
+# open http://127.0.0.1:8000/
+```
+
+Remote access: set `NEXORA_API_TOKEN` or `NEXORA_JWT_SECRET`.
+
+## Live
+
+1. Overnight paper — check logs for sequence gaps / `Database is locked`.
+2. Binance key: no withdrawals, IP whitelist.
+3. `.env`: `TRADING_MODE=live`, keys, `BINANCE_TESTNET=false`, `LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY`.
+4. Restart service; confirm `mode=live` and fills / OCO in logs.
+
+Details: [GO_LIVE_CHECKLIST.md](GO_LIVE_CHECKLIST.md), [deploy/](../deploy/).
+
+## Useful commands
+
+```bash
+pytest
+ruff check .
+python scripts/run_l2_backtest.py data/market-history.jsonl.gz
+```
+
+## Logs to watch
+
+- `Engine started mode=...`
+- `Learner restored` / `Memory restored`
+- `LIVE BUY` / `OCO` (live only)
+- Kill switch reasons

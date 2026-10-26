@@ -1,39 +1,22 @@
 # Roadmap
 
-Roadmap items are proposals until implemented and tested.
+## Done (current main)
 
-## Phase 0 — safe foundation
-- [x] Public market stream adapter with reconnect/backoff
-- [x] Paper-only execution boundary
-- [x] Config validation and central pre-trade risk gate
-- [x] Basic read-only local API
-- [x] CI, lint/test scaffolding, contributor/security docs
+- L2 sync depth stream + paper/live execution paths
+- AnalysisMotor ensemble, TrendFollower, OnlineLearner, TradeMemory
+- Compound-oriented defaults (small TP, redeploy free cash)
+- L2 event backtest CLI, impact model, AsyncIoQueue, feature store export hooks
+- Dashboard API + JWT/token auth hooks
+- Deploy templates (systemd / PM2) and go-live checklist
 
-## Phase 1 — correctness and observability
-- [ ] Run tests and lint in supported Python versions
-- [ ] Add structured logs, metrics, and feed-staleness tests
-- [ ] Add graceful shutdown and deterministic integration tests
-- [ ] Add explicit exchange timestamps and clock-skew policy
-- [ ] Add explicit strategy exit lifecycle and closed-trade risk accounting
+## Next (research)
 
-## Phase 2 — research and replay
-- [ ] Historical data ingestion with source attribution
-- [ ] Deterministic event replay and backtest runner
-- [ ] Train/validation/test split and walk-forward evaluation
-- [ ] Fee, spread, latency, slippage, and partial-fill simulation
-- [ ] Reports for drawdown, exposure, turnover, and sample-size caveats
+- Stronger walk-forward on L2 fixtures; shadow-book auto parameter promote
+- Optional Redis state for multi-process scale
+- Columnar archive (Parquet / ClickHouse) export automation
+- Richer dashboard (learner/memory/motor panels)
 
-## Phase 3 — robust state
-- [ ] Durable SQLite ledger and restart recovery
-- [ ] Atomic writes, idempotency keys, crash-recovery tests
-- [ ] Depth snapshot/diff synchronization with sequence-gap detection
-- [ ] Circuit breakers for disconnect storms and malformed feeds
+## Non-goals
 
-## Phase 4 — user experience
-- [ ] Web dashboard with charts, positions, event feed, and risk status
-- [ ] Read-only API authentication before remote deployment
-- [ ] Watchlists, strategy selection, responsive layout, localization, exports
-
-## Out of scope for initial release
-- Live order placement, withdrawals, leverage, and custody of user funds.
-- Claims of guaranteed returns or unattended profit generation.
+- Guaranteed profit or HFT co-location competition
+- Unattended mainnet without risk caps and operator monitoring
