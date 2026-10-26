@@ -1,93 +1,131 @@
-"""Non-blocking SQLite write queue for the hot path."""
+"""Non-blocking SQLite write path via asyncio queue + background worker."""
 from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
-from typing import Any, Literal
-
-from app.storage import PaperStore
+from typing import Any
 
 log = logging.getLogger(__name__)
 
-JobKind = Literal["state", "trade", "shutdown"]
-
-
-@dataclass(slots=True)
-class IoJob:
-    kind: JobKind
-    key: str = ""
-    payload: dict[str, Any] | None = None
-    event_key: str = ""
-
 
 class AsyncIoQueue:
-    def __init__(self, store: PaperStore, *, maxsize: int = 2048) -> None:
+    """Fire-and-forget state/trade persistence; never block the depth loop.
+
+    Under burst L2 load, queue depth is exposed for monitoring. When full,
+    oldest state snapshots are dropped (trades prefer sync fallback).
+    """
+
+    def __init__(self, store: Any, *, maxsize: int = 2000) -> None:
         self.store = store
-        self._q: asyncio.Queue[IoJob] = asyncio.Queue(maxsize=maxsize)
+        self._maxsize = max(1, int(maxsize))
+        self._q: asyncio.Queue | None = None
         self._task: asyncio.Task | None = None
-        self._stopped = False
+        self._dropped = 0
+        self._peak = 0
+        self._writes = 0
+        self._stopping = False
 
     def start(self) -> None:
-        if self._task is None or self._task.done():
-            self._stopped = False
-            self._task = asyncio.create_task(self._worker(), name="nexora-io-queue")
+        self._stopping = False
+        self._q = asyncio.Queue(maxsize=self._maxsize)
+        self._task = asyncio.create_task(self._worker(), name="nexora-io-queue")
 
-    async def stop(self) -> None:
-        self._stopped = True
-        try:
-            self._q.put_nowait(IoJob(kind="shutdown"))
-        except asyncio.QueueFull:
-            pass
-        if self._task:
-            try:
-                await asyncio.wait_for(self._task, timeout=5.0)
-            except (asyncio.TimeoutError, Exception):
-                self._task.cancel()
-        try:
-            self.store.flush()
-        except Exception:
-            log.exception("final flush failed")
+    def stats(self) -> dict[str, Any]:
+        depth = self._q.qsize() if self._q is not None else 0
+        self._peak = max(self._peak, depth)
+        return {
+            "queue_depth": depth,
+            "queue_peak": self._peak,
+            "queue_max": self._maxsize,
+            "dropped_state": self._dropped,
+            "writes": self._writes,
+        }
 
     def enqueue_state(self, key: str, state: dict[str, Any]) -> None:
+        if self._q is None:
+            self.store.save_state(key, state)
+            return
+        item = ("state", key, state)
         try:
-            self._q.put_nowait(IoJob(kind="state", key=key, payload=state))
+            self._q.put_nowait(item)
         except asyncio.QueueFull:
-            log.warning("IO queue full; dropping state write")
+            try:
+                old = self._q.get_nowait()
+                if old and old[0] == "state":
+                    self._dropped += 1
+                else:
+                    self._q.put_nowait(old)
+            except Exception:
+                pass
+            try:
+                self._q.put_nowait(item)
+            except asyncio.QueueFull:
+                self._dropped += 1
+                log.warning("IO queue full; state snapshot dropped key=%s", key)
 
     def enqueue_trade(self, trade: dict[str, Any], *, event_key: str) -> None:
+        if self._q is None:
+            self.store.append_trade(trade, event_key=event_key)
+            return
+        item = ("trade", event_key, trade)
         try:
-            self._q.put_nowait(IoJob(kind="trade", key="", payload=trade, event_key=event_key))
+            self._q.put_nowait(item)
         except asyncio.QueueFull:
-            log.warning("IO queue full; dropping trade write")
+            log.error("IO queue full on trade — sync fallback")
+            self.store.append_trade(trade, event_key=event_key)
+            self._writes += 1
 
     async def _worker(self) -> None:
-        while True:
-            job = await self._q.get()
+        assert self._q is not None
+        while not self._stopping:
             try:
-                if job.kind == "shutdown":
-                    while not self._q.empty():
-                        j = self._q.get_nowait()
-                        self._apply(j)
-                    self.store.flush()
-                    return
-                self._apply(job)
-                for _ in range(16):
-                    try:
-                        j = self._q.get_nowait()
-                    except asyncio.QueueEmpty:
-                        break
-                    if j.kind == "shutdown":
-                        self.store.flush()
-                        return
-                    self._apply(j)
+                item = await asyncio.wait_for(self._q.get(), timeout=0.25)
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
+            try:
+                kind = item[0]
+                if kind == "state":
+                    _, key, payload = item
+                    self.store.save_state(key, payload)
+                elif kind == "trade":
+                    _, event_key, trade = item
+                    self.store.append_trade(trade, event_key=event_key)
+                self._writes += 1
             except Exception:
-                log.exception("IO worker job failed kind=%s", job.kind)
+                log.exception("IO queue write failed")
             finally:
-                self._q.task_done()
+                try:
+                    self._q.task_done()
+                except Exception:
+                    pass
 
-    def _apply(self, job: IoJob) -> None:
-        if job.kind == "state" and job.payload is not None:
-            self.store.save_state(job.key, job.payload)
-        elif job.kind == "trade" and job.payload is not None:
-            self.store.append_trade(job.payload, event_key=job.event_key)
+    async def stop(self) -> None:
+        self._stopping = True
+        if self._q is not None:
+            while True:
+                try:
+                    item = self._q.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                try:
+                    if item[0] == "state":
+                        self.store.save_state(item[1], item[2])
+                    elif item[0] == "trade":
+                        self.store.append_trade(item[2], event_key=item[1])
+                    self._writes += 1
+                except Exception:
+                    log.exception("IO drain failed")
+                finally:
+                    try:
+                        self._q.task_done()
+                    except Exception:
+                        pass
+        if self._task is not None:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
