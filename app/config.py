@@ -34,7 +34,7 @@ def _optional_float(name: str) -> float | None:
     try:
         value = float(raw)
     except ValueError as exc:
-        raise ValueError(f"{name} must be numeric") from exp
+        raise ValueError(f"{name} must be numeric") from exc
     return value if value > 0 else None
 
 
