@@ -3,22 +3,47 @@
 Records are research fixtures, not exchange-authoritative history. Timestamps are
 UTC epoch nanoseconds supplied by the caller; use exchange event time when present
 and preserve receive time separately in the payload for latency analysis.
+
+Under multi-symbol L2 bursts, ``max_pending`` bounds RAM: when the buffer is full,
+oldest pending records are dropped (backpressure) so the process cannot OOM.
 """
 from __future__ import annotations
 
 import gzip
 import json
+import logging
+from collections import deque
 from pathlib import Path
 from typing import Any, Iterator
 
+log = logging.getLogger(__name__)
+
 
 class MarketHistoryWriter:
-    """Write gzip JSONL records without buffering an unbounded event queue."""
+    """Write gzip JSONL with optional bounded pending buffer + drop-oldest."""
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        max_pending: int = 0,
+    ) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._last_timestamp_ns = -1
+        # 0 = write-through (legacy); >0 = bounded buffer with drop-oldest.
+        self._max_pending = max(0, int(max_pending))
+        self._pending: deque[str] = deque()
+        self._dropped = 0
+        self._written = 0
+
+    def stats(self) -> dict[str, int]:
+        return {
+            "pending": len(self._pending),
+            "max_pending": self._max_pending,
+            "dropped": self._dropped,
+            "written": self._written,
+        }
 
     def append(self, *, timestamp_ns: int, event_type: str, payload: dict[str, Any]) -> None:
         if isinstance(timestamp_ns, bool) or not isinstance(timestamp_ns, int) or timestamp_ns < 0:
@@ -33,9 +58,39 @@ class MarketHistoryWriter:
             "payload": payload,
         }
         encoded = json.dumps(record, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        self._last_timestamp_ns = timestamp_ns
+        if self._max_pending <= 0:
+            self._write_line(encoded)
+            return
+        while len(self._pending) >= self._max_pending:
+            self._pending.popleft()
+            self._dropped += 1
+            if self._dropped == 1 or self._dropped % 500 == 0:
+                log.warning(
+                    "MarketHistoryWriter backpressure path=%s dropped=%s pending=%s",
+                    self.path,
+                    self._dropped,
+                    len(self._pending),
+                )
+        self._pending.append(encoded)
+
+    def _write_line(self, encoded: str) -> None:
         with gzip.open(self.path, "at", encoding="utf-8") as stream:
             stream.write(encoded + "\n")
-        self._last_timestamp_ns = timestamp_ns
+        self._written += 1
+
+    def flush(self) -> None:
+        if not self._pending:
+            return
+        batch = list(self._pending)
+        self._pending.clear()
+        with gzip.open(self.path, "at", encoding="utf-8") as stream:
+            for encoded in batch:
+                stream.write(encoded + "\n")
+                self._written += 1
+
+    def close(self) -> None:
+        self.flush()
 
 
 def replay_market_history(path: str | Path) -> Iterator[dict[str, Any]]:

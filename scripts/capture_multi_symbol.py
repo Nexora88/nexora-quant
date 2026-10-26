@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Paper-only: stream synchronized depth for SYMBOL + SYMBOLS and write L2 history.
 
-Does not place orders. Use during the week to accumulate fixtures for L2 backtests.
+Does not place orders. Bounded per-symbol buffers drop oldest under volume spikes
+so multi-pair capture cannot OOM the host.
 """
 from __future__ import annotations
 
@@ -19,10 +20,13 @@ from app.market_history import MarketHistoryWriter
 
 log = logging.getLogger("capture_multi")
 
+# Per-symbol pending cap (records). 4 pairs × 8k ≈ bounded RAM under stress.
+_MAX_PENDING = 8000
+
 
 async def _one(symbol: str, path: str) -> None:
-    writer = MarketHistoryWriter(path)
-    log.info("capturing symbol=%s path=%s", symbol, path)
+    writer = MarketHistoryWriter(path, max_pending=_MAX_PENDING)
+    log.info("capturing symbol=%s path=%s max_pending=%s", symbol, path, _MAX_PENDING)
     n = 0
     try:
         async for depth in stream_synchronized_depth(symbol):
@@ -44,9 +48,11 @@ async def _one(symbol: str, path: str) -> None:
             )
             n += 1
             if n % 500 == 0:
-                log.info("%s events=%s", symbol, n)
+                st = writer.stats()
+                log.info("%s events=%s writer=%s", symbol, n, st)
     finally:
-        log.info("%s stopped events=%s", symbol, n)
+        writer.close()
+        log.info("%s stopped events=%s dropped=%s", symbol, n, writer.stats().get("dropped"))
 
 
 async def main() -> None:
@@ -56,14 +62,24 @@ async def main() -> None:
         symbols = [settings.symbol]
     tasks = []
     for sym in symbols:
-        path = settings.market_history_path if sym == settings.symbol else f"data/market-history-{sym}.jsonl.gz"
+        path = (
+            settings.market_history_path
+            if sym == settings.symbol
+            else f"data/market-history-{sym}.jsonl.gz"
+        )
         tasks.append(asyncio.create_task(_one(sym, path), name=f"cap-{sym}"))
-    log.info("watching %s", symbols)
+    log.info("watching %s max_pending_each=%s", symbols, _MAX_PENDING)
     await asyncio.gather(*tasks)
 
 
 if __name__ == "__main__":
     try:
+        try:
+            import uvloop  # type: ignore
+
+            uvloop.install()
+        except Exception:
+            pass
         asyncio.run(main())
     except KeyboardInterrupt:
         pass

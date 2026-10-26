@@ -21,7 +21,7 @@ git clone https://github.com/Nexora88/nexora-quant.git
 cd nexora-quant
 python3.12 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -e ".[dev,perf]"
 cp .env.example .env
 # edit .env: paper first, SYMBOL / SYMBOLS, asymmetric TP/SL
 ```
@@ -75,3 +75,12 @@ Lower is better; still measure end-to-end fill quality in paper before mainnet.
 - API key: **withdrawals disabled**, IP whitelist = this instance public IP only
 - Mainnet: `LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY`
 - Do not expose dashboard without `NEXORA_API_TOKEN` / JWT
+
+## Event-loop performance (uvloop)
+
+```bash
+pip install -e ".[perf]"   # uvloop
+# main.py auto-installs uvloop on Linux when importable
+```
+
+This improves asyncio scheduling for WebSocket depth; it does **not** equal exchange co-location.
