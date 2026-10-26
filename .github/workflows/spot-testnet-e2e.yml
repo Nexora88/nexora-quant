@@ -1,0 +1,75 @@
+name: Binance Spot Testnet E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      symbol:
+        description: "Spot Testnet symbol (must be supported by Testnet)"
+        required: true
+        default: "BTCUSDT"
+        type: string
+      quote_amount_usdt:
+        description: "Testnet quote amount; minimum 10 USDT"
+        required: true
+        default: "15"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spot-testnet-e2e
+  cancel-in-progress: false
+
+jobs:
+  spot-testnet-e2e:
+    name: Testnet order/OCO lifecycle
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BINANCE_API_KEY: ${{ secrets.BINANCE_SPOT_TESTNET_API_KEY }}
+      BINANCE_API_SECRET: ${{ secrets.BINANCE_SPOT_TESTNET_API_SECRET }}
+      BINANCE_TESTNET: "true"
+      TRADING_MODE: "paper"
+      NEXORA_RUN_SPOT_TESTNET_E2E: "1"
+      NEXORA_TESTNET_SYMBOL: ${{ inputs.symbol }}
+      NEXORA_TESTNET_ORDER_QUOTE_USDT: ${{ inputs.quote_amount_usdt }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Validate Testnet-only configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${BINANCE_API_KEY}" || -z "${BINANCE_API_SECRET}" ]]; then
+            echo "::error::Add BINANCE_SPOT_TESTNET_API_KEY and BINANCE_SPOT_TESTNET_API_SECRET as repository Actions secrets."
+            exit 1
+          fi
+          if [[ "${BINANCE_TESTNET}" != "true" || "${TRADING_MODE}" != "paper" ]]; then
+            echo "::error::Refusing to run without explicit Testnet endpoint and paper app configuration."
+            exit 1
+          fi
+          python - <<'PY'
+          import os
+          amount = float(os.environ["NEXORA_TESTNET_ORDER_QUOTE_USDT"])
+          if amount < 10:
+              raise SystemExit("quote_amount_usdt must be at least 10")
+          if not os.environ["NEXORA_TESTNET_SYMBOL"].isalnum():
+              raise SystemExit("symbol must be alphanumeric")
+          PY
+      - name: Install test dependencies
+        run: python -m pip install -e ".[dev]"
+      - name: Run Spot Testnet E2E only
+        run: |
+          pytest -q tests/test_spot_testnet_e2e.py --junitxml=testnet-e2e-results.xml
+      - name: Upload sanitized test result
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: spot-testnet-e2e-results
+          path: testnet-e2e-results.xml
+          if-no-files-found: ignore
+          retention-days: 14
