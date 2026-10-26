@@ -1,8 +1,8 @@
 """Validated environment configuration.
 
-  TRADING_MODE=paper — simulated fills (default)
-  TRADING_MODE=live  — real Binance Spot (keys + LIVE_CONFIRM on mainnet)
-  AUTONOMOUS_MODE=true — edge/noise/adverse soft-only; lighter sustained
+  TRADING_MODE=paper | live
+  AUTONOMOUS_MODE=true — self-decide; soft filters
+  COMPOUND_FRACTION — redeploy free cash (small wins stack)
 """
 from dataclasses import dataclass
 import os
@@ -34,7 +34,7 @@ def _optional_float(name: str) -> float | None:
     try:
         value = float(raw)
     except ValueError as exc:
-        raise ValueError(f"{name} must be numeric") from exc
+        raise ValueError(f"{name} must be numeric") from exp
     return value if value > 0 else None
 
 
@@ -43,23 +43,23 @@ class Settings:
     symbol: str = os.getenv("SYMBOL", "btcusdt").lower()
     trading_mode: str = os.getenv("TRADING_MODE", "paper").lower()
     starting_cash_usdt: float = _float("STARTING_CASH_USDT", 1000.0)
-    order_size_usdt: float = _float("ORDER_SIZE_USDT", 15.0)
+    order_size_usdt: float = _float("ORDER_SIZE_USDT", 10.0)
     fee_rate: float = _float("FEE_RATE", 0.001)
-    max_order_size_usdt: float = _float("MAX_ORDER_SIZE_USDT", 15.0)
+    max_order_size_usdt: float = _float("MAX_ORDER_SIZE_USDT", 25.0)
     max_daily_loss_usdt: float = _float("MAX_DAILY_LOSS_USDT", 5.0)
     max_consecutive_losses: int = int(os.getenv("MAX_CONSECUTIVE_LOSSES", "5"))
     max_spread_bps: float = _float("MAX_SPREAD_BPS", 20.0)
     max_data_age_seconds: float = _float("MAX_DATA_AGE_SECONDS", 8.0)
     imbalance_threshold: float = _float("IMBALANCE_THRESHOLD", 0.65)
-    take_profit_pct: float = _float("TAKE_PROFIT_PCT", 1.0)
-    stop_loss_pct: float = _float("STOP_LOSS_PCT", 0.5)
-    trailing_stop_pct: float = _float("TRAILING_STOP_PCT", 0.35)
+    take_profit_pct: float = _float("TAKE_PROFIT_PCT", 0.45)
+    stop_loss_pct: float = _float("STOP_LOSS_PCT", 0.35)
+    trailing_stop_pct: float = _float("TRAILING_STOP_PCT", 0.25)
     signal_confirmations: int = int(os.getenv("SIGNAL_CONFIRMATIONS", "1"))
-    entry_min_score: float = _float("ENTRY_MIN_SCORE", 0.35)
+    entry_min_score: float = _float("ENTRY_MIN_SCORE", 0.32)
     target_price: float | None = _optional_float("TARGET_PRICE")
     simulated_slippage_bps: float = _float("SIMULATED_SLIPPAGE_BPS", 2.0)
-    simulated_latency_ms: int = int(os.getenv("SIMULATED_LATENCY_MS", "100"))
-    simulated_partial_fill_probability: float = _float("SIMULATED_PARTIAL_FILL_PROBABILITY", 0.15)
+    simulated_latency_ms: int = int(os.getenv("SIMULATED_LATENCY_MS", "50"))
+    simulated_partial_fill_probability: float = _float("SIMULATED_PARTIAL_FILL_PROBABILITY", 0.0)
     simulation_seed: int = int(os.getenv("SIMULATION_SEED", "0"))
     store_path: str = os.getenv("PAPER_DB_PATH", "data/paper.sqlite3")
     market_history_path: str = os.getenv("MARKET_HISTORY_PATH", "data/market-history.jsonl.gz")
@@ -69,6 +69,8 @@ class Settings:
     binance_testnet: bool = _bool("BINANCE_TESTNET", True)
     live_confirm: str = os.getenv("LIVE_CONFIRM", "")
     autonomous_mode: bool = _bool("AUTONOMOUS_MODE", True)
+    compound_fraction: float = _float("COMPOUND_FRACTION", 0.85)
+    min_order_usdt: float = _float("MIN_ORDER_USDT", 5.0)
     impact_coefficient: float = _float("IMPACT_COEFFICIENT", 0.1)
     features_db_path: str = os.getenv("FEATURES_DB_PATH", "data/features.sqlite3")
     cors_origins: str = os.getenv("CORS_ORIGINS", "")
@@ -111,6 +113,10 @@ class Settings:
             raise ValueError("IMPACT_COEFFICIENT cannot be negative.")
         if not 0 < self.entry_min_score <= 1:
             raise ValueError("ENTRY_MIN_SCORE must be in (0, 1].")
+        if not 0 < self.compound_fraction <= 1:
+            raise ValueError("COMPOUND_FRACTION must be in (0, 1].")
+        if self.min_order_usdt <= 0:
+            raise ValueError("MIN_ORDER_USDT must be positive.")
         if self.trading_mode == "live":
             if not self.binance_api_key or not self.binance_api_secret:
                 raise ValueError(
