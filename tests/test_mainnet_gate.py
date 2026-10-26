@@ -1,4 +1,4 @@
-"""Safety regression tests for the mainnet-disabled execution gate."""
+"""Mainnet live requires explicit LIVE_CONFIRM; testnet remains available."""
 import os
 import subprocess
 import sys
@@ -30,12 +30,13 @@ def test_mainnet_live_is_rejected_without_confirmation() -> None:
         BINANCE_TESTNET="false",
         BINANCE_API_KEY="test-key",
         BINANCE_API_SECRET="test-secret",
+        LIVE_CONFIRM="",
     )
     assert result.returncode != 0
-    assert "Mainnet live trading is disabled in this build" in result.stderr
+    assert "LIVE_CONFIRM" in result.stderr
 
 
-def test_mainnet_live_is_rejected_even_with_explicit_confirmation() -> None:
+def test_mainnet_live_accepted_with_explicit_confirmation() -> None:
     result = _import_config_with(
         TRADING_MODE="live",
         BINANCE_TESTNET="false",
@@ -43,8 +44,7 @@ def test_mainnet_live_is_rejected_even_with_explicit_confirmation() -> None:
         BINANCE_API_SECRET="test-secret",
         LIVE_CONFIRM="I_UNDERSTAND_REAL_MONEY",
     )
-    assert result.returncode != 0
-    assert "Mainnet live trading is disabled in this build" in result.stderr
+    assert result.returncode == 0, result.stderr
 
 
 def test_testnet_live_configuration_remains_available() -> None:

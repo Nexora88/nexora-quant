@@ -4,16 +4,14 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from app.config import settings
-from app.engine_setup import (
-    state, risk, _build_executor, log, executor as _ex,
-)
+from app.engine_setup import state, risk, log
 from app.storage import PaperStore
 from app.io_queue import AsyncIoQueue
 from app.market_history import MarketHistoryWriter
 from app.ts_store import FeatureTimeSeriesStore
 from app.binance_depth import stream_synchronized_depth
 from app.engine_tick import handle_tick
-from app.engine_setup import shadows, learner
+from app.engine_setup import shadows, learner, memory
 from app import engine_setup as es
 
 
@@ -51,6 +49,12 @@ async def run() -> None:
         log.info("Learner restored: %s", learner.to_dict().get("note"))
     except Exception as exc:
         log.warning("Learner restore skipped: %s", exc)
+    try:
+        memory.load_state((saved or {}).get("memory"))
+        state.memory_lessons = memory.to_dict()
+        log.info("Memory restored: %s", memory.to_dict().get("lifetime_trades"))
+    except Exception as exc:
+        log.warning("Memory restore skipped: %s", exc)
 
     log.info(
         "Engine started mode=%s symbol=%s target=%s trailing=%.2f%% score>=%.2f",
@@ -74,6 +78,7 @@ async def run() -> None:
             "peak_price": state.peak_price,
             "mode": mode,
             "learner": learner.export_state(),
+            "memory": memory.export_state(),
             "saved_at": datetime.now(timezone.utc).isoformat(),
         }
         io_q.enqueue_state(key, payload)

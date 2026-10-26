@@ -17,8 +17,8 @@ def test_live_without_keys_is_rejected():
         ).validate()
 
 
-def test_mainnet_live_is_disabled_without_confirmation():
-    with pytest.raises(ValueError, match="Mainnet live trading is disabled"):
+def test_mainnet_live_requires_confirmation():
+    with pytest.raises(ValueError, match="LIVE_CONFIRM"):
         Settings(
             trading_mode="live",
             binance_api_key="k",
@@ -39,15 +39,16 @@ def test_testnet_live_accepted_with_keys():
     assert s.binance_testnet is True
 
 
-def test_mainnet_live_is_disabled_even_with_explicit_confirmation():
-    with pytest.raises(ValueError, match="Mainnet live trading is disabled"):
-        Settings(
-            trading_mode="live",
-            binance_api_key="k",
-            binance_api_secret="s",
-            binance_testnet=False,
-            live_confirm="I_UNDERSTAND_REAL_MONEY",
-        ).validate()
+def test_mainnet_live_accepted_with_explicit_confirmation():
+    s = Settings(
+        trading_mode="live",
+        binance_api_key="k",
+        binance_api_secret="s",
+        binance_testnet=False,
+        live_confirm="I_UNDERSTAND_REAL_MONEY",
+    ).validate()
+    assert s.trading_mode == "live"
+    assert s.binance_testnet is False
 
 
 def test_order_size_cannot_exceed_maximum():
