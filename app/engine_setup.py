@@ -19,6 +19,7 @@ from app.intelligence.adverse import AdverseSelectionFilter
 from app.intelligence.whale import WhaleTracker
 from app.intelligence.noise import NoiseFilter
 from app.intelligence.learner import OnlineLearner
+from app.intelligence.trend_follow import TrendFollower
 from app.strategy import PriceWindow
 
 log = logging.getLogger(__name__)
@@ -53,6 +54,7 @@ wall_tracker = WallTracker(levels=15, multiple=3.0)
 adverse_filter = AdverseSelectionFilter()
 whale_tracker = WhaleTracker(multiple=4.0, persist_ticks=5)
 noise_filter = NoiseFilter(window=12, min_stability=0.55)
+trend_follower = TrendFollower(fast=12, slow=48)
 learner = OnlineLearner(
     window=30,
     base_entry_min=min(getattr(settings, "entry_min_score", 0.35), 0.35),
