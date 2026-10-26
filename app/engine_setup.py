@@ -21,6 +21,7 @@ from app.intelligence.whale import WhaleTracker
 from app.intelligence.noise import NoiseFilter
 from app.intelligence.learner import OnlineLearner
 from app.intelligence.trend_follow import TrendFollower
+from app.intelligence.memory import TradeMemory
 from app.strategy import PriceWindow
 
 log = logging.getLogger(__name__)
@@ -47,7 +48,7 @@ ou_tracker = OrnsteinUhlenbeckTracker(maxlen=300, z_entry=2.0)
 regime_clf = RegimeClassifier()
 kelly = DynamicKellyGate(
     max_fraction=0.25,
-    min_order_usdt=5.0,
+    min_order_usdt=float(getattr(settings, "min_order_usdt", 5.0)),
     max_order_usdt=settings.max_order_size_usdt,
 )
 shadows = ShadowBook.default_book(settings.starting_cash_usdt)
@@ -62,6 +63,7 @@ learner = OnlineLearner(
     base_entry_min=min(getattr(settings, "entry_min_score", 0.32), 0.32),
     base_compound=float(getattr(settings, "compound_fraction", 0.85)),
 )
+memory = TradeMemory(capacity=200)
 sustained = SustainedSignalGate(
     min_confirmations=(1 if getattr(settings, "autonomous_mode", True) else max(settings.signal_confirmations, 4)),
     min_hold_seconds=(0.3 if getattr(settings, "autonomous_mode", True) else 2.0),
@@ -91,7 +93,7 @@ def _event_key(key: str, trade: dict) -> str:
 
 
 async def _paper_fill(side: str, price: float, quantity: float) -> object:
-    fill = simulator.fill(side=side, reference_price=price, quantity=quantity)
+    fill = simulator.fills(side=side, reference_price=price, quantity=quantity)
     if fill.latency_ms:
         await asyncio.sleep(fill.latency_ms / 1000)
     return fill
