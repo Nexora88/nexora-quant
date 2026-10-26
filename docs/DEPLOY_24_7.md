@@ -1,4 +1,4 @@
-# 7/24 çalıştırma (PC kapalıyken)
+# 7/24 çalışma (PC kapalıyken)
 
 Yerel PC kapanınca süreç **durur**. Botun 7/24 devam etmesi için **VPS / cloud** gerekir.
 
@@ -27,3 +27,9 @@ Kalıcı veri: `nexora-data` volume (`paper.sqlite3`, history).
 - Mainnet için `LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY` ve `BINANCE_TESTNET=false`.
 - API key'lerde withdraw kapalı olsun.
 - Dashboard'u internete açmadan önce token kullan.
+
+## Low latency (Tokyo)
+
+For Binance Spot, prefer a host in **AWS ap-northeast-1**. See [AWS_TOKYO.md](AWS_TOKYO.md).
+
+Home broadband (80–150 ms RTT) loses more to queue/slippage than a Tokyo VPS (often single-digit ms to the public API). Still not co-location.
