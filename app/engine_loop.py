@@ -1,6 +1,7 @@
 """Main async depth loop with decision / edge / adverse gates."""
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 
 from app.config import settings
@@ -21,7 +22,10 @@ async def run() -> None:
     store = PaperStore(settings.store_path)
     io_q = AsyncIoQueue(store)
     io_q.start()
-    history = MarketHistoryWriter(settings.market_history_path)
+    history = MarketHistoryWriter(
+        settings.market_history_path,
+        max_pending=int(getattr(settings, "history_max_pending", 4000) or 4000),
+    )
     features = FeatureTimeSeriesStore(getattr(settings, "features_db_path", "data/features.sqlite3"))
     mode = settings.trading_mode
     key = f"{mode}:{settings.symbol}"
@@ -85,6 +89,20 @@ async def run() -> None:
 
     confirmations = 0
     ticks = 0
+
+    async def day_rollover_loop() -> None:
+        """Time-driven UTC day reset even when the book is quiet (no WS ticks)."""
+        while True:
+            try:
+                today = datetime.now(timezone.utc).date().isoformat()
+                if risk.rollover_day(today):
+                    log.info("UTC day rollover → realized_pnl_today reset day=%s", today)
+                    persist()
+            except Exception:
+                log.exception("day_rollover_loop failed")
+            await asyncio.sleep(30.0)
+
+    rollover_task = asyncio.create_task(day_rollover_loop(), name="nexora-day-rollover")
     try:
         async for depth in stream_synchronized_depth(settings.symbol):
             confirmations, ticks = await handle_tick(
@@ -97,8 +115,17 @@ async def run() -> None:
                         log.warning("IO queue elevated: %s", state.io_queue_stats)
                 except Exception:
                     pass
-            await __import__("asyncio").sleep(0)
+            await asyncio.sleep(0)
     finally:
+        rollover_task.cancel()
+        try:
+            await rollover_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            history.close()
+        except Exception:
+            pass
         persist()
         await io_q.stop()
         store.close()
