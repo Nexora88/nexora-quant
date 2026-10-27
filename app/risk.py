@@ -71,5 +71,13 @@ class RiskManager:
         self.record_realized_pnl(pnl_usdt, position_closed=True)
 
     def activate_kill_switch(self, reason: str) -> None:
+        was = self.kill_switch
         self.kill_switch = True
         self.kill_switch_reason = reason
+        if not was:
+            try:
+                from app.alerts import alert_kill_switch
+
+                alert_kill_switch(reason)
+            except Exception:
+                pass
