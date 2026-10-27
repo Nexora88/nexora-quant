@@ -11,6 +11,7 @@ from app.io_queue import AsyncIoQueue
 from app.market_history import MarketHistoryWriter
 from app.ts_store import FeatureTimeSeriesStore
 from app.binance_depth import stream_synchronized_depth
+from app.multi_stream import stream_multi_depth, watch_list
 from app.engine_tick import handle_tick
 from app.engine_setup import shadows, learner, memory, motor
 from app import engine_setup as es
@@ -69,11 +70,13 @@ async def run() -> None:
     except Exception as exc:
         log.warning("Memory restore skipped: %s", exc)
 
+    watched = watch_list(settings.symbol, settings.watch_symbols())
     log.info(
-        "Engine started mode=%s symbol=%s target=%s trailing=%.2f%% score>=%.2f",
+        "Engine started mode=%s primary=%s watch=%s autonomous_symbol=%s trailing=%.2f%% score>=%.2f",
         mode,
         settings.symbol.upper(),
-        settings.target_price,
+        ",".join(s.upper() for s in watched),
+        getattr(settings, "autonomous_symbol", False),
         settings.trailing_stop_pct,
         settings.entry_min_score,
     )
@@ -114,7 +117,10 @@ async def run() -> None:
 
     rollover_task = asyncio.create_task(day_rollover_loop(), name="nexora-day-rollover")
     try:
-        async for depth in stream_synchronized_depth(settings.symbol):
+        use_multi = len(watched) > 1
+
+        async def _consume(depth) -> None:
+            nonlocal confirmations, ticks
             confirmations, ticks = await handle_tick(
                 depth, store, history, features, mode, key, persist, confirmations, ticks,
             )
@@ -126,6 +132,15 @@ async def run() -> None:
                 except Exception:
                     pass
             await asyncio.sleep(0)
+
+        if use_multi:
+            async for tagged in stream_multi_depth(watched):
+                tagged.book.symbol = tagged.symbol
+                await _consume(tagged.book)
+        else:
+            async for depth in stream_synchronized_depth(settings.symbol):
+                depth.symbol = settings.symbol.lower()
+                await _consume(depth)
     finally:
         rollover_task.cancel()
         try:
