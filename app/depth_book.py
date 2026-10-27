@@ -9,6 +9,7 @@ from typing import Iterable
 
 @dataclass(slots=True)
 class DepthBook:
+    symbol: str | None = None
     last_update_id: int | None = None
     bids: dict[float, float] = field(default_factory=dict)
     asks: dict[float, float] = field(default_factory=dict)
@@ -38,32 +39,36 @@ class DepthBook:
         if final_update_id <= self.last_update_id:
             return False  # stale or duplicate event
         if previous_final_update_id is not None:
-            contiguous = previous_final_update_id == self.last_update_id
-        else:
-            contiguous = first_update_id <= self.last_update_id + 1 <= final_update_id
-        if not contiguous:
+            if first_update_id > self.last_update_id + 1:
+                self.synchronized = False
+                return False
+        elif first_update_id > self.last_update_id + 1:
             self.synchronized = False
             return False
-        self._update_side(self.bids, bids)
-        self._update_side(self.asks, asks)
+
+        def _apply(side: dict[float, float], levels: Iterable[tuple[float, float]]) -> None:
+            for price, qty in levels:
+                p, q = float(price), float(qty)
+                if q == 0:
+                    side.pop(p, None)
+                elif p > 0 and q > 0:
+                    side[p] = q
+
+        _apply(self.bids, bids)
+        _apply(self.asks, asks)
         self.last_update_id = final_update_id
         return True
 
-    @staticmethod
-    def _update_side(book: dict[float, float], updates: Iterable[tuple[float, float]]) -> None:
-        for raw_price, raw_quantity in updates:
-            price, quantity = float(raw_price), float(raw_quantity)
-            if price <= 0 or quantity < 0:
-                raise ValueError("depth prices must be positive and quantities non-negative")
-            if quantity == 0:
-                book.pop(price, None)
-            else:
-                book[price] = quantity
-
     @property
     def best_bid(self) -> tuple[float, float] | None:
-        return max(self.bids.items()) if self.bids else None
+        if not self.bids:
+            return None
+        p = max(self.bids)
+        return p, self.bids[p]
 
     @property
     def best_ask(self) -> tuple[float, float] | None:
-        return min(self.asks.items()) if self.asks else None
+        if not self.asks:
+            return None
+        p = min(self.asks)
+        return p, self.asks[p]
