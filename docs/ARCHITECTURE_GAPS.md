@@ -70,3 +70,18 @@
 - `RegimeClassifier`: `CHOPPY` (high sign-flip rate), wick jump detection with cooldown, `pause_entries`
 - Strategy zeros score and blocks entries on `stressed` / `choppy` / pause
 - Motor weights penalize stressed/choppy regimes more heavily
+
+## 15. Spoof / order persistence filter
+- `OrderPersistenceFilter` (`app/intelligence/spoof.py`): levels must survive ≥1s before counting as stable liquidity
+- High transient mass near TOB → adverse block on entries
+
+## 16. BTC macro lock
+- `BtcTrendFilter`: sharp BTC mid drop blocks altcoin longs for a short cooldown
+- Feed BTC mids via same symbol or `state.btc_mid`
+
+## 17. Ops alerts
+- `app/alerts.py`: Discord webhook + Telegram bot on kill switch / emergency flatten
+- Env: `DISCORD_WEBHOOK_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
+
+## 18. Dashboard score / heatmap / compound
+- Live score bars (signal, OBI, motor), L2 intensity bars, equity polyline from `equity_curve`
