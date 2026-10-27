@@ -52,13 +52,20 @@ class DynamicKellyGate:
         b = (avg_win / avg_loss) if avg_loss > 1e-12 else self.default_payoff
         return max(0.01, min(0.99, p)), max(0.05, b)
 
-    def size(self, *, free_usdt: float, fee_rate: float = 0.001) -> KellyDecision:
+    def size(
+        self,
+        *,
+        free_usdt: float,
+        fee_rate: float = 0.001,
+        size_scale: float = 1.0,
+    ) -> KellyDecision:
+        """Kelly fraction, optionally scaled by autonomous vol/regime policy (size_scale)."""
         if free_usdt <= 0:
             return KellyDecision(0.0, 0.0, 0.0, 0.0, "No free cash")
         p, b = self._stats()
         f_star = (p * b - (1.0 - p)) / b
         f_star = max(0.0, min(self.max_fraction, f_star))
-        f = f_star * 0.5
+        f = f_star * 0.5 * max(0.0, min(1.5, float(size_scale)))
         notional = free_usdt * f / (1.0 + fee_rate)
         notional = min(self.max_order_usdt, notional)
         if notional < self.min_order_usdt:
@@ -68,5 +75,5 @@ class DynamicKellyGate:
             round(notional, 8),
             p,
             b,
-            f"half_kelly p={p:.2f} b={b:.2f} f*={f_star:.3f}",
+            f"half_kelly p={p:.2f} b={b:.2f} f*={f_star:.3f} scale={size_scale:.2f}",
         )

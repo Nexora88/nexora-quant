@@ -1,8 +1,7 @@
 """Autonomous multi-symbol ranking: which coin to trade right now.
 
-Watches SYMBOL + SYMBOLS, scores each motor snapshot, and picks the strongest
-tradeable candidate. Live mode still executes only the configured primary
-unless AUTONOMOUS_SYMBOL is enabled (paper-friendly by default).
+Ranks SYMBOL + SYMBOLS by motor score, liquidity depth, and spoof/BTC gates.
+Works for paper and live when AUTONOMOUS_SYMBOL is enabled.
 """
 from __future__ import annotations
 
@@ -19,6 +18,8 @@ class SymbolScore:
     spoof_score: float
     btc_blocked: bool
     tradeable: bool
+    depth_usdt: float = 0.0
+    liquid: bool = True
     reasons: list[str] = field(default_factory=list)
     updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
@@ -30,6 +31,8 @@ class SymbolScore:
             "spoof_score": self.spoof_score,
             "btc_blocked": self.btc_blocked,
             "tradeable": self.tradeable,
+            "depth_usdt": self.depth_usdt,
+            "liquid": self.liquid,
             "reasons": list(self.reasons),
             "updated_at": self.updated_at,
         }
@@ -52,12 +55,15 @@ class SymbolRouter:
         regime: str = "unknown",
         spoof_score: float = 0.0,
         btc_blocked: bool = False,
+        depth_usdt: float = 0.0,
+        liquid: bool = True,
         reasons: list[str] | None = None,
     ) -> SymbolScore:
         tradeable = (
             score >= self.min_score
             and spoof_score < self.max_spoof
             and not btc_blocked
+            and liquid
             and regime not in ("choppy", "stressed", "CHOPPY", "STRESSED")
         )
         row = SymbolScore(
@@ -67,6 +73,8 @@ class SymbolRouter:
             spoof_score=float(spoof_score),
             btc_blocked=bool(btc_blocked),
             tradeable=tradeable,
+            depth_usdt=float(depth_usdt),
+            liquid=bool(liquid),
             reasons=list(reasons or []),
         )
         self._board[row.symbol] = row
@@ -81,7 +89,7 @@ class SymbolRouter:
         if not tradeable:
             self.active_symbol = None
             return None
-        best = max(tradeable, key=lambda r: r.score)
+        best = max(tradeable, key=lambda r: (r.score, r.depth_usdt))
         self.active_symbol = best.symbol
         return best
 
