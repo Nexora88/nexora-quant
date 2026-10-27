@@ -80,6 +80,8 @@ class Settings:
     binance_testnet: bool = _bool("BINANCE_TESTNET", True)
     live_confirm: str = os.getenv("LIVE_CONFIRM", "")
     autonomous_mode: bool = _bool("AUTONOMOUS_MODE", True)
+    # Rank SYMBOL+SYMBOLS and only enter the top tradeable pair (paper research).
+    autonomous_symbol: bool = _bool("AUTONOMOUS_SYMBOL", True)
     compound_fraction: float = _float("COMPOUND_FRACTION", 0.85)
     min_order_usdt: float = _float("MIN_ORDER_USDT", 5.0)
     impact_coefficient: float = _float("IMPACT_COEFFICIENT", 0.1)
