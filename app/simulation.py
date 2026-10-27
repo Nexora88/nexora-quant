@@ -141,7 +141,16 @@ class ExecutionSimulator:
             self.default_visible_liquidity_usdt = default_visible_liquidity_usdt
         self.stop_stress_multiplier = stop_stress_multiplier
         self.stop_tail_bps = stop_tail_bps
+        self._vol_bps = 0.0
         self._random = random.Random(seed)
+
+    def set_volatility_bps(self, vol_bps: float) -> None:
+        """Feed recent |momentum| bps so stress sells scale with vol."""
+        self._vol_bps = max(0.0, float(vol_bps))
+
+    def effective_stress_multiplier(self) -> float:
+        scale = 1.0 + min(0.8, max(0.0, (self._vol_bps - 15.0) / 40.0) * 0.8)
+        return self.stop_stress_multiplier * scale
 
     def fill(
         self,
@@ -198,9 +207,10 @@ class ExecutionSimulator:
         )
         stress_on = bool(stress and side == "sell")
         if stress_on:
-            impact *= self.stop_stress_multiplier
-            if self.stop_tail_bps > 0:
-                impact += abs(self._random.gauss(0.0, self.stop_tail_bps))
+            impact *= self.effective_stress_multiplier()
+            tail = self.stop_tail_bps * (1.0 + min(1.0, self._vol_bps / 50.0))
+            if tail > 0:
+                impact += abs(self._random.gauss(0.0, tail))
         direction = 1 if side == "buy" else -1
         total_slip = base_slip + impact
         fill_price = anchor * (1 + direction * total_slip / 10_000)
