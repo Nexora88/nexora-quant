@@ -11,7 +11,6 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any
 
 from app.binance_depth import stream_synchronized_depth
 from app.depth_book import DepthBook
