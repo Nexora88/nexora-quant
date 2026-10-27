@@ -129,6 +129,12 @@ def analyze_market(
     if regime == MarketRegime.STRESSED:
         reasons.append("regime_stressed")
         score *= 0.0
+    elif regime == MarketRegime.CHOPPY:
+        reasons.append("regime_choppy")
+        score *= 0.0
+    elif regime_snap is not None and regime_snap.pause_entries:
+        reasons.append(f"regime_pause:{regime_snap.detail}")
+        score *= 0.0
     elif regime == MarketRegime.RANGE:
         if snap.mean_reversion_signal == "fade_ask":
             score += 0.50
@@ -211,7 +217,12 @@ def analyze_market(
 def entry_signal_from_analysis(
     analysis: MarketAnalysis, *, min_score: float = 0.55
 ) -> Signal | None:
-    if analysis.regime == MarketRegime.STRESSED.value:
+    if analysis.regime in (
+        MarketRegime.STRESSED.value,
+        MarketRegime.CHOPPY.value,
+    ):
+        return None
+    if any(r.startswith("regime_pause") for r in analysis.reasons):
         return None
     if analysis.score >= min_score:
         return Signal(
