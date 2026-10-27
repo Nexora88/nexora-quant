@@ -24,6 +24,7 @@ from app.intelligence.trend_follow import TrendFollower
 from app.intelligence.memory import TradeMemory
 from app.intelligence.spoof import OrderPersistenceFilter
 from app.intelligence.btc_filter import BtcTrendFilter
+from app.symbol_router import SymbolRouter
 from app.strategy import PriceWindow
 from app.live_hardening import harden_live_executor
 
@@ -66,6 +67,10 @@ adverse_filter = AdverseSelectionFilter()
 whale_tracker = WhaleTracker(multiple=4.0, persist_ticks=5)
 spoof_filter = OrderPersistenceFilter(min_persist_ms=1000.0)
 btc_filter = BtcTrendFilter(wick_jump_bps=40.0, cooldown_ticks=12)
+symbol_router = SymbolRouter(
+    min_score=float(getattr(settings, "entry_min_score", 0.55) or 0.55),
+    max_spoof=0.55,
+)
 noise_filter = NoiseFilter(window=12, min_stability=0.55)
 trend_follower = TrendFollower(fast=12, slow=48)
 motor = AnalysisMotor(window=120)
