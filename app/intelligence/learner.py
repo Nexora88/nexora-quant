@@ -33,12 +33,15 @@ class OnlineLearner:
         min_entry: float = 0.22,
         max_entry: float = 0.65,
         base_compound: float = 0.85,
+        l2_lambda: float = 0.08,
     ) -> None:
         self.window = window
         self.base_entry_min = base_entry_min
         self.min_entry = min_entry
         self.max_entry = max_entry
         self.base_compound = base_compound
+        self.l2_lambda = max(0.0, min(0.5, float(l2_lambda)))
+        self._last_regime = "unknown"
         self._pnls: deque[float] = deque(maxlen=window)
         self._regimes: deque[str] = deque(maxlen=window)
         self._reasons: deque[str] = deque(maxlen=window)
@@ -62,6 +65,16 @@ class OnlineLearner:
         self._lifetime_trades += 1
         if p > 0:
             self._lifetime_wins += 1
+        reg = str(regime or "unknown")
+        if reg != self._last_regime and self._lifetime_trades > 3:
+            lam = self.l2_lambda
+            self._entry_min = (1 - lam) * self._entry_min + lam * self.base_entry_min
+            self._size_bias = (1 - lam) * self._size_bias + lam * 1.0
+            self._tp_scale = (1 - lam) * self._tp_scale + lam * 0.9
+            self._compound = (1 - lam) * self._compound + lam * self.base_compound
+            self._note = f"regime_l2 {self._last_regime}->{reg} lam={lam:.2f}"
+            self._growth = "rebuild"
+        self._last_regime = reg
         self._recompute()
 
     def _recompute(self) -> None:
@@ -95,6 +108,9 @@ class OnlineLearner:
             self._tp_scale = 0.85 * self._tp_scale + 0.15 * 0.9
             self._compound = 0.85 * self._compound + 0.15 * self.base_compound
             self._note = f"rebuild wr={wr:.2f} avg={avg:.3f}"
+        lam = self.l2_lambda * 0.25
+        self._entry_min = (1 - lam) * self._entry_min + lam * self.base_entry_min
+        self._size_bias = (1 - lam) * self._size_bias + lam * 1.0
         by: dict[str, float] = {}
         for p, r in zip(self._pnls, self._regimes):
             by[r] = by.get(r, 0.0) + p
