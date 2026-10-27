@@ -48,6 +48,12 @@ class Settings:
     starting_cash_usdt: float = _float("STARTING_CASH_USDT", 1000.0)
     order_size_usdt: float = _float("ORDER_SIZE_USDT", 10.0)
     fee_rate: float = _float("FEE_RATE", 0.001)
+    # Dynamic schedule: VIP tier + optional BNB fee discount (~25% off typical table).
+    fee_vip_level: int = int(os.getenv("FEE_VIP_LEVEL", "0"))
+    fee_use_bnb_discount: bool = _bool("FEE_USE_BNB_DISCOUNT", False)
+    # Paper stop path: multiply impact + optional fat-tail on stress sells.
+    stop_stress_multiplier: float = _float("STOP_STRESS_MULTIPLIER", 2.5)
+    stop_tail_bps: float = _float("STOP_TAIL_BPS", 8.0)
     max_order_size_usdt: float = _float("MAX_ORDER_SIZE_USDT", 25.0)
     max_daily_loss_usdt: float = _float("MAX_DAILY_LOSS_USDT", 5.0)
     max_consecutive_losses: int = int(os.getenv("MAX_CONSECUTIVE_LOSSES", "5"))
@@ -95,6 +101,12 @@ class Settings:
             raise ValueError("ORDER_SIZE_USDT cannot exceed MAX_ORDER_SIZE_USDT.")
         if not 0 <= self.fee_rate < 0.1:
             raise ValueError("FEE_RATE must be between 0 and 0.1.")
+        if not 0 <= self.fee_vip_level <= 9:
+            raise ValueError("FEE_VIP_LEVEL must be in 0..9.")
+        if self.stop_stress_multiplier < 1.0:
+            raise ValueError("STOP_STRESS_MULTIPLIER must be >= 1.")
+        if self.stop_tail_bps < 0:
+            raise ValueError("STOP_TAIL_BPS cannot be negative.")
         if min(
             self.max_order_size_usdt,
             self.max_daily_loss_usdt,
@@ -151,6 +163,16 @@ class Settings:
             if s and s not in out:
                 out.append(s)
         return tuple(out)
+
+    def effective_fee_rate(self) -> float:
+        """Taker rate after VIP + optional BNB discount (or FEE_RATE override)."""
+        from app.fees import schedule_from_settings
+
+        return schedule_from_settings(
+            fee_rate=self.fee_rate,
+            vip_level=self.fee_vip_level,
+            use_bnb_discount=self.fee_use_bnb_discount,
+        ).taker_rate()
 
 
 settings = Settings().validate()
