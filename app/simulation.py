@@ -164,16 +164,23 @@ class ExecutionSimulator:
     ) -> SimulatedFill:
         if side not in {"buy", "sell"}:
             raise ValueError("side must be 'buy' or 'sell'")
-        if not math.isfinite(reference_price) or not math.isfinite(quantity) or reference_price <= 0 or quantity <= 0:
+        if (
+            not math.isfinite(reference_price)
+            or not math.isfinite(quantity)
+            or reference_price <= 0
+            or quantity <= 0
+        ):
             raise ValueError("reference_price and quantity must be finite and positive")
 
         latency = (
             max(0, round(self._random.gauss(self.latency_ms, self.latency_ms * 0.1)))
-            if self.latency_ms else 0
+            if self.latency_ms
+            else 0
         )
         base_slip = (
             max(0.0, self._random.gauss(self.slippage_bps, self.slippage_bps * 0.2))
-            if self.slippage_bps else 0.0
+            if self.slippage_bps
+            else 0.0
         )
         requested_notional = quantity * reference_price
 
@@ -194,7 +201,9 @@ class ExecutionSimulator:
             anchor = reference_price
 
         if filled <= 0:
-            return SimulatedFill(quantity, 0.0, reference_price, base_slip, latency, False, 0.0, False)
+            return SimulatedFill(
+                quantity, 0.0, reference_price, base_slip, latency, False, 0.0, False
+            )
 
         if self._random.random() < self.partial_fill_probability:
             filled *= self._random.uniform(0.1, 0.9)
@@ -225,5 +234,9 @@ class ExecutionSimulator:
             stress_applied=stress_on,
         )
 
-    def fills(self, *, side: str, reference_price: float, quantity: float, **kwargs) -> SimulatedFill:
-        return self.fill(side=side, reference_price=reference_price, quantity=quantity, **kwargs)
+    def fills(
+        self, *, side: str, reference_price: float, quantity: float, **kwargs
+    ) -> SimulatedFill:
+        return self.fill(
+            side=side, reference_price=reference_price, quantity=quantity, **kwargs
+        )
