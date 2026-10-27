@@ -1,75 +1,37 @@
-# Paper run → Mainnet live (15 USDT) checklist
+# Go-Live Checklist (Nexora Quant)
 
-## 0. Tokyo prep + weekday L2 harvest (recommended)
-
-1. Launch Ubuntu in **AWS ap-northeast-1** (`t2.micro` / `t3.micro` or small) — [AWS_TOKYO.md](AWS_TOKYO.md).
-2. Week: paper multi-pair capture on that host (`SYMBOLS=ethusdt,solusdt,bnbusdt`):
+## Overnight paper (48h)
 
 ```bash
-python scripts/capture_multi_symbol.py
-# or: sudo systemctl enable --now nexora-capture
+TRADING_MODE=paper SYMBOL=btcusdt SYMBOLS=ethusdt,solusdt,bnbusdt \
+  uvicorn app.api:app --host 127.0.0.1 --port 8000
 ```
 
-3. Before raising size: replay with research gate:
+- Equity curve does not drift from fee-only noise without trades.
+- Kill switch and circuit breaker still trip on synthetic loss streak tests.
+- `app/expectancy.py` break-even math still matches `effective_fee_rate()` (BNB/VIP).
 
-```bash
-python scripts/run_l2_backtest.py data/market-history-ethusdt.jsonl.gz --min-score 0.55
-```
+## Binance API permissions
 
-## 1. Overnight paper run (VPS)
+| Setting | Required |
+|---------|----------|
+| Enable Reading | Yes |
+| Enable Spot & Margin Trading | Yes (live only) |
+| Enable Withdrawals | **NEVER** |
+| IP whitelist | Your home IP and/or AWS Tokyo elastic IP |
 
-```bash
-# .env
-TRADING_MODE=paper
-BINANCE_TESTNET=true
-SYMBOL=btcusdt
-ORDER_SIZE_USDT=15
-ENTRY_MIN_SCORE=0.55
-```
+Prefer **testnet** (`BINANCE_TESTNET=true`) until 48h paper is clean.
 
-**systemd** (`/etc/systemd/system/nexora-quant.service`): see `deploy/nexora-quant.service`.
+## Emergency manual
 
-```bash
-sudo systemctl enable --now nexora-quant
-journalctl -u nexora-quant -f
-```
+- Binance mobile app logged in, 2FA ready.
+- If AWS/internet dies: close position on phone (Spot → sell market).
+- Code path: kill switch + OCO + emergency flatten; network outage still needs phone.
 
-**PM2:**
+## Rate limits
 
-```bash
-pm2 start deploy/ecosystem.config.cjs
-pm2 logs nexora-quant
-```
+Process-wide `BinanceWeightLimiter` soft-caps REST weight (~2400/min).
 
-### Watch until morning
+## Honest limits
 
-| Metric | Healthy |
-|--------|----------|
-| weighted_obi / micro / regime logs | Continuous |
-| data_age_seconds | Under max |
-| sequence gaps | Rare; auto-resync |
-| Database is locked | **None** |
-
-Do not go live if gaps or SQLite locks repeat.
-
-## 2. Binance API hard rules
-
-1. **Enable Withdrawals = OFF**
-2. Spot trading only as needed
-3. **IP whitelist** = VPS static IP only
-4. Dedicated key; rotate if leaked
-
-## 3. Morning → mainnet live (~15 USDT)
-
-```bash
-TRADING_MODE=live
-BINANCE_TESTNET=false
-LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY
-ORDER_SIZE_USDT=15
-MAX_ORDER_SIZE_USDT=15
-MAX_DAILY_LOSS_USDT=5
-```
-
-Restart service; confirm `mode=live` and OCO after fills.
-
-Honest limit: 15 USDT validates the stack; it does not beat co-located HFT.
+Tokyo RTT ≠ co-location. No profit guarantee.
