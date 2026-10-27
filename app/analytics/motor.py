@@ -169,7 +169,9 @@ class AnalysisMotor:
         if regime == "range":
             return ModelVote("regime", 0.0, 0.08, "range_mean_rev_bias")
         if regime == "stressed":
-            return ModelVote("regime", -0.5, 0.18, "stressed_penalize")
+            return ModelVote("regime", -0.5, 0.22, "stressed_pause")
+        if regime == "choppy":
+            return ModelVote("regime", -0.45, 0.20, "choppy_pause")
         return ModelVote("regime", 0.0, 0.05, regime or "unknown")
 
     def _history_consistency(self) -> ModelVote:
