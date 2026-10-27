@@ -54,3 +54,19 @@
 - `MarketHistoryWriter(max_pending=N)` drops oldest pending records under burst
 - Engine default `max_pending=4000`; `scripts/capture_multi_symbol.py` uses 8000 per symbol
 - `AsyncIoQueue` already drops oldest **state** snapshots; trades sync-fallback when full
+
+## 12. Aggressive stop / thin-book slippage (paper)
+- `ExecutionSimulator.fill(..., stress=True)` multiplies impact by `STOP_STRESS_MULTIPLIER` (default 2.5) and adds fat-tail bps on sell exits
+- Engine applies stress on paper `stop_loss` / `trailing_stop` paths
+- Symbol-aware default visible liquidity (SOL/BNB thinner than BTC) via `symbol_visible_liquidity_usdt`
+- Expectancy helpers accept `extra_slippage_pct` so 0.35% SL + 0.15% slip → 0.50% effective risk
+
+## 13. Dynamic fee schedule (BNB + VIP)
+- `app/fees.py`: VIP 0–9 taker/maker table + optional ~25% BNB discount
+- Config: `FEE_VIP_LEVEL`, `FEE_USE_BNB_DISCOUNT`; `Settings.effective_fee_rate()` used by paper/live executors
+- `FEE_RATE` remains an explicit override when not using VIP/BNB path
+
+## 14. Macro regime pause (choppy + liquidation wicks)
+- `RegimeClassifier`: `CHOPPY` (high sign-flip rate), wick jump detection with cooldown, `pause_entries`
+- Strategy zeros score and blocks entries on `stressed` / `choppy` / pause
+- Motor weights penalize stressed/choppy regimes more heavily

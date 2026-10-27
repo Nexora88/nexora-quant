@@ -44,6 +44,9 @@ simulator = ExecutionSimulator(
     partial_fill_probability=settings.simulated_partial_fill_probability,
     seed=settings.simulation_seed,
     impact_coefficient=getattr(settings, "impact_coefficient", 0.1),
+    stop_stress_multiplier=float(getattr(settings, "stop_stress_multiplier", 2.5)),
+    stop_tail_bps=float(getattr(settings, "stop_tail_bps", 8.0)),
+    symbol=settings.symbol,
 )
 state.risk_manager = risk
 executor = None
@@ -85,10 +88,11 @@ def _build_executor():
             api_secret=settings.binance_api_secret,
             testnet=settings.binance_testnet,
         )
-        live = LiveExecutor(client, symbol=settings.symbol, fee_rate=settings.fee_rate)
+        eff_fee = settings.effective_fee_rate()
+        live = LiveExecutor(client, symbol=settings.symbol, fee_rate=eff_fee)
         live.sync_balances()
         return live
-    return PaperExecutor(settings.starting_cash_usdt, settings.fee_rate)
+    return PaperExecutor(settings.starting_cash_usdt, settings.effective_fee_rate())
 
 
 def _event_key(key: str, trade: dict) -> str:
@@ -96,8 +100,21 @@ def _event_key(key: str, trade: dict) -> str:
     return f"{key}:{oid}:{trade['side']}:{trade['quantity']:.12f}"
 
 
-async def _paper_fill(side: str, price: float, quantity: float) -> object:
-    fill = simulator.fills(side=side, reference_price=price, quantity=quantity)
+async def _paper_fill(
+    side: str,
+    price: float,
+    quantity: float,
+    *,
+    book_levels=None,
+    stress: bool = False,
+) -> object:
+    fill = simulator.fill(
+        side=side,
+        reference_price=price,
+        quantity=quantity,
+        book_levels=book_levels,
+        stress=stress,
+    )
     if fill.latency_ms:
         await asyncio.sleep(fill.latency_ms / 1000)
     return fill
