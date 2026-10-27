@@ -142,3 +142,22 @@ def vol_adjusted_notional(
     if n < min_order_usdt:
         return 0.0
     return round(n, 8)
+
+
+def impact_capped_notional(
+    *,
+    desired_usdt: float,
+    visible_depth_usdt: float,
+    max_book_fraction: float = 0.08,
+    min_order_usdt: float = 5.0,
+    max_order_usdt: float = 25.0,
+) -> float:
+    """Shrink size on thin books so impact stays bounded (retail-safe)."""
+    if desired_usdt <= 0:
+        return 0.0
+    depth = max(0.0, float(visible_depth_usdt))
+    cap = depth * max(0.01, min(0.25, float(max_book_fraction))) if depth > 0 else float(min_order_usdt)
+    n = min(float(desired_usdt), float(max_order_usdt), max(cap, 0.0))
+    if n < float(min_order_usdt):
+        return 0.0
+    return round(n, 8)
