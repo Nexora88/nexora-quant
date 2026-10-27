@@ -142,10 +142,10 @@ class ExecutionSimulator:
         self.stop_stress_multiplier = stop_stress_multiplier
         self.stop_tail_bps = stop_tail_bps
         self._vol_bps = 0.0
+        self.asymmetric_latency = True
         self._random = random.Random(seed)
 
     def set_volatility_bps(self, vol_bps: float) -> None:
-        """Feed recent |momentum| bps so stress sells scale with vol."""
         self._vol_bps = max(0.0, float(vol_bps))
 
     def effective_stress_multiplier(self) -> float:
@@ -171,6 +171,11 @@ class ExecutionSimulator:
             max(0, round(self._random.gauss(self.latency_ms, self.latency_ms * 0.1)))
             if self.latency_ms else 0
         )
+        if getattr(self, "asymmetric_latency", True) and self.latency_ms:
+            if side == "buy":
+                latency = int(latency + self.latency_ms * 0.45 + 15)
+            elif stress:
+                latency = int(max(self.latency_ms * 0.4, latency * 0.75))
         base_slip = (
             max(0.0, self._random.gauss(self.slippage_bps, self.slippage_bps * 0.2))
             if self.slippage_bps else 0.0
