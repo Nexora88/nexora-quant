@@ -117,10 +117,17 @@ async def handle_tick(
         if reason:
             try:
                 if mode == "paper":
-                    fill = await _paper_fill("sell", bid, ex.base_quantity, book_levels=depth_bids)
+                    stress = reason in ("stop_loss", "trailing_stop")
+                    fill = await _paper_fill(
+                        "sell", bid, ex.base_quantity, book_levels=depth_bids, stress=stress,
+                    )
                     trade = ex.sell_quantity(
                         quantity=fill.filled_quantity, price=fill.fill_price,
-                        reason=f"{reason}; sim_fill={fill.filled_quantity / fill.requested_quantity:.4f}",
+                        reason=(
+                            f"{reason}; sim_fill={fill.filled_quantity / fill.requested_quantity:.4f}"
+                            f"; slip_bps={fill.slippage_bps:.1f}"
+                            f"{';stress' if getattr(fill, 'stress_applied', False) else ''}"
+                        ),
                     )
                 else:
                     if getattr(ex, "protective_order_list_id", None) is not None:
