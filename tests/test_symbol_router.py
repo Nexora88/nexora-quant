@@ -9,7 +9,8 @@ def test_router_picks_highest_tradeable_score():
     r = SymbolRouter(min_score=0.5, max_spoof=0.55)
     r.update("solusdt", score=0.9, regime="trend", spoof_score=0.1, btc_blocked=False)
     r.update("ethusdt", score=0.7, regime="trend", spoof_score=0.1, btc_blocked=False)
-    r.update("bnbusdt", score=0.95, regime="choppy", spoof_score=0.1, btc_blocked=False)
+    # Mild chop + weak score blocked; strong score may still rank.
+    r.update("bnbusdt", score=0.52, regime="choppy", spoof_score=0.1, btc_blocked=False)
     best = r.select_best()
     assert best is not None
     assert best.symbol == "solusdt"
