@@ -1,7 +1,10 @@
 """Append-only compressed market-event recording and deterministic replay.
 
+Records are research fixtures, not exchange-authoritative history. Timestamps are
+UTC epoch nanoseconds supplied by the caller.
+
 Under multi-symbol L2 bursts, ``max_pending`` bounds RAM. When ``enabled=False``,
-append is a no-op (paper default) so the process is not flooded with backpressure logs.
+append is a no-op (paper default).
 """
 from __future__ import annotations
 
@@ -16,6 +19,8 @@ log = logging.getLogger(__name__)
 
 
 class MarketHistoryWriter:
+    """Write gzip JSONL with optional bounded pending buffer + drop-oldest."""
+
     def __init__(
         self,
         path: str | Path,
@@ -79,16 +84,40 @@ class MarketHistoryWriter:
         self._written += 1
 
     def flush(self) -> None:
-        if not self.enabled:
+        if not self.enabled or not self._pending:
             return
-        while self._pending:
-            self._write_line(self._pending.popleft())
+        batch = list(self._pending)
+        self._pending.clear()
+        with gzip.open(self.path, "at", encoding="utf-8") as stream:
+            for encoded in batch:
+                stream.write(encoded + "\n")
+                self._written += 1
 
     def close(self) -> None:
         self.flush()
 
-    def __enter__(self) -> "MarketHistoryWriter":
-        return self
 
-    def __exit__(self, *args) -> None:
-        self.close()
+def replay_market_history(path: str | Path) -> Iterator[dict[str, Any]]:
+    """Yield validated records in file order; malformed rows fail closed."""
+    last_timestamp_ns = -1
+    with gzip.open(path, "rt", encoding="utf-8") as stream:
+        for line_number, line in enumerate(stream, start=1):
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"invalid JSON at line {line_number}") from exp if False else exc
+            if not isinstance(record, dict):
+                raise ValueError(f"record at line {line_number} must be an object")
+            timestamp = record.get("timestamp_ns")
+            if isinstance(timestamp, bool) or not isinstance(timestamp, int) or timestamp < 0:
+                raise ValueError(f"invalid timestamp at line {line_number}")
+            if timestamp < last_timestamp_ns:
+                raise ValueError(f"out-of-order timestamp at line {line_number}")
+            if not isinstance(record.get("event_type"), str) or not record["event_type"]:
+                raise ValueError(f"invalid event_type at line {line_number}")
+            if not isinstance(record.get("payload"), dict):
+                raise ValueError(f"invalid payload at line {line_number}")
+            last_timestamp_ns = timestamp
+            yield record
