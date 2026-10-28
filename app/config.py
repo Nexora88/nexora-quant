@@ -4,6 +4,7 @@
   AUTONOMOUS_MODE=true — self-decide; soft filters
   COMPOUND_FRACTION — redeploy free cash (small wins stack)
   MIN_REWARD_RISK_RATIO — require TP/SL asymmetry for expectancy
+  UNIVERSE_AUTO — screen ~30 majors → DEPTH_TOP_N L2 streams
 """
 from dataclasses import dataclass
 import os
@@ -42,16 +43,17 @@ def _optional_float(name: str) -> float | None:
 @dataclass(frozen=True, slots=True)
 class Settings:
     symbol: str = os.getenv("SYMBOL", "btcusdt").lower()
-    # Comma-separated extra pairs for paper multi-stream capture (not concurrent live orders).
     symbols_raw: str = os.getenv("SYMBOLS", "")
+    universe_auto: bool = _bool("UNIVERSE_AUTO", True)
+    depth_top_n: int = int(os.getenv("DEPTH_TOP_N", "5"))
+    universe_min_quote_volume: float = _float("UNIVERSE_MIN_QUOTE_VOLUME", 5_000_000.0)
+    market_history_enabled: bool = _bool("MARKET_HISTORY_ENABLED", False)
     trading_mode: str = os.getenv("TRADING_MODE", "paper").lower()
     starting_cash_usdt: float = _float("STARTING_CASH_USDT", 1000.0)
     order_size_usdt: float = _float("ORDER_SIZE_USDT", 10.0)
     fee_rate: float = _float("FEE_RATE", 0.001)
-    # Dynamic schedule: VIP tier + optional BNB fee discount (~25% off typical table).
     fee_vip_level: int = int(os.getenv("FEE_VIP_LEVEL", "0"))
     fee_use_bnb_discount: bool = _bool("FEE_USE_BNB_DISCOUNT", False)
-    # Paper stop path: multiply impact + optional fat-tail on stress sells.
     stop_stress_multiplier: float = _float("STOP_STRESS_MULTIPLIER", 2.5)
     stop_tail_bps: float = _float("STOP_TAIL_BPS", 8.0)
     max_order_size_usdt: float = _float("MAX_ORDER_SIZE_USDT", 25.0)
@@ -60,14 +62,14 @@ class Settings:
     max_spread_bps: float = _float("MAX_SPREAD_BPS", 20.0)
     max_data_age_seconds: float = _float("MAX_DATA_AGE_SECONDS", 8.0)
     imbalance_threshold: float = _float("IMBALANCE_THRESHOLD", 0.65)
-    # Asymmetric R:R: default TP > SL so expectancy can stay positive at <50% win-rate.
     take_profit_pct: float = _float("TAKE_PROFIT_PCT", 1.20)
     stop_loss_pct: float = _float("STOP_LOSS_PCT", 0.35)
     min_reward_risk_ratio: float = _float("MIN_REWARD_RISK_RATIO", 2.0)
     trailing_stop_pct: float = _float("TRAILING_STOP_PCT", 0.25)
     signal_confirmations: int = int(os.getenv("SIGNAL_CONFIRMATIONS", "1"))
-    entry_min_score: float = _float("ENTRY_MIN_SCORE", 0.32)
+    entry_min_score: float = _float("ENTRY_MIN_SCORE", 0.38)
     target_price: float | None = _optional_float("TARGET_PRICE")
+    target_equity_usdt: float | None = _optional_float("TARGET_EQUITY_USDT")
     simulated_slippage_bps: float = _float("SIMULATED_SLIPPAGE_BPS", 2.0)
     simulated_latency_ms: int = int(os.getenv("SIMULATED_LATENCY_MS", "50"))
     simulated_partial_fill_probability: float = _float("SIMULATED_PARTIAL_FILL_PROBABILITY", 0.0)
@@ -80,7 +82,6 @@ class Settings:
     binance_testnet: bool = _bool("BINANCE_TESTNET", True)
     live_confirm: str = os.getenv("LIVE_CONFIRM", "")
     autonomous_mode: bool = _bool("AUTONOMOUS_MODE", True)
-    # Rank SYMBOL+SYMBOLS and only enter the top tradeable pair (paper research).
     autonomous_symbol: bool = _bool("AUTONOMOUS_SYMBOL", True)
     compound_fraction: float = _float("COMPOUND_FRACTION", 0.85)
     min_order_usdt: float = _float("MIN_ORDER_USDT", 5.0)
@@ -143,6 +144,8 @@ class Settings:
             )
         if self.min_order_usdt <= 0:
             raise ValueError("MIN_ORDER_USDT must be positive.")
+        if self.depth_top_n < 1 or self.depth_top_n > 12:
+            raise ValueError("DEPTH_TOP_N must be in 1..12.")
         if self.trading_mode == "live":
             if not self.binance_api_key or not self.binance_api_secret:
                 raise ValueError(
@@ -157,7 +160,6 @@ class Settings:
         return self
 
     def watch_symbols(self) -> tuple[str, ...]:
-        """Primary SYMBOL plus optional SYMBOLS list (deduped, lowercased)."""
         primary = self.symbol.lower()
         extra = [s.strip().lower() for s in (self.symbols_raw or "").split(",") if s.strip()]
         out: list[str] = []
@@ -167,7 +169,6 @@ class Settings:
         return tuple(out)
 
     def effective_fee_rate(self) -> float:
-        """Taker rate after VIP + optional BNB discount (or FEE_RATE override)."""
         from app.fees import schedule_from_settings
 
         return schedule_from_settings(
