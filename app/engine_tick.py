@@ -182,7 +182,8 @@ async def handle_tick(
 
     signal = entry_signal_from_analysis(analysis, min_score=settings.entry_min_score)
     state.record_signal(signal)
-    sus = sustained.update(analysis.score if signal else 0.0)
+    # Feed sustained from score floor — do not reset when signal is momentarily None.
+    sus = sustained.update(analysis.score if analysis.score >= settings.entry_min_score else 0.0)
     confirmations = sus.consecutive
     free = getattr(ex, "cash_usdt", settings.starting_cash_usdt) if ex else settings.starting_cash_usdt
     kd_preview = kelly.size(free_usdt=free, fee_rate=settings.fee_rate)
@@ -205,7 +206,6 @@ async def handle_tick(
         es.execution_costs.estimate_cost_bps(latency_ms=estimated_latency_ms)
         if mode == "live" and estimated_latency_ms is not None and hasattr(es, "execution_costs") else None
     )
-    # Paper: balanced edge (learn without spam). Live: strict cost gate.
     if mode == "paper":
         edge = score_edge(
             votes=_pre.votes,
@@ -251,10 +251,26 @@ async def handle_tick(
             ",".join(decision.blockers[:3]) if decision.blockers else "-",
         )
 
-    if (
-        decision.action == "enter_long" and signal and sus.ready
-        and ex and ex.base_quantity <= 0 and not risk.kill_switch
-    ):
+    # Follow DecisionRecord. Autonomous softens sustained in decision.py — no second sus.ready gate.
+    auto = bool(getattr(settings, "autonomous_mode", True))
+    can_enter = (
+        decision.action == "enter_long"
+        and ex is not None
+        and ex.base_quantity <= 0
+        and not risk.kill_switch
+        and (signal is not None or auto)
+        and (sus.ready or auto)
+    )
+    if not can_enter and decision.action == "enter_long" and ticks % 30 == 0:
+        log.info(
+            "enter_long held signal=%s sus_ready=%s auto=%s pos=%s kill=%s",
+            bool(signal),
+            sus.ready,
+            auto,
+            bool(ex and ex.base_quantity > 0),
+            bool(risk.kill_switch),
+        )
+    if can_enter:
         free_cash = ex.cash_usdt
         if mode == "live":
             try:
@@ -284,14 +300,15 @@ async def handle_tick(
                         if actual > 0:
                             trade = ex.buy(
                                 notional_usdt=actual, price=fill.fill_price,
-                                reason=f"{signal.reason}; score={analysis.score:.2f}",
+                                reason=f"{(signal.reason if signal else 'auto')}; score={analysis.score:.2f}",
                             )
                             store.append_trade(trade, event_key=_event_key(key, trade))
                             state.record_fill(trade)
+                            log.info("paper BUY filled notional=%.2f score=%.2f", actual, analysis.score)
                     else:
                         trade = ex.buy(
                             notional_usdt=sizing_n, price=ask,
-                            reason=f"{signal.reason}; score={analysis.score:.2f}; live_buy",
+                            reason=f"{(signal.reason if signal else 'auto')}; score={analysis.score:.2f}; live_buy",
                             decision_mid=analysis.mid,
                         )
                         if trade.get("execution_latency_measured", False) and hasattr(es, "execution_costs"):
