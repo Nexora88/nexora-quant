@@ -81,3 +81,7 @@ class RiskManager:
                 alert_kill_switch(reason)
             except Exception:
                 pass
+
+    def clear_kill_switch(self) -> None:
+        self.kill_switch = False
+        self.kill_switch_reason = None
