@@ -76,7 +76,7 @@ async def run() -> None:
         log.warning("Memory restore skipped: %s", exc)
 
     watched = watch_list(settings.symbol, settings.watch_symbols())
-    if getattr(settings, "universe_auto", True):
+    if getattr(settings, "universe_auto", False):
         try:
             screened = screen_universe(
                 candidates=default_universe(),
@@ -91,7 +91,8 @@ async def run() -> None:
                 if s not in depth_syms:
                     depth_syms.append(s)
             watched = watch_list(settings.symbol, tuple(depth_syms))
-            cap = max(3, min(8, int(getattr(settings, "depth_top_n", 5) or 5) + 1))
+            cap = max(3, min(8, int(getattr(settings, "depth_top_n", 5) or 5) + 1)
+            )
             watched = watched[:cap]
             if "btcusdt" not in watched:
                 watched.append("btcusdt")
@@ -152,14 +153,41 @@ async def run() -> None:
             await asyncio.sleep(30.0)
 
     rollover_task = asyncio.create_task(day_rollover_loop(), name="nexora-day-rollover")
+    primary = settings.symbol.lower()
     try:
-        use_multi = len(watched) > 1
+        use_multi = len(watched) > 1 and bool(getattr(settings, "universe_auto", False))
 
-        async def _consume(depth) -> None:
+        async def _consume(depth, *, symbol: str | None = None) -> None:
             nonlocal confirmations, ticks
+            sym = (symbol or primary).lower()
+            if sym != primary:
+                try:
+                    if depth.synchronized and depth.best_bid and depth.best_ask:
+                        board = getattr(state, "side_books", None) or {}
+                        bid, bq = depth.best_bid
+                        ask, aq = depth.best_ask
+                        mid = (ask + bid) / 2.0 if ask + bid else 0.0
+                        board[sym] = {
+                            "bid": bid,
+                            "ask": ask,
+                            "bid_qty": bq,
+                            "ask_qty": aq,
+                            "spread_bps": ((ask - bid) / mid * 10_000) if mid else 0.0,
+                        }
+                        state.side_books = board
+                except Exception:
+                    pass
+                return
             confirmations, ticks = await handle_tick(
                 depth, store, history, features, mode, key, persist, confirmations, ticks,
             )
+            if ticks == 1 or ticks % 200 == 0:
+                log.info(
+                    "L2 live primary=%s ticks=%s mid_ok=%s",
+                    primary.upper(),
+                    ticks,
+                    bool(depth.synchronized and depth.best_bid),
+                )
             if ticks % 50 == 0:
                 try:
                     state.io_queue_stats = io_q.stats()
@@ -169,14 +197,29 @@ async def run() -> None:
                     pass
             await asyncio.sleep(0)
 
-        if use_multi:
-            async for tagged in stream_multi_depth(watched):
-                tagged.book.symbol = tagged.symbol
-                await _consume(tagged.book)
-        else:
-            async for depth in stream_synchronized_depth(settings.symbol):
-                depth.symbol = settings.symbol.lower()
-                await _consume(depth)
+        while True:
+            try:
+                if use_multi:
+                    log.info("Starting multi-depth (primary trades only): %s", ",".join(watched))
+                    async for tagged in stream_multi_depth(watched):
+                        tagged.book.symbol = tagged.symbol
+                        await _consume(tagged.book, symbol=tagged.symbol)
+                else:
+                    log.info("Starting single-depth L2: %s", primary.upper())
+                    async for depth in stream_synchronized_depth(primary):
+                        depth.symbol = primary
+                        await _consume(depth, symbol=primary)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                state.reconnect_count = int(getattr(state, "reconnect_count", 0) or 0) + 1
+                state.last_error = f"l2_reconnect:{type(exc).__name__}"
+                log.exception(
+                    "L2 stream error; reconnect #%s in 2s: %s",
+                    state.reconnect_count,
+                    exc,
+                )
+                await asyncio.sleep(2.0)
     finally:
         rollover_task.cancel()
         try:
