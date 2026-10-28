@@ -25,10 +25,13 @@ from app.intelligence.memory import TradeMemory
 from app.intelligence.spoof import OrderPersistenceFilter
 from app.intelligence.btc_filter import BtcTrendFilter
 from app.symbol_router import SymbolRouter
+from app.order_flow import OrderFlowAccumulator
+from app.circuit_breaker import DrawdownCircuitBreaker
+from app.atr_stops import AtrTracker
+from app.portfolio_risk import PortfolioRiskGate
 from app.strategy import PriceWindow
 from app.live_hardening import harden_live_executor
 
-# Apply OCO retry + emergency flatten before any LiveExecutor is constructed.
 harden_live_executor()
 
 log = logging.getLogger(__name__)
@@ -65,8 +68,17 @@ shadows = ShadowBook.default_book(settings.starting_cash_usdt)
 wall_tracker = WallTracker(levels=15, multiple=3.0)
 adverse_filter = AdverseSelectionFilter()
 whale_tracker = WhaleTracker(multiple=4.0, persist_ticks=5)
-spoof_filter = OrderPersistenceFilter(min_persist_ms=1000.0)
-btc_filter = BtcTrendFilter(wick_jump_bps=40.0, cooldown_ticks=12)
+spoof_filter = OrderPersistenceFilter(min_persist_ms=1500.0)
+btc_filter = BtcTrendFilter(wick_jump_bps=35.0, cooldown_ticks=16)
+order_flow = OrderFlowAccumulator(hold_seconds=2.0, min_samples=10, min_abs_pressure=0.18)
+circuit_breaker = DrawdownCircuitBreaker(
+    loss_streak=3,
+    base_min_score=float(getattr(settings, "entry_min_score", 0.55) or 0.55),
+    elevated_min_score=0.75,
+    sleep_seconds=900.0,
+)
+atr_tracker = AtrTracker(period=28)
+portfolio_risk = PortfolioRiskGate(max_total_risk_pct=0.35, max_concurrent=1)
 symbol_router = SymbolRouter(
     min_score=float(getattr(settings, "entry_min_score", 0.55) or 0.55),
     max_spoof=0.55,
@@ -117,7 +129,7 @@ async def _paper_fill(
     book_levels=None,
     stress: bool = False,
 ) -> object:
-    fill = simulator.fill(
+    fill = simulator.fills(
         side=side,
         reference_price=price,
         quantity=quantity,
