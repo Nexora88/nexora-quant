@@ -1,10 +1,7 @@
 """Append-only compressed market-event recording and deterministic replay.
 
-Records are research fixtures, not exchange-authoritative history. Timestamps are
-UTC epoch nanoseconds supplied by the caller.
-
-Under multi-symbol L2 bursts, ``max_pending`` bounds RAM. When ``enabled=False``,
-append is a no-op (paper default).
+Records are research fixtures, not exchange-authoritative history.
+When enabled=False, append is a no-op (paper default).
 """
 from __future__ import annotations
 
@@ -19,8 +16,6 @@ log = logging.getLogger(__name__)
 
 
 class MarketHistoryWriter:
-    """Write gzip JSONL with optional bounded pending buffer + drop-oldest."""
-
     def __init__(
         self,
         path: str | Path,
