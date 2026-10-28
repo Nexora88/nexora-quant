@@ -205,7 +205,7 @@ async def handle_tick(
         es.execution_costs.estimate_cost_bps(latency_ms=estimated_latency_ms)
         if mode == "live" and estimated_latency_ms is not None and hasattr(es, "execution_costs") else None
     )
-    # Paper: softer edge so the desk can learn; live keeps cost-aware gate.
+    # Paper: balanced edge (learn without spam). Live: strict cost gate.
     if mode == "paper":
         edge = score_edge(
             votes=_pre.votes,
@@ -213,8 +213,8 @@ async def handle_tick(
             impact_bps=2.0 * impact_est,
             fee_bps=2.0 * settings.fee_rate * 10_000,
             latency_bps=0.0,
-            min_quality=0.18,
-            min_net_edge_bps=-12.0,
+            min_quality=0.28,
+            min_net_edge_bps=-4.0,
         )
     else:
         edge = score_edge(
