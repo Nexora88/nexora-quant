@@ -33,6 +33,12 @@ class RuntimeState:
         self.learner_snapshot: dict[str, Any] = {}
         self.memory_lessons: list[dict[str, Any]] = []
         self.motor_report: dict[str, Any] | None = None
+        self.score_history: deque = deque(maxlen=180)
+        self.universe_board: list[dict[str, Any]] = []
+        self.depth_watch: list[str] = []
+        self.paused: bool = False
+        self.peak_equity: float = 0.0
+        self.live_log: deque = deque(maxlen=80)
 
     def update_book(self, book: BookTicker) -> None:
         self.latest_book = book
@@ -64,6 +70,8 @@ class RuntimeState:
             "mean_reversion_signal": getattr(analysis, "mean_reversion_signal", "none"),
             "regime": getattr(analysis, "regime", "unknown"),
         }
+        now = datetime.now(timezone.utc).isoformat()
+        self.score_history.append({"t": now, "score": float(analysis.score or 0)})
 
     def record_decision(self, decision: Any) -> None:
         d = decision.to_dict() if hasattr(decision, "to_dict") else dict(decision)
@@ -121,12 +129,29 @@ class RuntimeState:
             return None
         return max(0.0, (datetime.now(timezone.utc) - self.last_message_at).total_seconds())
 
+    def push_log(self, text: str) -> None:
+        self.live_log.appendleft({
+            "t": datetime.now(timezone.utc).isoformat(),
+            "text": str(text)[:240],
+        })
+
     def snapshot(self) -> dict:
         book = self.latest_book
         age = self.data_age_seconds()
         risk = self.risk_manager
         portfolio = (
             self.executor.snapshot(book.bid if book else None) if self.executor else None
+        )
+        eq = float((portfolio or {}).get("equity_usdt") or 0)
+        if eq > self.peak_equity:
+            self.peak_equity = eq
+        dd_pct = 0.0
+        if self.peak_equity > 0 and eq > 0:
+            dd_pct = max(0.0, (self.peak_equity - eq) / self.peak_equity * 100.0)
+        daily_loss = float(risk.realized_pnl_today) if risk else 0.0
+        daily_cap = float(settings.max_daily_loss_usdt)
+        daily_used_pct = (
+            min(100.0, abs(min(0.0, daily_loss)) / daily_cap * 100.0) if daily_cap > 0 else 0.0
         )
         return {
             "mode": settings.trading_mode,
@@ -165,5 +190,19 @@ class RuntimeState:
                 "stop_loss_pct": settings.stop_loss_pct,
                 "trailing_stop_pct": settings.trailing_stop_pct,
                 "entry_min_score": settings.entry_min_score,
+            },
+            "score_history": list(self.score_history)[-120:],
+            "universe_board": list(self.universe_board)[:12],
+            "depth_watch": list(self.depth_watch)[:8],
+            "paused": bool(self.paused),
+            "peak_equity": self.peak_equity,
+            "max_drawdown_pct": round(dd_pct, 3),
+            "daily_loss_used_pct": round(daily_used_pct, 2),
+            "live_log": list(self.live_log)[:40],
+            "telemetry": {
+                "data_age_ms": round((age or 0) * 1000, 1) if age is not None else None,
+                "events_seen": self.events_seen,
+                "reconnect_count": self.reconnect_count,
+                "heartbeat_ok": bool(age is not None and age <= settings.max_data_age_seconds),
             },
         }
