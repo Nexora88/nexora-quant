@@ -43,6 +43,8 @@ async def handle_tick(
 ) -> tuple[int, int]:
     if not depth.synchronized or not depth.best_bid or not depth.best_ask:
         return confirmations, ticks
+    if getattr(state, "paused", False):
+        return confirmations, ticks
     bid, bid_qty = depth.best_bid
     ask, ask_qty = depth.best_ask
     history.append(
