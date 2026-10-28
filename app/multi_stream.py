@@ -25,29 +25,34 @@ class TaggedDepth:
 
 
 async def _pump(symbol: str, out: asyncio.Queue[TaggedDepth], stop: asyncio.Event) -> None:
+    """Keep a single-symbol depth pump alive across transient WS failures."""
     sym = symbol.lower()
-    try:
-        async for book in stream_synchronized_depth(sym):
-            if stop.is_set():
-                break
-            if not book.synchronized:
-                continue
-            try:
-                out.put_nowait(TaggedDepth(sym, book))
-            except asyncio.QueueFull:
-                try:
-                    out.get_nowait()
-                except asyncio.QueueEmpty:
-                    pass
+    backoff = 1.0
+    while not stop.is_set():
+        try:
+            async for book in stream_synchronized_depth(sym):
+                if stop.is_set():
+                    return
+                if not book.synchronized:
+                    continue
+                backoff = 1.0
                 try:
                     out.put_nowait(TaggedDepth(sym, book))
                 except asyncio.QueueFull:
-                    pass
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        log.exception("depth pump crashed symbol=%s", sym.upper())
-        await asyncio.sleep(1.0)
+                    try:
+                        out.get_nowait()
+                    except asyncio.QueueEmpty:
+                        pass
+                    try:
+                        out.put_nowait(TaggedDepth(sym, book))
+                    except asyncio.QueueFull:
+                        pass
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("depth pump crashed symbol=%s; reconnect in %.1fs", sym.upper(), backoff)
+            await asyncio.sleep(backoff)
+            backoff = min(30.0, backoff * 1.5)
 
 
 def watch_list(primary: str, extras: tuple[str, ...] | list[str]) -> list[str]:
