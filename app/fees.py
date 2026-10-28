@@ -96,3 +96,17 @@ def schedule_from_settings(
     if fee_rate_is_override and abs(fee_rate - 0.001) > 1e-12 and not use_bnb_discount and vip_level == 0:
         return FeeSchedule(vip_level=0, use_bnb_discount=False, override_taker=fee_rate, override_maker=fee_rate)
     return FeeSchedule(vip_level=vip_level, use_bnb_discount=use_bnb_discount)
+
+
+def effective_spot_fee_rate(
+    *,
+    base_rate: float = 0.001,
+    vip_level: int = 0,
+    use_bnb_discount: bool = False,
+) -> float:
+    """Single-side effective taker rate for Settings.effective_fee_rate()."""
+    if use_bnb_discount or vip_level > 0:
+        return FeeSchedule(vip_level=vip_level, use_bnb_discount=use_bnb_discount).taker_rate()
+    if abs(base_rate - 0.001) > 1e-12:
+        return float(base_rate)
+    return FeeSchedule(vip_level=0, use_bnb_discount=False).taker_rate()
