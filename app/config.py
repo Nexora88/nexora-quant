@@ -4,7 +4,7 @@
   AUTONOMOUS_MODE=true — self-decide; soft filters
   COMPOUND_FRACTION — redeploy free cash (small wins stack)
   MIN_REWARD_RISK_RATIO — require TP/SL asymmetry for expectancy
-  UNIVERSE_AUTO — screen ~30 majors → DEPTH_TOP_N L2 streams
+  UNIVERSE_AUTO — off by default (single primary L2); set true for multi-screen
   ENTRY_MIN_SCORE default 0.32 — balanced (not frozen, not spam)
 """
 from dataclasses import dataclass
@@ -44,9 +44,9 @@ def _optional_float(name: str) -> float | None:
 @dataclass(frozen=True, slots=True)
 class Settings:
     symbol: str = os.getenv("SYMBOL", "btcusdt").lower()
-    symbols_raw: str = os.getenv("SYMBOLS", "ethusdt,solusdt,bnbusdt,xrpusdt")
-    universe_auto: bool = _bool("UNIVERSE_AUTO", True)
-    depth_top_n: int = int(os.getenv("DEPTH_TOP_N", "5"))
+    symbols_raw: str = os.getenv("SYMBOLS", "")
+    universe_auto: bool = _bool("UNIVERSE_AUTO", False)
+    depth_top_n: int = int(os.getenv("DEPTH_TOP_N", "1"))
     universe_min_quote_volume: float = _float("UNIVERSE_MIN_QUOTE_VOLUME", 5_000_000.0)
     market_history_enabled: bool = _bool("MARKET_HISTORY_ENABLED", False)
     trading_mode: str = os.getenv("TRADING_MODE", "paper").lower()
@@ -83,7 +83,7 @@ class Settings:
     binance_testnet: bool = _bool("BINANCE_TESTNET", True)
     live_confirm: str = os.getenv("LIVE_CONFIRM", "")
     autonomous_mode: bool = _bool("AUTONOMOUS_MODE", True)
-    autonomous_symbol: bool = _bool("AUTONOMOUS_SYMBOL", True)
+    autonomous_symbol: bool = _bool("AUTONOMOUS_SYMBOL", False)
     compound_fraction: float = _float("COMPOUND_FRACTION", 0.85)
     min_order_usdt: float = _float("MIN_ORDER_USDT", 5.0)
     impact_coefficient: float = _float("IMPACT_COEFFICIENT", 0.1)
