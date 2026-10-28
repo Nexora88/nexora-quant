@@ -205,13 +205,25 @@ async def handle_tick(
         es.execution_costs.estimate_cost_bps(latency_ms=estimated_latency_ms)
         if mode == "live" and estimated_latency_ms is not None and hasattr(es, "execution_costs") else None
     )
-    edge = score_edge(
-        votes=_pre.votes,
-        spread_bps=analysis.spread_bps,
-        impact_bps=2.0 * impact_est,
-        fee_bps=2.0 * settings.fee_rate * 10_000,
-        latency_bps=calibrated_latency_cost or 0.0,
-    )
+    # Paper: softer edge so the desk can learn; live keeps cost-aware gate.
+    if mode == "paper":
+        edge = score_edge(
+            votes=_pre.votes,
+            spread_bps=analysis.spread_bps,
+            impact_bps=2.0 * impact_est,
+            fee_bps=2.0 * settings.fee_rate * 10_000,
+            latency_bps=0.0,
+            min_quality=0.18,
+            min_net_edge_bps=-12.0,
+        )
+    else:
+        edge = score_edge(
+            votes=_pre.votes,
+            spread_bps=analysis.spread_bps,
+            impact_bps=2.0 * impact_est,
+            fee_bps=2.0 * settings.fee_rate * 10_000,
+            latency_bps=calibrated_latency_cost or 0.0,
+        )
     execution_costs_calibrated = mode != "live" or calibrated_latency_cost is not None
     adv = adverse_filter.check(intend_long=True)
     whale_block = whale.side == "ask" and whale.strength >= 0.5
@@ -228,6 +240,16 @@ async def handle_tick(
         adverse_toxic=adv.toxic or whale_block, adverse_reasons=adverse_reasons,
     )
     state.record_decision(decision)
+
+    if ticks % 120 == 0:
+        log.info(
+            "pulse score=%.2f action=%s regime=%s edge_ok=%s blockers=%s",
+            analysis.score,
+            decision.action,
+            getattr(analysis, "regime", "?"),
+            edge.tradeable,
+            ",".join(decision.blockers[:3]) if decision.blockers else "-",
+        )
 
     if (
         decision.action == "enter_long" and signal and sus.ready
