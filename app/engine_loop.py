@@ -12,6 +12,7 @@ from app.market_history import MarketHistoryWriter
 from app.ts_store import FeatureTimeSeriesStore
 from app.binance_depth import stream_synchronized_depth
 from app.multi_stream import stream_multi_depth, watch_list
+from app.universe import screen_universe, depth_watch_from_screen, default_universe
 from app.engine_tick import handle_tick
 from app.engine_setup import shadows, learner, memory, motor
 from app import engine_setup as es
@@ -23,10 +24,14 @@ async def run() -> None:
     store = PaperStore(settings.store_path)
     io_q = AsyncIoQueue(store)
     io_q.start()
+    hist_on = bool(getattr(settings, "market_history_enabled", False))
     history = MarketHistoryWriter(
         settings.market_history_path,
         max_pending=int(getattr(settings, "history_max_pending", 4000) or 4000),
+        enabled=hist_on,
     )
+    if not hist_on:
+        log.info("Market history disabled (set MARKET_HISTORY_ENABLED=true to record L2)")
     features = FeatureTimeSeriesStore(getattr(settings, "features_db_path", "data/features.sqlite3"))
     mode = settings.trading_mode
     key = f"{mode}:{settings.symbol}"
@@ -71,6 +76,38 @@ async def run() -> None:
         log.warning("Memory restore skipped: %s", exc)
 
     watched = watch_list(settings.symbol, settings.watch_symbols())
+    if getattr(settings, "universe_auto", True):
+        try:
+            screened = screen_universe(
+                candidates=default_universe(),
+                top_n=int(getattr(settings, "depth_top_n", 5) or 5),
+                min_quote_volume=float(getattr(settings, "universe_min_quote_volume", 5_000_000) or 5e6),
+            )
+            state.universe_board = [r.to_dict() for r in screened]
+            depth_syms = depth_watch_from_screen(
+                screened, max_depth=int(getattr(settings, "depth_top_n", 5) or 5),
+            )
+            for s in settings.watch_symbols():
+                if s not in depth_syms:
+                    depth_syms.append(s)
+            watched = watch_list(settings.symbol, tuple(depth_syms))
+            cap = max(3, min(8, int(getattr(settings, "depth_top_n", 5) or 5) + 1))
+            watched = watched[:cap]
+            if "btcusdt" not in watched:
+                watched.append("btcusdt")
+            state.depth_watch = list(watched)
+            log.info(
+                "Universe screen → depth watch %s (from %d majors)",
+                ",".join(s.upper() for s in watched),
+                len(default_universe()),
+            )
+        except Exception as exc:
+            log.warning("Universe screen failed, fallback watch_list: %s", exc)
+            state.universe_board = []
+            state.depth_watch = list(watched)
+    else:
+        state.universe_board = []
+        state.depth_watch = list(watched)
     log.info(
         "Engine started mode=%s primary=%s watch=%s autonomous_symbol=%s trailing=%.2f%% score>=%.2f",
         mode,
@@ -104,7 +141,6 @@ async def run() -> None:
     ticks = 0
 
     async def day_rollover_loop() -> None:
-        """Time-driven UTC day reset even when the book is quiet (no WS ticks)."""
         while True:
             try:
                 today = datetime.now(timezone.utc).date().isoformat()
