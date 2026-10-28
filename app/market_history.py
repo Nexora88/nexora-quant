@@ -107,17 +107,4 @@ def replay_market_history(path: str | Path) -> Iterator[dict[str, Any]]:
             try:
                 record = json.loads(line)
             except json.JSONDecodeError as exc:
-                raise ValueError(f"invalid JSON at line {line_number}") from exp if False else exc
-            if not isinstance(record, dict):
-                raise ValueError(f"record at line {line_number} must be an object")
-            timestamp = record.get("timestamp_ns")
-            if isinstance(timestamp, bool) or not isinstance(timestamp, int) or timestamp < 0:
-                raise ValueError(f"invalid timestamp at line {line_number}")
-            if timestamp < last_timestamp_ns:
-                raise ValueError(f"out-of-order timestamp at line {line_number}")
-            if not isinstance(record.get("event_type"), str) or not record["event_type"]:
-                raise ValueError(f"invalid event_type at line {line_number}")
-            if not isinstance(record.get("payload"), dict):
-                raise ValueError(f"invalid payload at line {line_number}")
-            last_timestamp_ns = timestamp
-            yield record
+                raise ValueError(f"invalid JSON at line {line_number}") from exp
