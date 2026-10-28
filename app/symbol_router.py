@@ -1,7 +1,7 @@
 """Autonomous multi-symbol ranking: which coin to trade right now.
 
-Ranks SYMBOL + SYMBOLS by motor score, liquidity depth, and spoof/BTC gates.
-Works for paper and live when AUTONOMOUS_SYMBOL is enabled.
+Ranks screened depth symbols by motor score, liquidity, spoof/BTC gates.
+Selective but not paralyzed: mild chop allowed only when score is clearly strong.
 """
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ class SymbolScore:
 class SymbolRouter:
     """Keeps latest scores per symbol and selects the best entry candidate."""
 
-    def __init__(self, *, min_score: float = 0.55, max_spoof: float = 0.55) -> None:
+    def __init__(self, *, min_score: float = 0.38, max_spoof: float = 0.60) -> None:
         self.min_score = min_score
         self.max_spoof = max_spoof
         self._board: dict[str, SymbolScore] = {}
@@ -59,12 +59,16 @@ class SymbolRouter:
         liquid: bool = True,
         reasons: list[str] | None = None,
     ) -> SymbolScore:
+        regime_l = str(regime).lower()
+        regime_ok = regime_l not in ("stressed",)
+        if regime_l in ("choppy",) and score < self.min_score + 0.08:
+            regime_ok = False
         tradeable = (
             score >= self.min_score
             and spoof_score < self.max_spoof
             and not btc_blocked
             and liquid
-            and regime not in ("choppy", "stressed", "CHOPPY", "STRESSED")
+            and regime_ok
         )
         row = SymbolScore(
             symbol=symbol.lower(),
@@ -94,6 +98,5 @@ class SymbolRouter:
         return best
 
     def should_enter_on(self, symbol: str) -> bool:
-        """True if this symbol is currently the top tradeable candidate."""
         best = self.select_best()
         return best is not None and best.symbol == symbol.lower()
