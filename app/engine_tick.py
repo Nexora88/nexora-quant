@@ -188,11 +188,13 @@ async def handle_tick(
     free = getattr(ex, "cash_usdt", settings.starting_cash_usdt) if ex else settings.starting_cash_usdt
     kd_preview = kelly.size(free_usdt=free, fee_rate=settings.fee_rate)
     adverse_filter.update(mid=analysis.mid, spread_bps=analysis.spread_bps, micro_price=analysis.micro_price)
+    auto_mode = bool(getattr(settings, "autonomous_mode", True))
     _pre = build_decision(
         analysis=analysis, sustained=sus, in_position=bool(ex and ex.base_quantity > 0),
         kill_switch=bool(risk.kill_switch), kill_reason=risk.kill_switch_reason,
         kelly_fraction=kd_preview.fraction, suggested_notional=kd_preview.notional_usdt,
         entry_min_score=settings.entry_min_score,
+        autonomous_mode=auto_mode,
     )
     impact_est = market_impact_bps(
         notional_usdt=kd_preview.notional_usdt or settings.order_size_usdt,
@@ -206,24 +208,31 @@ async def handle_tick(
         es.execution_costs.estimate_cost_bps(latency_ms=estimated_latency_ms)
         if mode == "live" and estimated_latency_ms is not None and hasattr(es, "execution_costs") else None
     )
-    if mode == "paper":
-        edge = score_edge(
-            votes=_pre.votes,
-            spread_bps=analysis.spread_bps,
-            impact_bps=2.0 * impact_est,
-            fee_bps=2.0 * settings.fee_rate * 10_000,
-            latency_bps=0.0,
-            min_quality=0.28,
-            min_net_edge_bps=-4.0,
-        )
-    else:
-        edge = score_edge(
-            votes=_pre.votes,
-            spread_bps=analysis.spread_bps,
-            impact_bps=2.0 * impact_est,
-            fee_bps=2.0 * settings.fee_rate * 10_000,
-            latency_bps=calibrated_latency_cost or 0.0,
-        )
+    try:
+        if mode == "paper":
+            # Fee-aware but not double-count harsh: learning desk still accounts costs.
+            edge = score_edge(
+                votes=_pre.votes,
+                spread_bps=max(0.0, float(analysis.spread_bps or 0.0)),
+                impact_bps=max(0.0, float(impact_est or 0.0)),
+                fee_bps=max(0.0, float(settings.fee_rate) * 10_000),
+                latency_bps=0.0,
+                expected_alpha_bps=22.0,
+                min_quality=0.22,
+                min_net_edge_bps=-6.0,
+            )
+        else:
+            edge = score_edge(
+                votes=_pre.votes,
+                spread_bps=max(0.0, float(analysis.spread_bps or 0.0)),
+                impact_bps=max(0.0, 2.0 * float(impact_est or 0.0)),
+                fee_bps=max(0.0, 2.0 * float(settings.fee_rate) * 10_000),
+                latency_bps=max(0.0, float(calibrated_latency_cost or 0.0)),
+            )
+    except Exception as exc:
+        log.exception("score_edge failed; non-tradeable: %s", exc)
+        from app.intelligence.edge import EdgeReport
+        edge = EdgeReport(0.0, 0.0, 0.0, -999.0, False, [f"edge_error:{type(exc).__name__}"])
     execution_costs_calibrated = mode != "live" or calibrated_latency_cost is not None
     adv = adverse_filter.check(intend_long=True)
     whale_block = whale.side == "ask" and whale.strength >= 0.5
@@ -238,6 +247,7 @@ async def handle_tick(
         edge_tradeable=edge.tradeable and execution_costs_calibrated,
         edge_notes=edge.notes + ([] if execution_costs_calibrated else ["execution_cost_uncalibrated"]),
         adverse_toxic=adv.toxic or whale_block, adverse_reasons=adverse_reasons,
+        autonomous_mode=auto_mode,
     )
     state.record_decision(decision)
 
@@ -252,7 +262,7 @@ async def handle_tick(
         )
 
     # Follow DecisionRecord. Autonomous softens sustained in decision.py — no second sus.ready gate.
-    auto = bool(getattr(settings, "autonomous_mode", True))
+    auto = auto_mode
     can_enter = (
         decision.action == "enter_long"
         and ex is not None
@@ -291,7 +301,10 @@ async def handle_tick(
                 notional_usdt=sizing_n, available_cash=free_cash, bid=bid, ask=ask,
                 data_age_seconds=state.data_age_seconds(),
             )
-            if risk_dec.allowed:
+            if not risk_dec.allowed:
+                if ticks % 50 == 0:
+                    log.info("risk denied: %s", risk_dec.reason)
+            elif risk_dec.allowed:
                 try:
                     if mode == "paper":
                         qty = sizing_n / ask
