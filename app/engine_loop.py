@@ -40,6 +40,23 @@ async def run() -> None:
     if saved:
         if mode == "paper":
             es.executor.restore(saved["account"])
+            # STARTING_CASH_USDT from .env is authoritative for paper bankroll.
+            target_cash = float(settings.starting_cash_usdt)
+            pos_open = float(getattr(es.executor, "base_quantity", 0) or 0) > 1e-12
+            if not pos_open and abs(float(es.executor.starting_cash_usdt) - target_cash) > 1e-6:
+                log.info(
+                    "Paper bankroll rebased %.2f → %.2f USDT (STARTING_CASH_USDT)",
+                    es.executor.starting_cash_usdt,
+                    target_cash,
+                )
+                es.executor.starting_cash_usdt = target_cash
+                es.executor.cash_usdt = target_cash
+            elif pos_open and abs(float(es.executor.starting_cash_usdt) - target_cash) > 1e-6:
+                log.warning(
+                    "STARTING_CASH_USDT=%.2f differs from saved %.2f but position open — keep snapshot",
+                    target_cash,
+                    es.executor.starting_cash_usdt,
+                )
         else:
             try:
                 es.executor.restore(saved["account"])
@@ -112,6 +129,13 @@ async def run() -> None:
     else:
         state.universe_board = []
         state.depth_watch = list(watched)
+    log.info(
+        "Bankroll mode=%s starting_cash=%.2f order_size=%.2f max_order=%.2f",
+        mode,
+        settings.starting_cash_usdt,
+        settings.order_size_usdt,
+        settings.max_order_size_usdt,
+    )
     log.info(
         "Engine started mode=%s primary=%s watch=%s autonomous_symbol=%s trailing=%.2f%% score>=%.2f",
         mode,
