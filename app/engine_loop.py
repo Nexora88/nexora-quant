@@ -51,6 +51,10 @@ async def run() -> None:
         risk.kill_switch = bool(r.get("kill_switch", False))
         risk.kill_switch_reason = r.get("kill_switch_reason")
         risk.day_utc = r.get("day_utc")
+        if mode == "paper" and risk.kill_switch:
+            log.warning("Clearing restored paper kill_switch: %s", risk.kill_switch_reason)
+            risk.kill_switch = False
+            risk.kill_switch_reason = None
         state.peak_price = float(saved.get("peak_price") or 0)
     risk.rollover_day(today)
     try:
@@ -91,8 +95,7 @@ async def run() -> None:
                 if s not in depth_syms:
                     depth_syms.append(s)
             watched = watch_list(settings.symbol, tuple(depth_syms))
-            cap = max(3, min(8, int(getattr(settings, "depth_top_n", 5) or 5) + 1)
-            )
+            cap = max(3, min(8, int(getattr(settings, "depth_top_n", 5) or 5) + 1))
             watched = watched[:cap]
             if "btcusdt" not in watched:
                 watched.append("btcusdt")
