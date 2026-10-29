@@ -38,21 +38,30 @@ def score_edge(
     expected_alpha_bps is a heuristic gross-move budget, not a calibrated
     forecast. fee_bps should include both entry and exit fees. Spread, impact,
     and latency/adverse-selection allowances should cover the round trip too.
+
+    min_net_edge_bps may be negative (paper soft gate). Cost inputs that arrive
+    negative are clamped so a bad tick never kills the L2 loop.
     """
     numeric = (spread_bps, impact_bps, fee_bps, latency_bps, expected_alpha_bps,
                min_quality, min_net_edge_bps)
     if any(not isinstance(v, (int, float)) for v in numeric):
         raise ValueError("edge inputs must be numeric")
-    if any(v < 0 for v in (spread_bps, impact_bps, fee_bps, latency_bps,
-                           expected_alpha_bps, min_net_edge_bps)):
-        raise ValueError("costs, expected alpha, and minimum edge cannot be negative")
     if not 0 <= min_quality <= 1:
         raise ValueError("min_quality must be in [0, 1]")
 
     notes: list[str] = []
+    if spread_bps < 0 or impact_bps < 0 or fee_bps < 0 or latency_bps < 0 or expected_alpha_bps < 0:
+        notes.append("clamped_negative_cost_inputs")
+    spread_bps = max(0.0, float(spread_bps))
+    impact_bps = max(0.0, float(impact_bps))
+    fee_bps = max(0.0, float(fee_bps))
+    latency_bps = max(0.0, float(latency_bps))
+    expected_alpha_bps = max(0.0, float(expected_alpha_bps))
+    min_net_edge_bps = float(min_net_edge_bps)
+
     total_cost = spread_bps + impact_bps + fee_bps + latency_bps
     if not votes:
-        return EdgeReport(0.0, 0.0, total_cost, -total_cost, False, ["no_votes"])
+        return EdgeReport(0.0, 0.0, total_cost, -total_cost, False, notes + ["no_votes"])
 
     long_w = sum(v.weight for v in votes if v.direction == "long")
     short_w = sum(v.weight for v in votes if v.direction == "short")
@@ -69,5 +78,7 @@ def score_edge(
         if net < min_net_edge_bps:
             notes.append(f"net_edge_bps={net:.2f}<{min_net_edge_bps:.2f}")
     else:
-        notes.append(f"edge_ok q={quality:.2f} gross={gross:.2f} cost={total_cost:.2f} net={net:.2f}bps")
+        notes.append(
+            f"edge_ok q={quality:.2f} gross={gross:.2f} cost={total_cost:.2f} net={net:.2f}bps"
+        )
     return EdgeReport(quality, agreement, total_cost, net, tradeable, notes)

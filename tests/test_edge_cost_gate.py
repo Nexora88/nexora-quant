@@ -30,10 +30,18 @@ def test_no_votes_never_trade():
     assert "no_votes" in report.notes
 
 
-def test_negative_cost_is_rejected():
-    try:
-        score_edge(votes=[], spread_bps=-1)
-    except ValueError as exc:
-        assert "cannot be negative" in str(exc)
-    else:
-        raise AssertionError("negative cost should be rejected")
+def test_negative_cost_is_clamped_not_raised():
+    # Bad ticks must not crash the L2 loop; costs are clamped to >= 0.
+    report = score_edge(votes=[], spread_bps=-1, impact_bps=-2)
+    assert report.cost_bps >= 0
+    assert "clamped_negative_cost_inputs" in report.notes
+    assert not report.tradeable
+
+
+def test_paper_soft_min_net_edge_allowed():
+    votes = [FeatureVote("obi", "long", 1.0, 0.9, "strong")]
+    report = score_edge(
+        votes=votes, spread_bps=1, impact_bps=1, fee_bps=2,
+        expected_alpha_bps=15, min_quality=0.2, min_net_edge_bps=-4.0,
+    )
+    assert report.tradeable  # net ~11.5 >= -4
