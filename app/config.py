@@ -4,9 +4,10 @@
   AUTONOMOUS_MODE=true — self-decide; soft filters
   COMPOUND_FRACTION — redeploy free cash (small wins stack)
   MIN_REWARD_RISK_RATIO — require TP/SL asymmetry for expectancy
-  UNIVERSE_AUTO — off by default (single primary L2); set true for multi-screen
+  UNIVERSE_AUTO — screen majors; DEPTH_TOP_N depth streams
   STARTING_CASH_USDT — paper bankroll (env wins; default 100)
-  ENTRY_MIN_SCORE default 0.32 — balanced (not frozen, not spam)
+  USE_ATR_TARGETS / RISK_PER_TRADE_PCT — dynamic size + stops
+  ENTRY_MIN_SCORE default 0.26 — selective but not frozen
 """
 from dataclasses import dataclass
 import os
@@ -46,8 +47,8 @@ def _optional_float(name: str) -> float | None:
 class Settings:
     symbol: str = os.getenv("SYMBOL", "btcusdt").lower()
     symbols_raw: str = os.getenv("SYMBOLS", "")
-    universe_auto: bool = _bool("UNIVERSE_AUTO", False)
-    depth_top_n: int = int(os.getenv("DEPTH_TOP_N", "1"))
+    universe_auto: bool = _bool("UNIVERSE_AUTO", True)
+    depth_top_n: int = int(os.getenv("DEPTH_TOP_N", "5"))
     universe_min_quote_volume: float = _float("UNIVERSE_MIN_QUOTE_VOLUME", 5_000_000.0)
     market_history_enabled: bool = _bool("MARKET_HISTORY_ENABLED", False)
     trading_mode: str = os.getenv("TRADING_MODE", "paper").lower()
@@ -68,7 +69,7 @@ class Settings:
     stop_loss_pct: float = _float("STOP_LOSS_PCT", 0.35)
     trailing_stop_pct: float = _float("TRAILING_STOP_PCT", 0.25)
     min_reward_risk_ratio: float = _float("MIN_REWARD_RISK_RATIO", 2.0)
-    entry_min_score: float = _float("ENTRY_MIN_SCORE", 0.28)
+    entry_min_score: float = _float("ENTRY_MIN_SCORE", 0.26)
     signal_confirmations: int = int(os.getenv("SIGNAL_CONFIRMATIONS", "1"))
     target_price: float | None = _optional_float("TARGET_PRICE")
     target_equity_usdt: float | None = _optional_float("TARGET_EQUITY_USDT")
@@ -84,8 +85,12 @@ class Settings:
     binance_testnet: bool = _bool("BINANCE_TESTNET", True)
     live_confirm: str = os.getenv("LIVE_CONFIRM", "")
     autonomous_mode: bool = _bool("AUTONOMOUS_MODE", True)
-    autonomous_symbol: bool = _bool("AUTONOMOUS_SYMBOL", False)
+    autonomous_symbol: bool = _bool("AUTONOMOUS_SYMBOL", True)
     compound_fraction: float = _float("COMPOUND_FRACTION", 0.85)
+    use_atr_targets: bool = _bool("USE_ATR_TARGETS", True)
+    risk_per_trade_pct: float = _float("RISK_PER_TRADE_PCT", 0.40)
+    max_concurrent_positions: int = int(os.getenv("MAX_CONCURRENT_POSITIONS", "1"))
+    vol_target_enabled: bool = _bool("VOL_TARGET_ENABLED", True)
     min_order_usdt: float = _float("MIN_ORDER_USDT", 6.0)
     impact_coefficient: float = _float("IMPACT_COEFFICIENT", 0.1)
     features_db_path: str = os.getenv("FEATURES_DB_PATH", "data/features.sqlite3")
@@ -139,6 +144,10 @@ class Settings:
             raise ValueError("COMPOUND_FRACTION must be in (0, 1].")
         if self.min_order_usdt <= 0:
             raise ValueError("MIN_ORDER_USDT must be positive.")
+        if not 0.05 <= self.risk_per_trade_pct <= 5.0:
+            raise ValueError("RISK_PER_TRADE_PCT must be in [0.05, 5].")
+        if self.max_concurrent_positions < 1:
+            raise ValueError("MAX_CONCURRENT_POSITIONS must be >= 1.")
         rr = self.take_profit_pct / self.stop_loss_pct if self.stop_loss_pct > 0 else 0
         if rr < self.min_reward_risk_ratio:
             raise ValueError(
