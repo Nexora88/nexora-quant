@@ -26,7 +26,6 @@ from app.engine_setup import (
     sustained,
     wall_tracker,
     whale_tracker,
-    symbol_router,
 )
 from app.events import BookTicker
 from app.intelligence.edge import score_edge
