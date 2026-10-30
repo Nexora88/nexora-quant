@@ -39,6 +39,14 @@ class RuntimeState:
         self.paused: bool = False
         self.peak_equity: float = 0.0
         self.live_log: deque = deque(maxlen=80)
+        self.trade_symbol: str | None = None
+        self.side_books: dict = {}
+        self.router_board: list = []
+        self.position_tp_pct: float | None = None
+        self.position_sl_pct: float | None = None
+        self.position_trail_pct: float | None = None
+        self.dynamic_targets_note: str | None = None
+        self.last_sizing_note: str | None = None
 
     def update_book(self, book: BookTicker) -> None:
         self.latest_book = book
@@ -199,6 +207,11 @@ class RuntimeState:
             "max_drawdown_pct": round(dd_pct, 3),
             "daily_loss_used_pct": round(daily_used_pct, 2),
             "live_log": list(self.live_log)[:40],
+            "trade_symbol": self.trade_symbol,
+            "last_sizing_note": self.last_sizing_note,
+            "dynamic_targets_note": self.dynamic_targets_note,
+            "position_tp_pct": self.position_tp_pct,
+            "position_sl_pct": self.position_sl_pct,
             "telemetry": {
                 "data_age_ms": round((age or 0) * 1000, 1) if age is not None else None,
                 "events_seen": self.events_seen,
