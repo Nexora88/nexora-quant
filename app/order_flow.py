@@ -1,4 +1,4 @@
-"""Order-flow accumulation: sustained L2 pressure over seconds, not one flash OBI.
+"""Order-flow accumulation: sustained L2 pressure over 1–3s, not one flash OBI.
 
 Retail cannot win pure ms races against co-located HFT. We require the imbalance
 to *persist* for a hold window so the signal is directional accumulation, not a spoof flash.
@@ -18,6 +18,14 @@ class FlowPressure:
     ready: bool
     note: str
 
+    @property
+    def bullish(self) -> bool:
+        return self.ready and self.pressure > 0
+
+    @property
+    def bearish(self) -> bool:
+        return self.ready and self.pressure < 0
+
 
 class OrderFlowAccumulator:
     """Rolling window of OBI / micro-premium; ready only after sustained pressure."""
@@ -25,22 +33,26 @@ class OrderFlowAccumulator:
     def __init__(
         self,
         *,
-        hold_seconds: float = 2.5,
+        hold_seconds: float = 2.0,
         min_samples: int = 8,
-        min_abs_pressure: float = 0.18,
+        min_abs_pressure: float = 0.16,
     ) -> None:
-        self.hold_seconds = max(0.5, float(hold_seconds))
-        self.min_samples = max(3, int(min_samples))
+        self.hold_seconds = max(0.8, min(3.5, float(hold_seconds)))
+        self.min_samples = max(4, int(min_samples))
         self.min_abs_pressure = max(0.05, float(min_abs_pressure))
-        self._buf: deque[tuple[float, float]] = deque(maxlen=400)
+        self._buf: deque[tuple[float, float]] = deque(maxlen=500)
+
+    def reset(self) -> None:
+        self._buf.clear()
 
     def update(self, *, imbalance: float, micro_premium_bps: float = 0.0) -> FlowPressure:
         now = time.time()
+        # imbalance is 0..1 (bid share); convert to signed -1..+1
         obi = (float(imbalance) - 0.5) * 2.0
         micro = max(-1.0, min(1.0, float(micro_premium_bps) / 8.0))
-        signed = 0.7 * obi + 0.3 * micro
+        signed = 0.72 * obi + 0.28 * micro
         self._buf.append((now, signed))
-        cutoff = now - self.hold_seconds * 1.5
+        cutoff = now - self.hold_seconds * 1.6
         while self._buf and self._buf[0][0] < cutoff:
             self._buf.popleft()
         recent = [(t, p) for t, p in self._buf if t >= now - self.hold_seconds]
@@ -51,6 +63,6 @@ class OrderFlowAccumulator:
             return FlowPressure(avg, len(recent), self.hold_seconds, False, "weak_flow")
         same = sum(1 for _, p in recent if (p >= 0) == (avg >= 0))
         ratio = same / len(recent)
-        ready = ratio >= 0.65 and abs(avg) >= self.min_abs_pressure
-        note = f"flow={avg:+.2f} persist={ratio:.0%} n={len(recent)}"
+        ready = ratio >= 0.62 and abs(avg) >= self.min_abs_pressure
+        note = f"flow={avg:+.2f} persist={ratio:.0%} n={len(recent)} hold={self.hold_seconds:.1f}s"
         return FlowPressure(avg, len(recent), self.hold_seconds, ready, note)
