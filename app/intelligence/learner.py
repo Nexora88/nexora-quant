@@ -127,6 +127,40 @@ class OnlineLearner:
                 self._tp_scale = max(0.6, self._tp_scale - 0.01)
                 self._note += " recycle_fast"
 
+    def observe_market(
+        self,
+        *,
+        score: float,
+        regime: str,
+        flow_pressure: float = 0.0,
+        flow_ready: bool = False,
+        in_position: bool = False,
+    ) -> None:
+        """Learn from L2 continuously even with no open trade (idle brain).
+
+        Softly nudges entry threshold from regime + flow quality.
+        Does not invent PnL — only adapts gates for the next real fill.
+        """
+        sc = float(score)
+        reg = str(regime or "unknown")
+        self._last_regime = reg
+        if not in_position and flow_ready and abs(float(flow_pressure)) >= 0.15:
+            if sc >= self._entry_min:
+                self._entry_min = max(self.min_entry, self._entry_min - 0.005)
+                if reg not in ("unknown", "stressed"):
+                    self._prefer = reg if self._prefer in ("any", reg) else self._prefer
+                self._note = f"idle_flow_ready score={sc:.2f} reg={reg}"
+            elif sc < self._entry_min - 0.1:
+                self._entry_min = min(self.max_entry, self._entry_min + 0.002)
+                self._note = f"idle_weak_score score={sc:.2f}"
+        if in_position:
+            return
+        if self._lifetime_trades == 0:
+            self._entry_min = min(
+                self.max_entry,
+                max(self.min_entry, 0.9 * self._entry_min + 0.1 * self.base_entry_min),
+            )
+
     @property
     def entry_min_score(self) -> float:
         return float(self._entry_min)
