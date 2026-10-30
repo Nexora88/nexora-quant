@@ -70,7 +70,7 @@ adverse_filter = AdverseSelectionFilter()
 whale_tracker = WhaleTracker(multiple=4.0, persist_ticks=5)
 spoof_filter = OrderPersistenceFilter(min_persist_ms=1500.0)
 btc_filter = BtcTrendFilter(wick_jump_bps=35.0, cooldown_ticks=16)
-order_flow = OrderFlowAccumulator(hold_seconds=2.0, min_samples=8, min_abs_pressure=0.16)
+order_flow = OrderFlowAccumulator(hold_seconds=1.8, min_samples=7, min_abs_pressure=0.14)
 circuit_breaker = DrawdownCircuitBreaker(
     loss_streak=3,
     base_min_score=float(getattr(settings, "entry_min_score", 0.55) or 0.55),
@@ -91,7 +91,7 @@ trend_follower = TrendFollower(fast=12, slow=48)
 motor = AnalysisMotor(window=120)
 learner = OnlineLearner(
     window=40,
-    base_entry_min=min(getattr(settings, "entry_min_score", 0.32), 0.32),
+    base_entry_min=min(float(getattr(settings, "entry_min_score", 0.26) or 0.26), 0.28),
     base_compound=float(getattr(settings, "compound_fraction", 0.85)),
 )
 memory = TradeMemory(capacity=200)
