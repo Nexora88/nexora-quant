@@ -78,10 +78,13 @@ circuit_breaker = DrawdownCircuitBreaker(
     sleep_seconds=900.0,
 )
 atr_tracker = AtrTracker(period=28)
-portfolio_risk = PortfolioRiskGate(max_total_risk_pct=0.35, max_concurrent=1)
+portfolio_risk = PortfolioRiskGate(
+    max_total_risk_pct=float(getattr(settings, "risk_per_trade_pct", 0.40) or 0.40),
+    max_concurrent=int(getattr(settings, "max_concurrent_positions", 1) or 1),
+)
 symbol_router = SymbolRouter(
-    min_score=float(getattr(settings, "entry_min_score", 0.55) or 0.55),
-    max_spoof=0.55,
+    min_score=float(getattr(settings, "entry_min_score", 0.26) or 0.26),
+    max_spoof=0.60,
 )
 noise_filter = NoiseFilter(window=12, min_stability=0.55)
 trend_follower = TrendFollower(fast=12, slow=48)
