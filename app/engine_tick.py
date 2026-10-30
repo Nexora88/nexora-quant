@@ -11,9 +11,12 @@ from app.engine_setup import (
     _event_key,
     _paper_fill,
     adverse_filter,
+    atr_tracker,
     kelly,
+    learner,
     log,
     ou_tracker,
+    portfolio_risk,
     price_window,
     regime_clf,
     risk,
@@ -22,10 +25,13 @@ from app.engine_setup import (
     sustained,
     wall_tracker,
     whale_tracker,
+    symbol_router,
 )
 from app.events import BookTicker
 from app.intelligence.edge import score_edge
 from app.portfolio import size_from_free_cash
+from app.atr_stops import compute_dynamic_targets
+from app.autonomous_policy import regime_targets, vol_adjusted_notional, impact_capped_notional, assess_liquidity
 from app.simulation import market_impact_bps
 from app.strategy import analyze_market, entry_signal_from_analysis, exit_reason
 
@@ -51,7 +57,7 @@ async def handle_tick(
         timestamp_ns=time.time_ns(),
         event_type="depth",
         payload={
-            "symbol": settings.symbol,
+            "symbol": (getattr(state, "trade_symbol", None) or settings.symbol),
             "best_bid": [bid, bid_qty],
             "best_ask": [ask, ask_qty],
             "update_id": getattr(depth, "last_update_id", None),
@@ -61,9 +67,10 @@ async def handle_tick(
     )
     if bid <= 0 or ask < bid:
         return confirmations, ticks
+    trade_sym = (getattr(state, "trade_symbol", None) or settings.symbol).lower()
     risk.rollover_day(datetime.now(timezone.utc).date().isoformat())
     state.update_book(
-        BookTicker(settings.symbol, bid, bid_qty, ask, ask_qty, datetime.now(timezone.utc))
+        BookTicker(trade_sym, bid, bid_qty, ask, ask_qty, datetime.now(timezone.utc))
     )
 
     depth_bids = sorted(getattr(depth, "bids", {}).items(), reverse=True)[:15] or [(bid, bid_qty)]
@@ -85,6 +92,7 @@ async def handle_tick(
     except Exception:
         pass
     state.record_analysis(analysis)
+    atr_now = atr_tracker.update(analysis.mid) if analysis.mid and analysis.mid > 0 else float(atr_tracker.atr_pct or 0.0)
     now_ms = int(time.time() * 1000)
     if hasattr(es, "execution_costs"):
         es.execution_costs.observe_mid(analysis.mid, now_ms)
@@ -112,8 +120,10 @@ async def handle_tick(
             state.peak_price = bid
         reason = exit_reason(
             bid=bid, average_entry=ex.average_entry_price,
-            take_profit_pct=settings.take_profit_pct, stop_loss_pct=settings.stop_loss_pct,
-            trailing_stop_pct=settings.trailing_stop_pct, peak_price=state.peak_price,
+            take_profit_pct=float(state.position_tp_pct or settings.take_profit_pct),
+            stop_loss_pct=float(state.position_sl_pct or settings.stop_loss_pct),
+            trailing_stop_pct=float(state.position_trail_pct or settings.trailing_stop_pct),
+            peak_price=state.peak_price,
             target_price=settings.target_price,
         )
         if reason:
@@ -172,6 +182,13 @@ async def handle_tick(
                         pass
                     if ex.base_quantity <= 0:
                         state.peak_price = 0.0
+                        try:
+                            portfolio_risk.unregister(settings.symbol)
+                        except Exception:
+                            pass
+                        state.position_tp_pct = None
+                        state.position_sl_pct = None
+                        state.position_trail_pct = None
             except Exception:
                 log.exception("Exit order failed (%s)", reason)
                 state.last_error = f"exit_failed:{reason}"
@@ -182,7 +199,6 @@ async def handle_tick(
 
     signal = entry_signal_from_analysis(analysis, min_score=settings.entry_min_score)
     state.record_signal(signal)
-    # Feed sustained from score floor — do not reset when signal is momentarily None.
     sus = sustained.update(analysis.score if analysis.score >= settings.entry_min_score else 0.0)
     confirmations = sus.consecutive
     free = getattr(ex, "cash_usdt", settings.starting_cash_usdt) if ex else settings.starting_cash_usdt
@@ -210,7 +226,6 @@ async def handle_tick(
     )
     try:
         if mode == "paper":
-            # Fee-aware but not double-count harsh: learning desk still accounts costs.
             edge = score_edge(
                 votes=_pre.votes,
                 spread_bps=max(0.0, float(analysis.spread_bps or 0.0)),
@@ -261,7 +276,6 @@ async def handle_tick(
             ",".join(decision.blockers[:3]) if decision.blockers else "-",
         )
 
-    # Follow DecisionRecord. Autonomous softens sustained in decision.py — no second sus.ready gate.
     auto = auto_mode
     can_enter = (
         decision.action == "enter_long"
@@ -290,12 +304,77 @@ async def handle_tick(
                 log.exception("Balance sync failed")
                 risk.activate_kill_switch("Exchange balance sync failed")
                 state.last_error = "exchange_balance_sync_failed"
-        kd = kelly.size(free_usdt=free_cash, fee_rate=settings.fee_rate)
-        sizing_n = kd.notional_usdt if kd.notional_usdt > 0 else size_from_free_cash(
-            free_usdt=free_cash, allocation_fraction=0.8, fee_rate=settings.fee_rate,
+        atr_now = float(atr_tracker.atr_pct or 0.0)
+        if bool(getattr(settings, "use_atr_targets", True)):
+            dyn = compute_dynamic_targets(
+                atr_pct=atr_now,
+                spread_bps=float(analysis.spread_bps or 0.0),
+                regime=str(analysis.regime or "unknown"),
+            )
+            rt = regime_targets(
+                regime=str(analysis.regime or "unknown"),
+                base_tp=float(dyn.take_profit_pct),
+                base_sl=float(dyn.stop_loss_pct),
+                base_trail=float(dyn.trailing_stop_pct),
+                vol_bps=atr_now * 10_000.0,
+            )
+            active_tp, active_sl, active_trail = dyn.take_profit_pct, dyn.stop_loss_pct, dyn.trailing_stop_pct
+            size_scale = float(rt.size_scale) * float(getattr(learner, "size_bias", 1.0) or 1.0)
+        else:
+            active_tp = float(settings.take_profit_pct)
+            active_sl = float(settings.stop_loss_pct)
+            active_trail = float(settings.trailing_stop_pct)
+            size_scale = float(getattr(learner, "size_bias", 1.0) or 1.0)
+
+        equity = float(free_cash)
+        if bool(getattr(settings, "vol_target_enabled", True)) and active_sl > 0:
+            risk_budget = equity * (float(getattr(settings, "risk_per_trade_pct", 0.40)) / 100.0)
+            vol_notional = risk_budget / (active_sl / 100.0)
+        else:
+            vol_notional = float(settings.order_size_usdt)
+
+        kd = kelly.size(free_usdt=free_cash, fee_rate=settings.fee_rate, size_scale=size_scale)
+        base_n = kd.notional_usdt if kd.notional_usdt > 0 else size_from_free_cash(
+            free_usdt=free_cash,
+            allocation_fraction=float(getattr(learner, "compound_fraction", settings.compound_fraction) or 0.85),
+            fee_rate=settings.fee_rate,
             max_order_usdt=min(settings.order_size_usdt, settings.max_order_size_usdt),
-            min_order_usdt=5,
+            min_order_usdt=float(getattr(settings, "min_order_usdt", 5) or 5),
         ).notional_usdt
+        compound = float(getattr(learner, "compound_fraction", None) or settings.compound_fraction)
+        desired = min(max(base_n, 0.0), max(vol_notional, 0.0)) if base_n > 0 else max(vol_notional, 0.0)
+        desired = desired * max(0.35, min(1.0, compound))
+        desired = vol_adjusted_notional(
+            base_notional=desired,
+            size_scale=size_scale,
+            min_order_usdt=float(getattr(settings, "min_order_usdt", 5) or 5),
+            max_order_usdt=float(settings.max_order_size_usdt),
+        )
+        depth_vis = max(ask * max(ask_qty, 1e-9), 1.0) * 10.0
+        try:
+            liq = assess_liquidity(symbol=settings.symbol, bids=depth_bids, asks=depth_asks, spread_bps=analysis.spread_bps)
+            depth_vis = max(liq.depth_usdt, depth_vis)
+            if not liq.ok and ticks % 40 == 0:
+                log.info("liquidity soft-warn: %s", liq.note)
+        except Exception:
+            pass
+        desired = impact_capped_notional(
+            desired_usdt=desired,
+            visible_depth_usdt=depth_vis,
+            max_book_fraction=0.08,
+            min_order_usdt=float(getattr(settings, "min_order_usdt", 5) or 5),
+            max_order_usdt=float(settings.max_order_size_usdt),
+        )
+        sizing_n = portfolio_risk.size_for_budget(
+            equity_usdt=equity,
+            stop_loss_pct=active_sl,
+            desired_usdt=desired,
+            symbol=settings.symbol,
+        )
+        state.last_sizing_note = (
+            f"n={sizing_n:.2f} vol={vol_notional:.2f} kelly={base_n:.2f} "
+            f"sl={active_sl:.2f} tp={active_tp:.2f} scale={size_scale:.2f}"
+        )
         if sizing_n > 0:
             risk_dec = risk.evaluate_entry(
                 notional_usdt=sizing_n, available_cash=free_cash, bid=bid, ask=ask,
@@ -317,7 +396,18 @@ async def handle_tick(
                             )
                             store.append_trade(trade, event_key=_event_key(key, trade))
                             state.record_fill(trade)
-                            log.info("paper BUY filled notional=%.2f score=%.2f", actual, analysis.score)
+                            state.position_tp_pct = active_tp
+                            state.position_sl_pct = active_sl
+                            state.position_trail_pct = active_trail
+                            state.dynamic_targets_note = f"tp={active_tp:.2f}|sl={active_sl:.2f}"
+                            try:
+                                portfolio_risk.register(settings.symbol, actual, active_sl)
+                            except Exception:
+                                pass
+                            log.info(
+                                "paper BUY filled notional=%.2f score=%.2f tp=%.2f sl=%.2f %s",
+                                actual, analysis.score, active_tp, active_sl, state.last_sizing_note or "",
+                            )
                     else:
                         trade = ex.buy(
                             notional_usdt=sizing_n, price=ask,
@@ -338,14 +428,14 @@ async def handle_tick(
                         if hasattr(ex, "install_protection_or_flatten"):
                             protected = ex.install_protection_or_flatten(
                                 current_price=ask,
-                                take_profit_pct=settings.take_profit_pct,
-                                stop_loss_pct=settings.stop_loss_pct,
+                                take_profit_pct=active_tp,
+                                stop_loss_pct=active_sl,
                                 mark_price=float(bid or ask),
                             )
                         elif not ex.ensure_protective_oco(
                             current_price=ask,
-                            take_profit_pct=settings.take_profit_pct,
-                            stop_loss_pct=settings.stop_loss_pct,
+                            take_profit_pct=active_tp,
+                            stop_loss_pct=active_sl,
                         ):
                             protected = False
                         if not protected:
@@ -354,6 +444,13 @@ async def handle_tick(
                             risk.activate_kill_switch(
                                 "Exchange-hosted TP/SL OCO unavailable — emergency flatten"
                             )
+                        state.position_tp_pct = active_tp
+                        state.position_sl_pct = active_sl
+                        state.position_trail_pct = active_trail
+                        try:
+                            portfolio_risk.register(settings.symbol, sizing_n, active_sl)
+                        except Exception:
+                            pass
                         store.append_trade(trade, event_key=_event_key(key, trade))
                         state.record_fill(trade)
                 except Exception:
