@@ -15,6 +15,7 @@ from app.engine_setup import (
     kelly,
     learner,
     log,
+    order_flow,
     ou_tracker,
     portfolio_risk,
     price_window,
@@ -92,6 +93,14 @@ async def handle_tick(
     except Exception:
         pass
     state.record_analysis(analysis)
+    flow = order_flow.update(
+        imbalance=float(analysis.imbalance or 0.5),
+        micro_premium_bps=float(getattr(analysis, "micro_premium_bps", 0.0) or 0.0),
+    )
+    try:
+        state.last_flow = {"pressure": flow.pressure, "ready": flow.ready, "note": flow.note, "samples": flow.samples}
+    except Exception:
+        pass
     atr_now = atr_tracker.update(analysis.mid) if analysis.mid and analysis.mid > 0 else float(atr_tracker.atr_pct or 0.0)
     now_ms = int(time.time() * 1000)
     if hasattr(es, "execution_costs"):
@@ -268,15 +277,19 @@ async def handle_tick(
 
     if ticks % 120 == 0:
         log.info(
-            "pulse score=%.2f action=%s regime=%s edge_ok=%s blockers=%s",
+            "pulse score=%.2f action=%s regime=%s edge_ok=%s flow=%s blockers=%s",
             analysis.score,
             decision.action,
             getattr(analysis, "regime", "?"),
             edge.tradeable,
+            flow.note,
             ",".join(decision.blockers[:3]) if decision.blockers else "-",
         )
 
     auto = auto_mode
+    flow_ok = bool(flow.bullish) if not auto else bool(flow.bullish or (flow.ready and flow.pressure > 0.05))
+    if auto and not flow.ready and analysis.score >= max(settings.entry_min_score, 0.55):
+        flow_ok = False
     can_enter = (
         decision.action == "enter_long"
         and ex is not None
@@ -284,13 +297,15 @@ async def handle_tick(
         and not risk.kill_switch
         and (signal is not None or auto)
         and (sus.ready or auto)
+        and flow_ok
     )
     if not can_enter and decision.action == "enter_long" and ticks % 30 == 0:
         log.info(
-            "enter_long held signal=%s sus_ready=%s auto=%s pos=%s kill=%s",
+            "enter_long held signal=%s sus_ready=%s auto=%s flow=%s pos=%s kill=%s",
             bool(signal),
             sus.ready,
             auto,
+            flow.note,
             bool(ex and ex.base_quantity > 0),
             bool(risk.kill_switch),
         )
@@ -392,7 +407,7 @@ async def handle_tick(
                         if actual > 0:
                             trade = ex.buy(
                                 notional_usdt=actual, price=fill.fill_price,
-                                reason=f"{(signal.reason if signal else 'auto')}; score={analysis.score:.2f}",
+                                reason=f"{(signal.reason if signal else 'auto')}; score={analysis.score:.2f}; {flow.note}",
                             )
                             store.append_trade(trade, event_key=_event_key(key, trade))
                             state.record_fill(trade)
@@ -405,8 +420,9 @@ async def handle_tick(
                             except Exception:
                                 pass
                             log.info(
-                                "paper BUY filled notional=%.2f score=%.2f tp=%.2f sl=%.2f %s",
-                                actual, analysis.score, active_tp, active_sl, state.last_sizing_note or "",
+                                "paper BUY filled notional=%.2f score=%.2f tp=%.2f sl=%.2f %s %s",
+                                actual, analysis.score, active_tp, active_sl,
+                                state.last_sizing_note or "", flow.note,
                             )
                     else:
                         trade = ex.buy(
