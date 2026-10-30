@@ -126,15 +126,16 @@ def analyze_market(
     score = 0.0
     regime = regime_snap.regime if regime_snap else MarketRegime.UNKNOWN
 
+    hard_block = False
     if regime == MarketRegime.STRESSED:
         reasons.append("regime_stressed")
-        score *= 0.0
-    elif regime == MarketRegime.CHOPPY:
-        reasons.append("regime_choppy")
-        score *= 0.0
+        hard_block = True
     elif regime_snap is not None and regime_snap.pause_entries:
         reasons.append(f"regime_pause:{regime_snap.detail}")
-        score *= 0.0
+        hard_block = True
+
+    if hard_block:
+        score = 0.0
     elif regime == MarketRegime.RANGE:
         if snap.mean_reversion_signal == "fade_ask":
             score += 0.50
@@ -193,6 +194,10 @@ def analyze_market(
         score *= 0.5
         reasons.append(f"wide_spread={spread_bps:.1f}bps")
 
+    if regime == MarketRegime.CHOPPY:
+        if "regime_choppy" not in reasons:
+            reasons.append("regime_choppy")
+        score *= 0.55
     score = max(-1.0, min(1.0, score))
     return MarketAnalysis(
         mid=mid,
@@ -221,7 +226,6 @@ def entry_signal_from_analysis(
         return None
     if any(r.startswith("regime_pause") for r in analysis.reasons):
         return None
-    # Choppy: require a clearer edge so we still trade, not freeze forever
     need = float(min_score)
     if analysis.regime == MarketRegime.CHOPPY.value:
         need = min(0.95, need + 0.08)
