@@ -1,37 +1,56 @@
-# Go-Live Checklist (Nexora Quant)
+# Go-Live Checklist (testnet → small mainnet)
 
-## Overnight paper (48h)
+## 0. Philosophy
+- One open position only (`MAX_CONCURRENT_POSITIONS=1`).
+- Expectancy is fee-aware; do not lower fees to force trades.
+- ATR + vol-target size the ticket; fixed .env TP/SL are baselines only.
 
+## 1. Overnight paper (48h)
 ```bash
-TRADING_MODE=paper SYMBOL=btcusdt SYMBOLS=ethusdt,solusdt,bnbusdt \
-  uvicorn app.api:app --host 127.0.0.1 --port 8000
+# .env: TRADING_MODE=paper, STARTING_CASH_USDT=100, USE_ATR_TARGETS=true
+uvicorn app.api:app --host 127.0.0.1 --port 8000
+# other terminal:
+PYTHONPATH=. python scripts/overnight_paper_check.py
 ```
+Pass criteria:
+- No crash / reconnect storm
+- Expectancy check script prints `OVERNIGHT_CHECK_PASS`
+- Daily loss kill-switch not spurious
+- At least a few paper fills over 48h OR honest blockers (not freeze bugs)
 
-- Equity curve does not drift from fee-only noise without trades.
-- Kill switch and circuit breaker still trip on synthetic loss streak tests.
-- `app/expectancy.py` break-even math still matches `effective_fee_rate()` (BNB/VIP).
+## 2. Binance API (both testnet and mainnet)
+Create API key with:
+- **Enable Reading**: YES
+- **Enable Spot & Margin Trading**: YES
+- **Enable Withdrawals**: **NO** (never)
+- IP whitelist: your VPS / home IP only
 
-## Binance API permissions
+## 3. Testnet first
+```env
+TRADING_MODE=live
+BINANCE_TESTNET=true
+BINANCE_API_KEY=...
+BINANCE_API_SECRET=...
+# do NOT set LIVE_CONFIRM yet
+```
+Confirm OCO protect + flatten on a tiny notional.
 
-| Setting | Required |
-|---------|----------|
-| Enable Reading | Yes |
-| Enable Spot & Margin Trading | Yes (live only) |
-| Enable Withdrawals | **NEVER** |
-| IP whitelist | Your home IP and/or AWS Tokyo elastic IP |
+## 4. Small mainnet
+```env
+TRADING_MODE=live
+BINANCE_TESTNET=false
+LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY
+STARTING_CASH_USDT=30   # or your real free USDT
+MAX_ORDER_SIZE_USDT=15
+MAX_DAILY_LOSS_USDT=5
+MAX_CONCURRENT_POSITIONS=1
+```
+Phone: Binance app ready for manual flatten if network dies.
 
-Prefer **testnet** (`BINANCE_TESTNET=true`) until 48h paper is clean.
+## 5. Explicitly NOT yet
+- Multi-position concurrent books
+- HFT / co-lo competition (step 5: order-flow accumulation)
 
-## Emergency manual
-
-- Binance mobile app logged in, 2FA ready.
-- If AWS/internet dies: close position on phone (Spot → sell market).
-- Code path: kill switch + OCO + emergency flatten; network outage still needs phone.
-
-## Rate limits
-
-Process-wide `BinanceWeightLimiter` soft-caps REST weight (~2400/min).
-
-## Honest limits
-
-Tokyo RTT ≠ co-location. No profit guarantee.
+## 6. Data to keep
+- `data/paper.sqlite3` (learner + memory)
+- Snapshot before any host migration
