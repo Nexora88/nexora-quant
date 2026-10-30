@@ -70,7 +70,7 @@ adverse_filter = AdverseSelectionFilter()
 whale_tracker = WhaleTracker(multiple=4.0, persist_ticks=5)
 spoof_filter = OrderPersistenceFilter(min_persist_ms=1500.0)
 btc_filter = BtcTrendFilter(wick_jump_bps=35.0, cooldown_ticks=16)
-order_flow = OrderFlowAccumulator(hold_seconds=2.0, min_samples=10, min_abs_pressure=0.18)
+order_flow = OrderFlowAccumulator(hold_seconds=2.0, min_samples=8, min_abs_pressure=0.16)
 circuit_breaker = DrawdownCircuitBreaker(
     loss_streak=3,
     base_min_score=float(getattr(settings, "entry_min_score", 0.55) or 0.55),
