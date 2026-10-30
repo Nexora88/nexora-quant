@@ -1,20 +1,21 @@
-"""Event-driven L2 history replay for research (no look-ahead).
+"""Replay captured L2 depth history through the research signal path.
 
-Default latency/slippage are deliberately non-zero so paper expectancy
-is not inflated versus retail fill conditions.
+Event-driven (sequential history only) — no future bars. Defaults use
+non-zero latency and slippage so expectancy is not artificially inflated.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import gzip
+import json
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
+from app.analytics.microstructure import OrnsteinUhlenbeckTracker
+from app.analytics.regime import RegimeClassifier
 from app.paper import PaperExecutor
 from app.simulation import ExecutionSimulator
 from app.strategy import PriceWindow, analyze_market, entry_signal_from_analysis, exit_reason
-from app.analytics.microstructure import OrnsteinUhlenbeckTracker
-from app.analytics.regime import RegimeClassifier
-from app.market_history import iter_history
 
 
 @dataclass
@@ -38,23 +39,38 @@ class L2BacktestConfig:
 
 @dataclass
 class L2BacktestResult:
-    trades: int = 0
-    wins: int = 0
-    total_pnl: float = 0.0
-    fees: float = 0.0
-    ending_equity: float = 0.0
-    notes: list[str] = field(default_factory=list)
+    trades: int
+    wins: int
+    total_pnl: float
+    fees_paid: float
+    ending_equity: float
+    notes: list[str]
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "trades": self.trades,
-            "wins": self.wins,
-            "win_rate": (self.wins / self.trades) if self.trades else 0.0,
-            "total_pnl": self.total_pnl,
-            "fees": self.fees,
-            "ending_equity": self.ending_equity,
-            "notes": list(self.notes),
-        }
+
+def summarize_l2_result(result: L2BacktestResult) -> dict[str, Any]:
+    wr = (result.wins / result.trades) if result.trades else 0.0
+    return {
+        "trades": result.trades,
+        "wins": result.wins,
+        "win_rate": wr,
+        "total_pnl": result.total_pnl,
+        "fees_paid": result.fees_paid,
+        "ending_equity": result.ending_equity,
+        "notes": list(result.notes),
+    }
+
+
+def _iter_events(path: Path) -> Iterator[dict[str, Any]]:
+    opener = gzip.open if str(path).endswith(".gz") else open
+    with opener(path, "rt", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError:
+                continue
 
 
 def _walk_book(side: str, levels: list, qty: float, impact_bps: float = 0.0):
@@ -93,12 +109,19 @@ def run_l2_backtest(history_path: str | Path, cfg: L2BacktestConfig | None = Non
     pw = PriceWindow(maxlen=180)
     ou = OrnsteinUhlenbeckTracker(maxlen=300, z_entry=2.0)
     regime = RegimeClassifier()
-    result = L2BacktestResult()
+    trades = 0
+    wins = 0
+    total_pnl = 0.0
     confirmations = 0
     peak = 0.0
+    notes: list[str] = [f"latency_ms={cfg.latency_ms}", f"slip_bps={cfg.slippage_bps}"]
 
-    for ev in iter_history(history_path):
-        payload = ev.get("payload") or {}
+    path = Path(history_path)
+    if not path.exists():
+        return L2BacktestResult(0, 0, 0.0, 0.0, cfg.starting_cash_usdt, ["missing_history"])
+
+    for ev in _iter_events(path):
+        payload = ev.get("payload") or ev
         bb = payload.get("best_bid") or [0, 0]
         ba = payload.get("best_ask") or [0, 0]
         try:
@@ -128,19 +151,18 @@ def run_l2_backtest(history_path: str | Path, cfg: L2BacktestConfig | None = Non
             )
             if reason:
                 qty = paper.base_quantity
-                impact = 0.0
-                avg_px, filled = _walk_book("sell", bids or [[bid, qty]], qty, impact_bps=impact)
+                avg_px, filled = _walk_book("sell", bids or [[bid, qty]], qty)
                 if filled <= 0:
                     fill = sim.fills(side="sell", reference_price=bid, quantity=qty)
                     avg_px, filled = fill.fill_price, fill.filled_quantity
                 if filled > 0:
                     trade = paper.sell_quantity(quantity=filled, price=avg_px, reason=f"l2_{reason}")
                     if trade:
-                        result.trades += 1
+                        trades += 1
                         pnl = float(trade.get("pnl_usdt", 0))
-                        result.total_pnl += pnl
+                        total_pnl += pnl
                         if pnl > 0:
-                            result.wins += 1
+                            wins += 1
                         peak = 0.0
             continue
 
@@ -153,7 +175,7 @@ def run_l2_backtest(history_path: str | Path, cfg: L2BacktestConfig | None = Non
             notional = min(cfg.order_size_usdt, paper.cash_usdt * 0.95)
             if notional > 5:
                 qty = notional / ask
-                avg_px, filled = _walk_book("buy", asks or [[ask, qty]], qty, impact_bps=0.0)
+                avg_px, filled = _walk_book("buy", asks or [[ask, qty]], qty)
                 if filled <= 0:
                     fill = sim.fills(side="buy", reference_price=ask, quantity=qty)
                     avg_px, filled = fill.fill_price, fill.filled_quantity
@@ -163,7 +185,6 @@ def run_l2_backtest(history_path: str | Path, cfg: L2BacktestConfig | None = Non
                     peak = ask
 
     snap = paper.snapshot()
-    result.ending_equity = float(snap.get("equity_usdt", snap.get("cash_usdt", 0)))
-    result.fees = float(snap.get("fees_paid_usdt", 0))
-    result.notes.append(f"latency_ms={cfg.latency_ms};slip_bps={cfg.slippage_bps}")
-    return result
+    equity = float(snap.get("equity_usdt", snap.get("cash_usdt", cfg.starting_cash_usdt)))
+    fees = float(snap.get("fees_paid_usdt", 0))
+    return L2BacktestResult(trades, wins, total_pnl, fees, equity, notes)
