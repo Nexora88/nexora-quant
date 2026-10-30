@@ -217,14 +217,15 @@ def analyze_market(
 def entry_signal_from_analysis(
     analysis: MarketAnalysis, *, min_score: float = 0.55
 ) -> Signal | None:
-    if analysis.regime in (
-        MarketRegime.STRESSED.value,
-        MarketRegime.CHOPPY.value,
-    ):
+    if analysis.regime == MarketRegime.STRESSED.value:
         return None
     if any(r.startswith("regime_pause") for r in analysis.reasons):
         return None
-    if analysis.score >= min_score:
+    # Choppy: require a clearer edge so we still trade, not freeze forever
+    need = float(min_score)
+    if analysis.regime == MarketRegime.CHOPPY.value:
+        need = min(0.95, need + 0.08)
+    if analysis.score >= need:
         return Signal(
             "buy",
             "composite:" + ",".join(analysis.reasons[:4]),
