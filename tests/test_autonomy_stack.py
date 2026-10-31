@@ -4,7 +4,6 @@ from __future__ import annotations
 from app.atr_stops import compute_dynamic_targets
 from app.intelligence.btc_filter import BtcTrendFilter
 from app.intelligence.spoof import OrderPersistenceFilter
-from app.portfolio_risk import PortfolioRiskGate
 
 
 def test_quiet_vs_storm_targets():
