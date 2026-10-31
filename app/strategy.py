@@ -248,11 +248,24 @@ def exit_reason(
     trailing_stop_pct: float,
     peak_price: float,
     target_price: float | None,
+    wick_confirmations: int = 0,
+    wick_state: object | None = None,
 ) -> str | None:
+    """Exit rules. Optional wick_confirmations avoids hard SL on a single flash wick."""
     if average_entry <= 0 or bid <= 0:
         return None
     move = (bid / average_entry - 1.0) * 100
-    if move <= -stop_loss_pct:
+    if wick_confirmations and wick_state is not None:
+        from app.atr_stops import wick_aware_stop
+
+        if wick_aware_stop(
+            move_pct=move,
+            stop_loss_pct=stop_loss_pct,
+            state=wick_state,  # type: ignore[arg-type]
+            confirmations=wick_confirmations,
+        ):
+            return "stop_loss"
+    elif move <= -stop_loss_pct:
         return "stop_loss"
     if trailing_stop_pct > 0 and peak_price > average_entry:
         trail_floor = peak_price * (1.0 - trailing_stop_pct / 100.0)
