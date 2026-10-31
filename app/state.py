@@ -1,221 +1,154 @@
-"""In-memory runtime state with equity curve and analysis for the dashboard."""
+"""Runtime state for the trading engine and dashboard."""
+from __future__ import annotations
+
 from collections import deque
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from app.events import BookTicker, TradeTick
-from app.config import settings
+from app.events import BookTicker
 
 
+@dataclass
 class RuntimeState:
     def __init__(self) -> None:
-        self.latest_book: BookTicker | None = None
-        self.trades: deque[TradeTick] = deque(maxlen=1000)
-        self.last_message_at = None
-        self.reconnect_count = 0
-        self.events_seen = 0
-        self.last_error = None
-        self.executor = None
-        self.risk_manager = None
-        self.last_analysis: dict[str, Any] | None = None
-        self.last_signal: dict[str, Any] | None = None
-        self.peak_price: float = 0.0
-        self.equity_curve: deque[dict[str, Any]] = deque(maxlen=500)
-        self.price_curve: deque[dict[str, Any]] = deque(maxlen=500)
-        self.recent_fills: deque[dict[str, Any]] = deque(maxlen=50)
-        self.shadow_leaderboard: list[dict[str, Any]] = []
-        self.last_decision: dict[str, Any] | None = None
-        self.decision_history: deque = deque(maxlen=50)
-        self.emergency: bool = False
-        self.emergency_reason: str | None = None
-        self.io_queue_stats: dict[str, Any] = {}
-        self.learner_snapshot: dict[str, Any] = {}
-        self.memory_lessons: list[dict[str, Any]] = []
-        self.motor_report: dict[str, Any] | None = None
-        self.score_history: deque = deque(maxlen=180)
-        self.universe_board: list[dict[str, Any]] = []
-        self.depth_watch: list[str] = []
-        self.paused: bool = False
-        self.peak_equity: float = 0.0
-        self.live_log: deque = deque(maxlen=80)
+        self.mode: str = "paper"
+        self.symbol: str = "btcusdt"
         self.trade_symbol: str | None = None
-        self.side_books: dict = {}
-        self.router_board: list = []
+        self.connected: bool = False
+        self.reconnect_count: int = 0
+        self.events_seen: int = 0
+        self.last_error: str | None = None
+        self.kill_switch: bool = False
+        self.kill_switch_reason: str | None = None
+        self.paused: bool = False
+        self.emergency: bool = False
+        self.executor: Any = None
+        self.risk_manager: Any = None
+        self.latest_book: BookTicker | None = None
+        self.latest_analysis: Any = None
+        self.latest_signal: Any = None
+        self.latest_decision: Any = None
+        self.peak_price: float = 0.0
         self.position_tp_pct: float | None = None
         self.position_sl_pct: float | None = None
         self.position_trail_pct: float | None = None
         self.dynamic_targets_note: str | None = None
         self.last_sizing_note: str | None = None
+        self.wick_stop_state = None
+        self.btc_block: bool = False
+        self.btc_filter_snap: str | None = None
+        self.last_flow: dict | None = None
+        self.learner_snapshot: dict | None = None
+        self.shadow_leaderboard: list = field(default_factory=list) if False else []
+        self.side_books: dict = {}
+        self.router_board: list = []
+        self.price_curve: deque = deque(maxlen=300)
+        self.equity_curve: deque = deque(maxlen=300)
+        self.recent_fills: deque = deque(maxlen=40)
+        self._book_ts: float = 0.0
 
     def update_book(self, book: BookTicker) -> None:
         self.latest_book = book
-        self.last_message_at = book.received_at
+        self.connected = True
         self.events_seen += 1
-        mid = (book.bid + book.ask) / 2 if book.bid and book.ask else book.bid
-        now = datetime.now(timezone.utc).isoformat()
-        if mid and mid > 0:
-            self.price_curve.append({"t": now, "mid": mid, "bid": book.bid, "ask": book.ask})
-            if self.executor and getattr(self.executor, "base_quantity", 0) > 0:
-                self.peak_price = max(self.peak_price, book.bid)
+        self._book_ts = datetime.now(timezone.utc).timestamp()
+        mid = (book.bid + book.ask) / 2.0 if book.ask >= book.bid else book.bid
+        self.price_curve.append({"t": self._book_ts, "mid": mid})
+
+    def data_age_seconds(self) -> float:
+        if not self._book_ts:
+            return 999.0
+        return max(0.0, datetime.now(timezone.utc).timestamp() - self._book_ts)
 
     def record_analysis(self, analysis: Any) -> None:
-        self.last_analysis = {
-            "mid": analysis.mid,
-            "spread_bps": analysis.spread_bps,
-            "imbalance": analysis.imbalance,
-            "momentum_bps": analysis.momentum_bps,
-            "trend": analysis.trend,
-            "distance_to_target_pct": analysis.distance_to_target_pct,
-            "target_bias": analysis.target_bias,
-            "score": analysis.score,
-            "reasons": list(analysis.reasons),
-            "created_at": analysis.created_at.isoformat(),
-            "weighted_obi": getattr(analysis, "weighted_obi", None),
-            "micro_price": getattr(analysis, "micro_price", None),
-            "micro_premium_bps": getattr(analysis, "micro_premium_bps", 0.0),
-            "ou_zscore": getattr(analysis, "ou_zscore", None),
-            "mean_reversion_signal": getattr(analysis, "mean_reversion_signal", "none"),
-            "regime": getattr(analysis, "regime", "unknown"),
-        }
-        now = datetime.now(timezone.utc).isoformat()
-        self.score_history.append({"t": now, "score": float(analysis.score or 0)})
+        self.latest_analysis = analysis
+
+    def record_signal(self, signal: Any) -> None:
+        self.latest_signal = signal
 
     def record_decision(self, decision: Any) -> None:
-        d = decision.to_dict() if hasattr(decision, "to_dict") else dict(decision)
-        self.last_decision = d
-        self.decision_history.append(d)
+        self.latest_decision = decision
 
-    def record_signal(self, signal: Any | None) -> None:
-        if signal is None:
-            return
-        self.last_signal = {
-            "action": signal.action,
-            "reason": signal.reason,
-            "strength": signal.strength,
-            "created_at": signal.created_at.isoformat(),
-        }
-
-    def record_fill(self, trade: dict[str, Any]) -> None:
+    def record_fill(self, trade: dict) -> None:
         self.recent_fills.appendleft(dict(trade))
-        if trade.get("side") == "buy":
-            entry = float(trade.get("price") or 0)
-            self.peak_price = entry
-        mark = self.latest_book.bid if self.latest_book else None
-        if self.executor:
-            snap = self.executor.snapshot(mark)
-            self.equity_curve.append(
-                {
-                    "t": datetime.now(timezone.utc).isoformat(),
-                    "equity": snap.get("equity_usdt"),
-                    "realized": snap.get("realized_pnl_usdt"),
-                    "unrealized": snap.get("unrealized_pnl_usdt"),
-                }
-            )
 
     def sample_equity(self) -> None:
-        mark = self.latest_book.bid if self.latest_book else None
         if not self.executor:
             return
-        snap = self.executor.snapshot(mark)
-        self.equity_curve.append(
-            {
-                "t": datetime.now(timezone.utc).isoformat(),
-                "equity": snap.get("equity_usdt"),
-                "realized": snap.get("realized_pnl_usdt"),
-                "unrealized": snap.get("unrealized_pnl_usdt"),
+        mark = self.latest_book.bid if self.latest_book else None
+        try:
+            snap = self.executor.snapshot(mark)
+            eq = float(snap.get("equity_usdt", 0))
+            self.equity_curve.append({"t": datetime.now(timezone.utc).timestamp(), "equity": eq})
+        except Exception:
+            pass
+
+    def snapshot(self) -> dict[str, Any]:
+        mark = self.latest_book.bid if self.latest_book else None
+        portfolio = self.executor.snapshot(mark) if self.executor else {}
+        analysis = None
+        if self.latest_analysis is not None:
+            a = self.latest_analysis
+            analysis = {
+                "mid": getattr(a, "mid", None),
+                "spread_bps": getattr(a, "spread_bps", None),
+                "imbalance": getattr(a, "imbalance", None),
+                "momentum_bps": getattr(a, "momentum_bps", None),
+                "trend": getattr(a, "trend", None),
+                "score": getattr(a, "score", None),
+                "reasons": list(getattr(a, "reasons", []) or []),
+                "regime": getattr(a, "regime", None),
+                "weighted_obi": getattr(a, "weighted_obi", None),
+                "micro_premium_bps": getattr(a, "micro_premium_bps", None),
             }
-        )
+        decision = None
+        if self.latest_decision is not None:
+            d = self.latest_decision
+            decision = d.to_dict() if hasattr(d, "to_dict") else asdict(d) if hasattr(d, "__dataclass_fields__") else {}
+        market = None
+        if self.latest_book is not None:
+            b = self.latest_book
+            market = {
+                "symbol": b.symbol,
+                "bid": b.bid,
+                "bid_qty": b.bid_qty,
+                "ask": b.ask,
+                "ask_qty": b.ask_qty,
+                "received_at": getattr(b, "received_at", None),
+            }
+        from app.config import settings as _s
 
-    def add_trade(self, trade: TradeTick) -> None:
-        self.trades.append(trade)
-        self.last_message_at = trade.received_at
-        self.events_seen += 1
-
-    def data_age_seconds(self) -> float | None:
-        if self.last_message_at is None:
-            return None
-        return max(0.0, (datetime.now(timezone.utc) - self.last_message_at).total_seconds())
-
-    def push_log(self, text: str) -> None:
-        self.live_log.appendleft({
-            "t": datetime.now(timezone.utc).isoformat(),
-            "text": str(text)[:240],
-        })
-
-    def snapshot(self) -> dict:
-        book = self.latest_book
-        age = self.data_age_seconds()
-        risk = self.risk_manager
-        portfolio = (
-            self.executor.snapshot(book.bid if book else None) if self.executor else None
-        )
-        eq = float((portfolio or {}).get("equity_usdt") or 0)
-        if eq > self.peak_equity:
-            self.peak_equity = eq
-        dd_pct = 0.0
-        if self.peak_equity > 0 and eq > 0:
-            dd_pct = max(0.0, (self.peak_equity - eq) / self.peak_equity * 100.0)
-        daily_loss = float(risk.realized_pnl_today) if risk else 0.0
-        daily_cap = float(settings.max_daily_loss_usdt)
-        daily_used_pct = (
-            min(100.0, abs(min(0.0, daily_loss)) / daily_cap * 100.0) if daily_cap > 0 else 0.0
-        )
         return {
-            "mode": settings.trading_mode,
-            "symbol": settings.symbol.upper(),
-            "target_price": settings.target_price,
-            "connected": age is not None and age <= settings.max_data_age_seconds,
+            "mode": self.mode or _s.trading_mode,
+            "symbol": (self.trade_symbol or self.symbol or _s.symbol),
+            "connected": self.connected and self.data_age_seconds() <= 8.0,
             "reconnect_count": self.reconnect_count,
             "events_seen": self.events_seen,
-            "data_age_seconds": age,
+            "data_age_seconds": self.data_age_seconds(),
             "last_error": self.last_error,
-            "kill_switch": bool(risk and risk.kill_switch),
-            "kill_switch_reason": risk.kill_switch_reason if risk else None,
-            "realized_pnl_today": risk.realized_pnl_today if risk else 0,
-            "consecutive_losses": risk.consecutive_losses if risk else 0,
-            "market": asdict(book) if book else None,
+            "kill_switch": self.kill_switch,
+            "kill_switch_reason": self.kill_switch_reason,
+            "paused": self.paused,
+            "market": market,
             "portfolio": portfolio,
-            "analysis": self.last_analysis,
-            "last_signal": self.last_signal,
-            "peak_price": self.peak_price,
-            "equity_curve": list(self.equity_curve)[-120:],
-            "price_curve": list(self.price_curve)[-120:],
-            "recent_fills": list(self.recent_fills)[:20],
-            "shadow_leaderboard": list(self.shadow_leaderboard)[:5],
-            "last_decision": self.last_decision,
-            "decision_history": list(self.decision_history)[:15],
-            "emergency": self.emergency,
-            "emergency_reason": self.emergency_reason,
-            "io_queue_stats": dict(self.io_queue_stats) if self.io_queue_stats else {},
-            "learner_snapshot": dict(self.learner_snapshot) if self.learner_snapshot else {},
-            "memory_lessons": list(self.memory_lessons)[:10],
-            "motor_report": self.motor_report,
-            "risk_limits": {
-                "max_order_size_usdt": settings.max_order_size_usdt,
-                "max_daily_loss_usdt": settings.max_daily_loss_usdt,
-                "take_profit_pct": settings.take_profit_pct,
-                "stop_loss_pct": settings.stop_loss_pct,
-                "trailing_stop_pct": settings.trailing_stop_pct,
-                "entry_min_score": settings.entry_min_score,
-            },
-            "score_history": list(self.score_history)[-120:],
-            "universe_board": list(self.universe_board)[:12],
-            "depth_watch": list(self.depth_watch)[:8],
-            "paused": bool(self.paused),
-            "peak_equity": self.peak_equity,
-            "max_drawdown_pct": round(dd_pct, 3),
-            "daily_loss_used_pct": round(daily_used_pct, 2),
-            "live_log": list(self.live_log)[:40],
-            "trade_symbol": self.trade_symbol,
+            "analysis": analysis,
+            "last_signal": asdict(self.latest_signal) if self.latest_signal and hasattr(self.latest_signal, "__dataclass_fields__") else None,
+            "last_decision": decision,
+            "price_curve": list(self.price_curve),
+            "equity_curve": list(self.equity_curve),
+            "recent_fills": list(self.recent_fills),
             "last_sizing_note": self.last_sizing_note,
-            "dynamic_targets_note": self.dynamic_targets_note,
-            "position_tp_pct": self.position_tp_pct,
-            "position_sl_pct": self.position_sl_pct,
-            "telemetry": {
-                "data_age_ms": round((age or 0) * 1000, 1) if age is not None else None,
-                "events_seen": self.events_seen,
-                "reconnect_count": self.reconnect_count,
-                "heartbeat_ok": bool(age is not None and age <= settings.max_data_age_seconds),
+            "btc_block": bool(getattr(self, "btc_block", False)),
+            "btc_filter_snap": getattr(self, "btc_filter_snap", None),
+            "last_flow": getattr(self, "last_flow", None),
+            "learner_snapshot": self.learner_snapshot,
+            "risk_limits": {
+                "max_order_size_usdt": _s.max_order_size_usdt,
+                "max_daily_loss_usdt": _s.max_daily_loss_usdt,
+                "take_profit_pct": _s.take_profit_pct,
+                "stop_loss_pct": _s.stop_loss_pct,
+                "trailing_stop_pct": _s.trailing_stop_pct,
+                "entry_min_score": _s.entry_min_score,
             },
         }
