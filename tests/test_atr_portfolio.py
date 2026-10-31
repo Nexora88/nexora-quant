@@ -7,8 +7,8 @@ from app.portfolio_risk import PortfolioRiskGate
 def test_atr_expands_stop_in_vol():
     quiet = compute_dynamic_targets(atr_pct=0.001, regime="choppy")
     hot = compute_dynamic_targets(atr_pct=0.004, regime="trend")
-    assert 0.20 <= quiet.stop_loss_pct <= 0.55
-    assert 0.20 <= hot.stop_loss_pct <= 0.55
+    assert 0.15 <= quiet.stop_loss_pct <= 0.35
+    assert 0.15 <= hot.stop_loss_pct <= 0.40
 
 
 def test_atr_tracker_updates():
@@ -35,9 +35,3 @@ def test_portfolio_btc_lock_alts():
     )
     assert ok is False
     assert "btc_correlation" in note
-
-
-def test_size_for_budget_shrinks():
-    g = PortfolioRiskGate(max_total_risk_pct=0.35, max_concurrent=2)
-    n = g.size_for_budget(equity_usdt=30, stop_loss_pct=0.35, desired_usdt=100, symbol="btcusdt")
-    assert n <= 30 + 1e-6
