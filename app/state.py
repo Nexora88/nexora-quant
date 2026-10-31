@@ -51,6 +51,7 @@ class RuntimeState:
         self.btc_block: bool = False
         self.btc_filter_snap: str | None = None
         self.last_flow: dict | None = None
+        self.score_ema: float = 0.0
 
     def update_book(self, book: BookTicker) -> None:
         self.latest_book = book
@@ -69,14 +70,29 @@ class RuntimeState:
         return max(0.0, (datetime.now(timezone.utc) - ref).total_seconds())
 
     def record_analysis(self, analysis: Any) -> None:
+        raw = float(getattr(analysis, "score", 0) or 0)
+        alpha = 0.12
+        if not self.score_ema:
+            self.score_ema = raw
+        else:
+            self.score_ema = alpha * raw + (1.0 - alpha) * float(self.score_ema)
+        try:
+            analysis.score = float(self.score_ema)
+        except Exception:
+            pass
         if hasattr(analysis, "__dataclass_fields__"):
             self.last_analysis = asdict(analysis)
         elif isinstance(analysis, dict):
             self.last_analysis = dict(analysis)
+            self.last_analysis["score"] = float(self.score_ema)
         else:
-            self.last_analysis = {"score": getattr(analysis, "score", None)}
-        sc = float(getattr(analysis, "score", 0) or 0)
-        self.score_history.append({"ts": datetime.now(timezone.utc).isoformat(), "score": sc})
+            self.last_analysis = {"score": float(self.score_ema)}
+        if self.last_analysis is not None and "score" in self.last_analysis:
+            self.last_analysis["score"] = float(self.score_ema)
+            self.last_analysis["score_raw"] = raw
+        self.score_history.append(
+            {"ts": datetime.now(timezone.utc).isoformat(), "score": float(self.score_ema), "raw": raw}
+        )
 
     def record_signal(self, signal: Any) -> None:
         if signal is None:
