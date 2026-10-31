@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import datetime, timezone
 
 from app.config import settings
@@ -40,18 +41,46 @@ async def run() -> None:
     if saved:
         if mode == "paper":
             es.executor.restore(saved["account"])
-            # STARTING_CASH_USDT from .env is authoritative for paper bankroll.
             target_cash = float(settings.starting_cash_usdt)
-            pos_open = float(getattr(es.executor, "base_quantity", 0) or 0) > 1e-12
-            if not pos_open and abs(float(es.executor.starting_cash_usdt) - target_cash) > 1e-6:
-                log.info(
-                    "Paper bankroll rebased %.2f → %.2f USDT (STARTING_CASH_USDT)",
-                    es.executor.starting_cash_usdt,
-                    target_cash,
+            bq = float(getattr(es.executor, "base_quantity", 0) or 0)
+            ep = float(getattr(es.executor, "average_entry_price", 0) or 0)
+            notional = bq * ep if bq > 0 and ep > 0 else 0.0
+            min_n = float(getattr(settings, "min_order_usdt", 6.0) or 6.0)
+            # Dust / zombie paper lots block enter_long forever (position_open_manage_exits).
+            if bq > 0 and (notional < min_n or bq < 1e-10 or ep <= 0):
+                log.warning(
+                    "Clearing dust/zombie paper position qty=%.8f notional=%.4f",
+                    bq,
+                    notional,
                 )
+                es.executor.base_quantity = 0.0
+                es.executor.average_entry_price = 0.0
+                bq = 0.0
+            # Default paper: do not resume open lots unless PAPER_RESUME_POSITION=true
+            resume = os.getenv("PAPER_RESUME_POSITION", "").strip().lower() in {
+                "1", "true", "yes", "on",
+            }
+            if bq > 1e-12 and not resume:
+                log.warning(
+                    "Paper start: flattening restored position (notional≈%.2f). "
+                    "Set PAPER_RESUME_POSITION=true to keep it.",
+                    notional,
+                )
+                es.executor.base_quantity = 0.0
+                es.executor.average_entry_price = 0.0
+                bq = 0.0
+            pos_open = bq > 1e-12
+            if not pos_open:
+                if abs(float(es.executor.starting_cash_usdt) - target_cash) > 1e-6 or abs(
+                    float(es.executor.cash_usdt) - target_cash
+                ) > 1e-6:
+                    log.info(
+                        "Paper bankroll rebased → %.2f USDT (STARTING_CASH_USDT)",
+                        target_cash,
+                    )
                 es.executor.starting_cash_usdt = target_cash
                 es.executor.cash_usdt = target_cash
-            elif pos_open and abs(float(es.executor.starting_cash_usdt) - target_cash) > 1e-6:
+            elif abs(float(es.executor.starting_cash_usdt) - target_cash) > 1e-6:
                 log.warning(
                     "STARTING_CASH_USDT=%.2f differs from saved %.2f but position open — keep snapshot",
                     target_cash,
