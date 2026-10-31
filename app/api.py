@@ -211,18 +211,37 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Nexora Quant", version="0.2.0", lifespan=lifespan)
 
 
+def _is_private_lan(host: str) -> bool:
+    """Allow home/office Wi-Fi so phone can open dashboard on same network."""
+    if not host:
+        return False
+    if host.startswith(("192.168.", "10.")):
+        return True
+    if host.startswith("172."):
+        parts = host.split(".")
+        try:
+            second = int(parts[1])
+        except (IndexError, ValueError):
+            return False
+        return 16 <= second <= 31
+    return False
+
+
 @app.middleware("http")
 async def restrict_remote_access(request: Request, call_next):
     client_host = request.client.host if request.client else ""
-    if client_host not in {"127.0.0.1", "::1", "localhost", "testclient"}:
-        expected = os.getenv("NEXORA_API_TOKEN", "")
-        supplied = request.headers.get("authorization", "")
-        valid = bool(expected) and hmac.compare_digest(supplied, "Bearer " + expected)
-        if not valid:
-            return JSONResponse(
-                status_code=403,
-                content={"detail": "Remote access disabled or bearer token invalid"},
-            )
+    if client_host in {"127.0.0.1", "::1", "localhost", "testclient"}:
+        return await call_next(request)
+    if _is_private_lan(client_host):
+        return await call_next(request)
+    expected = os.getenv("NEXORA_API_TOKEN", "")
+    supplied = request.headers.get("authorization", "")
+    valid = bool(expected) and hmac.compare_digest(supplied, "Bearer " + expected)
+    if not valid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Remote access disabled or bearer token invalid"},
+        )
     return await call_next(request)
 
 
