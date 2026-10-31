@@ -33,6 +33,9 @@ class PaperExecutor:
         self.cash_usdt = values["cash_usdt"]
         self.base_quantity = values["base_quantity"]
         self.average_entry_price = values["average_entry_price"]
+        if self.base_quantity < 1e-12:
+            self.base_quantity = 0.0
+            self.average_entry_price = 0.0
         self.realized_pnl_usdt = values["realized_pnl_usdt"]
         self.fees_paid_usdt = values["fees_paid_usdt"]
         self.trades = list(snapshot.get("trades", []))
@@ -41,53 +44,76 @@ class PaperExecutor:
         if price <= 0 or notional_usdt <= 0:
             raise ValueError("Price and notional must be positive")
         fee = notional_usdt * self.fee_rate
-        if notional_usdt + fee > self.cash_usdt:
-            raise ValueError("Insufficient paper cash including fee")
+        total = notional_usdt + fee
+        if total > self.cash_usdt + 1e-9:
+            raise ValueError("Insufficient paper cash")
         quantity = notional_usdt / price
         old_cost = self.base_quantity * self.average_entry_price
         self.base_quantity += quantity
         self.average_entry_price = (old_cost + notional_usdt) / self.base_quantity
-        self.cash_usdt -= notional_usdt + fee
+        self.cash_usdt -= total
         self.fees_paid_usdt += fee
-        trade = {"side": "buy", "price": price, "quantity": quantity,
-                 "notional_usdt": notional_usdt, "fee_usdt": fee, "reason": reason,
-                 "timestamp": datetime.now(timezone.utc).isoformat()}
+        trade = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "side": "buy",
+            "quantity": quantity,
+            "price": price,
+            "notional_usdt": notional_usdt,
+            "fee_usdt": fee,
+            "pnl_usdt": 0.0,
+            "reason": reason,
+            "accounting_complete": True,
+        }
         self.trades.append(trade)
         return trade
 
-    def sell_quantity(self, *, quantity: float, price: float, reason: str) -> dict | None:
-        """Sell a simulated partial quantity while retaining remaining position cost basis."""
+    def sell_quantity(self, *, quantity: float, price: float, reason: str) -> dict:
         if price <= 0 or quantity <= 0:
             raise ValueError("Price and quantity must be positive")
         if self.base_quantity <= 0:
-            return None
+            raise ValueError("No paper position to sell")
         quantity = min(quantity, self.base_quantity)
-        gross = quantity * price
-        fee = gross * self.fee_rate
+        notional = quantity * price
+        fee = notional * self.fee_rate
         pnl = (price - self.average_entry_price) * quantity - fee
-        self.cash_usdt += gross - fee
-        self.realized_pnl_usdt += pnl
+        self.cash_usdt += notional - fee
         self.fees_paid_usdt += fee
-        trade = {"side": "sell", "price": price, "quantity": quantity,
-                 "notional_usdt": gross, "fee_usdt": fee, "pnl_usdt": pnl,
-                 "reason": reason, "timestamp": datetime.now(timezone.utc).isoformat()}
-        self.trades.append(trade)
+        self.realized_pnl_usdt += pnl
         self.base_quantity = max(0.0, self.base_quantity - quantity)
         if self.base_quantity < 1e-12:
             self.base_quantity = 0.0
             self.average_entry_price = 0.0
+        trade = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "side": "sell",
+            "quantity": quantity,
+            "price": price,
+            "notional_usdt": notional,
+            "fee_usdt": fee,
+            "pnl_usdt": pnl,
+            "reason": reason,
+            "accounting_complete": True,
+        }
+        self.trades.append(trade)
         return trade
 
-    def sell_all(self, *, price: float, reason: str = "manual_paper_exit") -> dict | None:
+    def sell_all(self, *, price: float, reason: str) -> dict:
         return self.sell_quantity(quantity=self.base_quantity, price=price, reason=reason)
 
-    def snapshot(self, mark_price: float | None = None) -> dict:
-        mark = mark_price or self.average_entry_price
+    def snapshot(self, mark: float | None = None) -> dict[str, Any]:
+        mark = float(mark or self.average_entry_price or 0.0)
         market_value = self.base_quantity * mark
         unrealized = (mark - self.average_entry_price) * self.base_quantity if self.base_quantity and mark else 0.0
-        return {"starting_cash_usdt": self.starting_cash_usdt, "cash_usdt": self.cash_usdt,
-                "base_quantity": self.base_quantity, "average_entry_price": self.average_entry_price,
-                "market_value_usdt": market_value, "equity_usdt": self.cash_usdt + market_value,
-                "unrealized_pnl_usdt": unrealized, "realized_pnl_usdt": self.realized_pnl_usdt,
-                "fees_paid_usdt": self.fees_paid_usdt, "trade_count": len(self.trades),
-                "trades": self.trades[-100:]}
+        return {
+            "starting_cash_usdt": self.starting_cash_usdt,
+            "cash_usdt": self.cash_usdt,
+            "base_quantity": self.base_quantity,
+            "average_entry_price": self.average_entry_price,
+            "market_value_usdt": market_value,
+            "equity_usdt": self.cash_usdt + market_value,
+            "unrealized_pnl_usdt": unrealized,
+            "realized_pnl_usdt": self.realized_pnl_usdt,
+            "fees_paid_usdt": self.fees_paid_usdt,
+            "trade_count": len(self.trades),
+            "trades": list(self.trades[-20:]),
+        }

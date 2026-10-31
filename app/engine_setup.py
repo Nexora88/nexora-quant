@@ -96,9 +96,10 @@ learner = OnlineLearner(
 )
 memory = TradeMemory(capacity=200)
 sustained = SustainedSignalGate(
-    min_confirmations=(1 if getattr(settings, "autonomous_mode", True) else max(settings.signal_confirmations, 4)),
-    min_hold_seconds=(0.3 if getattr(settings, "autonomous_mode", True) else 2.0),
-    min_score=(min(settings.entry_min_score, 0.35) if getattr(settings, "autonomous_mode", True) else settings.entry_min_score),
+    # Autonomous still needs hold time — 0.3s was flash OBI / whipsaw fuel
+    min_confirmations=(3 if getattr(settings, "autonomous_mode", True) else max(settings.signal_confirmations, 4)),
+    min_hold_seconds=(1.5 if getattr(settings, "autonomous_mode", True) else 2.0),
+    min_score=(min(settings.entry_min_score, 0.32) if getattr(settings, "autonomous_mode", True) else settings.entry_min_score),
 )
 
 
@@ -112,33 +113,20 @@ def _build_executor():
             api_secret=settings.binance_api_secret,
             testnet=settings.binance_testnet,
         )
-        eff_fee = settings.effective_fee_rate()
-        live = LiveExecutor(client, symbol=settings.symbol, fee_rate=eff_fee)
-        live.sync_balances()
-        return live
+        return LiveExecutor(client, settings.symbol, fee_rate=settings.effective_fee_rate())
     return PaperExecutor(settings.starting_cash_usdt, settings.effective_fee_rate())
 
 
-def _event_key(key: str, trade: dict) -> str:
-    oid = trade.get("exchange_order_id") or trade.get("timestamp")
-    return f"{key}:{oid}:{trade['side']}:{trade['quantity']:.12f}"
-
-
-async def _paper_fill(
-    side: str,
-    price: float,
-    quantity: float,
-    *,
-    book_levels=None,
-    stress: bool = False,
-) -> object:
-    fill = simulator.fills(
+async def _paper_fill(side: str, price: float, quantity: float, *, book_levels=None, stress: bool = False):
+    return await asyncio.to_thread(
+        simulator.simulate_market_order,
         side=side,
-        reference_price=price,
+        price=price,
         quantity=quantity,
         book_levels=book_levels,
         stress=stress,
     )
-    if fill.latency_ms:
-        await asyncio.sleep(fill.latency_ms / 1000)
-    return fill
+
+
+def _event_key(key: str, trade: dict) -> str:
+    return f"{key}:{trade.get('timestamp')}:{trade.get('side')}:{trade.get('price')}"
