@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 from app.config import settings
 from app.paper import PaperExecutor
@@ -93,10 +94,10 @@ learner = OnlineLearner(
     window=40,
     base_entry_min=min(float(getattr(settings, "entry_min_score", 0.26) or 0.26), 0.28),
     base_compound=float(getattr(settings, "compound_fraction", 0.85)),
+    frozen=os.getenv("LEARNER_FROZEN", "").strip().lower() in {"1", "true", "yes", "on"},
 )
 memory = TradeMemory(capacity=200)
 sustained = SustainedSignalGate(
-    # Autonomous still needs hold time — 0.3s was flash OBI / whipsaw fuel
     min_confirmations=(3 if getattr(settings, "autonomous_mode", True) else max(settings.signal_confirmations, 4)),
     min_hold_seconds=(1.5 if getattr(settings, "autonomous_mode", True) else 2.0),
     min_score=(min(settings.entry_min_score, 0.32) if getattr(settings, "autonomous_mode", True) else settings.entry_min_score),
