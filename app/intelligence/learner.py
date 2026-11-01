@@ -1,4 +1,14 @@
-"""Compound growth learner: many small wins > one 100% lottery."""
+"""Compound growth learner with anti-overfit guards.
+
+Live weights adapt from closed trades, but:
+- optional freeze (backtest / research parity)
+- anomaly outliers do not yank gates (whale wick / one-off PnL)
+- per-update step clamps + L2 pull to prior
+- regime change soft-resets toward base (not hard rewrite)
+
+Backtests that freeze the learner stay comparable to a fixed-weight bot.
+Live paper may diverge — that is intentional and documented.
+"""
 from __future__ import annotations
 
 from collections import deque
@@ -34,6 +44,11 @@ class OnlineLearner:
         max_entry: float = 0.65,
         base_compound: float = 0.85,
         l2_lambda: float = 0.08,
+        frozen: bool = False,
+        min_trades_before_adapt: int = 3,
+        anomaly_z: float = 3.0,
+        max_entry_step: float = 0.04,
+        max_size_step: float = 0.10,
     ) -> None:
         self.window = window
         self.base_entry_min = base_entry_min
@@ -41,6 +56,11 @@ class OnlineLearner:
         self.max_entry = max_entry
         self.base_compound = base_compound
         self.l2_lambda = max(0.0, min(0.5, float(l2_lambda)))
+        self.frozen = bool(frozen)
+        self.min_trades_before_adapt = max(1, int(min_trades_before_adapt))
+        self.anomaly_z = max(1.5, float(anomaly_z))
+        self.max_entry_step = max(0.005, float(max_entry_step))
+        self.max_size_step = max(0.02, float(max_size_step))
         self._last_regime = "unknown"
         self._pnls: deque[float] = deque(maxlen=window)
         self._regimes: deque[str] = deque(maxlen=window)
@@ -55,17 +75,97 @@ class OnlineLearner:
         self._total_pnl = 0.0
         self._lifetime_trades = 0
         self._lifetime_wins = 0
+        self._anomaly_skips = 0
+        self._production: dict[str, float] | None = None
+
+    def freeze(self, on: bool = True) -> None:
+        """When frozen, PnL is still logged but gates/weights do not move."""
+        self.frozen = bool(on)
+        if on:
+            self._note = "frozen_weights"
+            self.snapshot_production()
+
+    def snapshot_production(self) -> dict[str, float]:
+        """Lock a production weight set for parity checks / backtest compare."""
+        self._production = {
+            "entry_min": float(self._entry_min),
+            "size_bias": float(self._size_bias),
+            "tp_scale": float(self._tp_scale),
+            "compound": float(self._compound),
+        }
+        return dict(self._production)
+
+    def restore_production(self) -> None:
+        if not self._production:
+            return
+        self._entry_min = float(self._production["entry_min"])
+        self._size_bias = float(self._production["size_bias"])
+        self._tp_scale = float(self._production["tp_scale"])
+        self._compound = float(self._production["compound"])
+        self._note = "restored_production_weights"
+
+    def _is_anomaly(self, pnl: float) -> bool:
+        """Reject single-trade overfit from whale wicks / outsized PnL."""
+        if len(self._pnls) < 5:
+            return False
+        xs = list(self._pnls)
+        mean = sum(xs) / len(xs)
+        var = sum((x - mean) ** 2 for x in xs) / len(xs)
+        std = var ** 0.5
+        if std < 1e-9:
+            return abs(pnl) > max(0.5, 5.0 * (abs(mean) + 0.05))
+        return abs(pnl - mean) > self.anomaly_z * std
+
+    def _clamp_steps(
+        self,
+        *,
+        prev_entry: float,
+        prev_size: float,
+        prev_tp: float,
+        prev_comp: float,
+    ) -> None:
+        def _step(cur: float, prev: float, cap: float) -> float:
+            d = cur - prev
+            if d > cap:
+                return prev + cap
+            if d < -cap:
+                return prev - cap
+            return cur
+
+        self._entry_min = _step(self._entry_min, prev_entry, self.max_entry_step)
+        self._size_bias = _step(self._size_bias, prev_size, self.max_size_step)
+        self._tp_scale = _step(self._tp_scale, prev_tp, 0.08)
+        self._compound = _step(self._compound, prev_comp, 0.06)
+        self._entry_min = min(self.max_entry, max(self.min_entry, self._entry_min))
+        self._size_bias = min(1.6, max(0.4, self._size_bias))
+        self._tp_scale = min(1.25, max(0.55, self._tp_scale))
+        self._compound = min(0.95, max(0.5, self._compound))
 
     def record_trade(self, pnl_usdt: float, *, regime: str = "unknown", reason: str = "") -> None:
         p = float(pnl_usdt)
-        self._pnls.append(p)
-        self._regimes.append(str(regime or "unknown"))
-        self._reasons.append(str(reason or "")[:48])
-        self._total_pnl += p
+        anomaly = self._is_anomaly(p)
         self._lifetime_trades += 1
         if p > 0:
             self._lifetime_wins += 1
+        self._total_pnl += p
+
+        if self.frozen:
+            self._note = f"frozen_skip_adapt pnl={p:.4f}"
+            return
+
+        if anomaly:
+            self._anomaly_skips += 1
+            self._note = f"anomaly_skip pnl={p:.4f} z>{self.anomaly_z:.1f}"
+            return
+
+        self._pnls.append(p)
+        self._regimes.append(str(regime or "unknown"))
+        self._reasons.append(str(reason or "")[:48])
+
         reg = str(regime or "unknown")
+        prev_entry, prev_size = self._entry_min, self._size_bias
+        prev_tp, prev_comp = self._tp_scale, self._compound
+
         if reg != self._last_regime and self._lifetime_trades > 3:
             lam = self.l2_lambda
             self._entry_min = (1 - lam) * self._entry_min + lam * self.base_entry_min
@@ -75,7 +175,18 @@ class OnlineLearner:
             self._note = f"regime_l2 {self._last_regime}->{reg} lam={lam:.2f}"
             self._growth = "rebuild"
         self._last_regime = reg
-        self._recompute()
+
+        if len(self._pnls) >= self.min_trades_before_adapt:
+            self._recompute()
+            self._clamp_steps(
+                prev_entry=prev_entry,
+                prev_size=prev_size,
+                prev_tp=prev_tp,
+                prev_comp=prev_comp,
+            )
+        else:
+            self._note = f"warming n={len(self._pnls)}"
+            self._growth = "rebuild"
 
     def _recompute(self) -> None:
         n = len(self._pnls)
@@ -136,11 +247,8 @@ class OnlineLearner:
         flow_ready: bool = False,
         in_position: bool = False,
     ) -> None:
-        """Learn from L2 continuously even with no open trade (idle brain).
-
-        Softly nudges entry threshold from regime + flow quality.
-        Does not invent PnL — only adapts gates for the next real fill.
-        """
+        if self.frozen:
+            return
         sc = float(score)
         reg = str(regime or "unknown")
         self._last_regime = reg
@@ -198,38 +306,63 @@ class OnlineLearner:
         n = len(self._pnls)
         wins = sum(1 for x in self._pnls if x > 0)
         avg = (sum(self._pnls) / n) if n else 0.0
+        total = sum(self._pnls) if n else 0.0
         return LearnerSnapshot(
-            trades=n, wins=wins, win_rate=(wins / n) if n else 0.0,
-            avg_pnl=avg, total_pnl=float(sum(self._pnls)) if n else 0.0,
-            entry_min_score=self._entry_min, size_bias=self._size_bias,
-            tp_scale=self._tp_scale, prefer_regime=self._prefer,
-            growth_mode=self._growth, compound_fraction=self._compound,
-            note=self._note, updated_at=datetime.now(timezone.utc).isoformat(),
+            trades=n,
+            wins=wins,
+            win_rate=(wins / n) if n else 0.0,
+            avg_pnl=avg,
+            total_pnl=total,
+            entry_min_score=self._entry_min,
+            size_bias=self._size_bias,
+            tp_scale=self._tp_scale,
+            prefer_regime=self._prefer,
+            growth_mode=self._growth,
+            compound_fraction=self._compound,
+            note=self._note,
+            updated_at=datetime.now(timezone.utc).isoformat(),
         )
 
     def to_dict(self) -> dict[str, Any]:
         s = self.snapshot()
         return {
-            "trades": s.trades, "wins": s.wins, "win_rate": s.win_rate,
-            "avg_pnl": s.avg_pnl, "total_pnl": s.total_pnl,
-            "entry_min_score": s.entry_min_score, "size_bias": s.size_bias,
-            "tp_scale": s.tp_scale, "prefer_regime": s.prefer_regime,
-            "growth_mode": s.growth_mode, "compound_fraction": s.compound_fraction,
-            "note": s.note, "updated_at": s.updated_at,
+            "trades": s.trades,
+            "wins": s.wins,
+            "win_rate": s.win_rate,
+            "avg_pnl": s.avg_pnl,
+            "total_pnl": s.total_pnl,
+            "entry_min_score": s.entry_min_score,
+            "size_bias": s.size_bias,
+            "tp_scale": s.tp_scale,
+            "prefer_regime": s.prefer_regime,
+            "growth_mode": s.growth_mode,
+            "compound_fraction": s.compound_fraction,
+            "note": s.note,
+            "updated_at": s.updated_at,
             "lifetime_trades": self._lifetime_trades,
             "lifetime_wins": self._lifetime_wins,
             "lifetime_pnl": round(self._total_pnl, 6),
+            "frozen": self.frozen,
+            "anomaly_skips": self._anomaly_skips,
         }
 
     def export_state(self) -> dict[str, Any]:
         return {
-            "pnls": list(self._pnls), "regimes": list(self._regimes),
-            "reasons": list(self._reasons), "entry_min": self._entry_min,
-            "size_bias": self._size_bias, "tp_scale": self._tp_scale,
-            "compound": self._compound, "prefer": self._prefer,
-            "growth": self._growth, "total_pnl": self._total_pnl,
+            "pnls": list(self._pnls),
+            "regimes": list(self._regimes),
+            "reasons": list(self._reasons),
+            "entry_min": self._entry_min,
+            "size_bias": self._size_bias,
+            "tp_scale": self._tp_scale,
+            "compound": self._compound,
+            "prefer": self._prefer,
+            "growth": self._growth,
+            "total_pnl": self._total_pnl,
             "lifetime_trades": self._lifetime_trades,
             "lifetime_wins": self._lifetime_wins,
+            "frozen": self.frozen,
+            "anomaly_skips": self._anomaly_skips,
+            "production": dict(self._production) if self._production else None,
         }
 
     def load_state(self, data: dict[str, Any] | None) -> None:
@@ -247,5 +380,9 @@ class OnlineLearner:
         self._total_pnl = float(data.get("total_pnl", 0.0))
         self._lifetime_trades = int(data.get("lifetime_trades", 0))
         self._lifetime_wins = int(data.get("lifetime_wins", 0))
-        if self._pnls:
+        self.frozen = bool(data.get("frozen", False))
+        self._anomaly_skips = int(data.get("anomaly_skips", 0))
+        prod = data.get("production")
+        self._production = dict(prod) if isinstance(prod, dict) else None
+        if self._pnls and not self.frozen:
             self._recompute()
