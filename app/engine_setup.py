@@ -119,10 +119,11 @@ def _build_executor():
 
 
 async def _paper_fill(side: str, price: float, quantity: float, *, book_levels=None, stress: bool = False):
+    # ExecutionSimulator API: fill() / fills() / simulate_market_order alias
     return await asyncio.to_thread(
-        simulator.simulate_market_order,
+        simulator.fills,
         side=side,
-        price=price,
+        reference_price=price,
         quantity=quantity,
         book_levels=book_levels,
         stress=stress,

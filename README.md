@@ -1,84 +1,84 @@
 # Nexora Quant
 
-Modular **Binance Spot** research and trading stack: L2 depth stream, multi-model analysis, compound paper/live execution, and a local dashboard.
+Modular **Binance Spot** research / paper (and optional live) stack:
+L2 depth WebSocket, multi-model analysis, fee-aware scalp band, OnlineLearner with anti-overfit, local FastAPI dashboard.
 
-Not investment advice. **No profit guarantee.** Default mode is paper (simulated fills).
+**Not investment advice. No profit guarantee.** Default is **paper**.
+
+## Quick start (Windows paper)
+
+```powershell
+cd %USERPROFILE%\nexora-quant
+git pull origin main
+python -m venv .venv
+.\venv\Scripts\Activate.ps1
+pip install -e .
+
+copy .env.example .env
+# Edit .env — STARTING_CASH_USDT=100, TRADING_MODE=paper, HOST=0.0.0.0
+
+# Optional: clean paper ledger
+if (Test-Path data\paper.sqlite3) { Move-Item data\paper.sqlite3 data\paper.sqlite3.bak -Force }
+
+uvicorn app.api:app --host 0.0.0.0 --port 8000
+```
+
+- PC: http://127.0.0.1:8000
+- Phone (same Wi-Fi): http://PC_IPv4:8000
+
+## Recommended paper risk shape
+
+| Setting | Typical value | Note |
+|---------|---------------|------|
+| TAKE_PROFIT_PCT | 0.55 | Fee-aware scalp TP |
+| STOP_LOSS_PCT | 0.18 | Tight SL; ATR may widen |
+| ENTRY_MIN_SCORE | 0.28 | Selective, not frozen |
+| MAX_CONCURRENT_POSITIONS | 1 | One position at a time |
+| USE_ATR_TARGETS | true | Dynamic TP/SL band |
+| LEARNER_FROZEN | false | Learn on paper; true = fixed weights |
+
+See `.env.example`.
 
 ## Stack
 
 | Layer | Role |
 |-------|------|
-| **Market** | Binance Spot REST + depth WebSocket (L2) |
-| **Analysis** | Multi-model `AnalysisMotor` (kinematics, compound geo-mean, structure, microstructure, regime) |
-| **Intelligence** | OnlineLearner (grow/protect/rebuild), TradeMemory (setup lessons), TrendFollower |
-| **Execution** | Paper simulator (impact + book walk) or live REST + optional OCO |
-| **Persistence** | Non-blocking `AsyncIoQueue` → SQLite; L2 history JSONL.gz |
-| **API** | FastAPI dashboard (auth, rate limit) |
+| Market | Binance Spot L2 depth WebSocket |
+| Analysis | OBI / micro-price / regime / order-flow 1–3s |
+| Intelligence | OnlineLearner (anomaly skip, freeze, step clamp), TradeMemory |
+| Execution | Paper `ExecutionSimulator.fills` (book walk + impact) or live REST |
+| Persistence | AsyncIoQueue → SQLite (WAL); optional L2 JSONL.gz |
+| API | FastAPI dashboard (LAN allowed for home Wi-Fi) |
 
-## Quick start (paper)
+## Paper fills
 
-```bash
-cp .env.example .env
-pip install -e ".[dev]"
-python -m app.main
-# dashboard: uvicorn app.api:app --host 127.0.0.1 --port 8000
-```
+Paper path calls `ExecutionSimulator.fills` (and `simulate_market_order` alias) with visible L2 levels.
+Stop/panic sells use a stress multiplier so thin books do not understate slippage.
 
-Default risk shape is **asymmetric**: `TAKE_PROFIT_PCT=1.20`, `STOP_LOSS_PCT=0.35` (≥ `MIN_REWARD_RISK_RATIO=2`). With ~0.1% fees each way, break-even win rate is under ~40% (see `app/expectancy.py`).
+## Live (only after paper)
 
-## Live (real orders)
-
-1. Overnight paper validation.
-2. Binance API key: **withdrawals disabled**, IP whitelist.
-3. Prefer host in **AWS Tokyo (ap-northeast-1)** — [docs/AWS_TOKYO.md](docs/AWS_TOKYO.md).
-4. `.env`: `TRADING_MODE=live`, keys, `BINANCE_TESTNET=false`, `LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY`.
-5. Confirm fills + OCO in logs. Emergency flatten if OCO install fails.
-
-See [docs/GO_LIVE_CHECKLIST.md](docs/GO_LIVE_CHECKLIST.md).
-
-## Multi-pair L2 capture + accelerated backtest (research)
-
-Prefer a host in **AWS Tokyo (ap-northeast-1)** — [docs/AWS_TOKYO.md](docs/AWS_TOKYO.md).
-
-```bash
-# .env: TRADING_MODE=paper  SYMBOL=btcusdt  SYMBOLS=ethusdt,solusdt,bnbusdt
-# Weekday: leave capture running (or systemd unit deploy/nexora-capture.service)
-python scripts/capture_multi_symbol.py
-
-# Weekend: replay real L2 with research score gate
-python scripts/run_l2_backtest.py data/market-history-ethusdt.jsonl.gz --min-score 0.55
-python scripts/run_l2_backtest.py data/market-history-solusdt.jsonl.gz --min-score 0.55
-python scripts/run_l2_backtest.py data/market-history-bnbusdt.jsonl.gz --min-score 0.55
-```
-
-## Design notes
-
-- Compound: redeploy free cash (`COMPOUND_FRACTION`), decide fast in autonomous mode.
-- After every live BUY: `install_protection_or_flatten` places exchange OCO (3 retries); on failure, market-sells and sets emergency + kill switch.
-- IO path never blocks the depth loop; queue depth is monitored on the dashboard snapshot.
+1. 48h+ paper, fee-net expectancy documented
+2. API key: withdrawals **off**, IP whitelist
+3. Prefer Tokyo VPS — [docs/AWS_TOKYO.md](docs/AWS_TOKYO.md)
+4. `TRADING_MODE=live`, keys, `LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY`
+5. [docs/GO_LIVE_CHECKLIST.md](docs/GO_LIVE_CHECKLIST.md)
 
 ## Docs
 
 | Doc | Topic |
 |-----|-------|
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Module map |
-| [docs/ARCHITECTURE_GAPS.md](docs/ARCHITECTURE_GAPS.md) | Closed gaps (L2 BT, IO queue, impact, auth) |
-| [docs/MS_PIPELINE.md](docs/MS_PIPELINE.md) | Millisecond decision path |
-| [docs/QUANT_MICROSTRUCTURE.md](docs/QUANT_MICROSTRUCTURE.md) | OBI / micro-price notes |
+| [docs/HONEST_LIMITS.md](docs/HONEST_LIMITS.md) | Overfit, backtest parity, phase-2 |
 | [docs/GO_LIVE_CHECKLIST.md](docs/GO_LIVE_CHECKLIST.md) | Paper → live |
-| [docs/DEPLOY_24_7.md](docs/DEPLOY_24_7.md) | VPS / Docker |
-| [docs/AWS_TOKYO.md](docs/AWS_TOKYO.md) | Tokyo EC2 low-latency + multi-pair capture |
-| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Day-to-day ops |
-| [SECURITY.md](SECURITY.md) | Secrets and reporting |
+| [docs/AWS_TOKYO.md](docs/AWS_TOKYO.md) | Low-latency host |
+| [docs/DEPLOY_24_7.md](docs/DEPLOY_24_7.md) | Docker / VPS |
+| [SECURITY.md](SECURITY.md) | Secrets |
 
 ## Honest limits
 
-- Retail latency loses to co-located HFT on pure TOB imbalance; Tokyo VPS only cuts **network** RTT, not matching-engine co-lo.
-- Asymmetric TP/SL improves **mathematical expectancy** at a given win-rate; it does not invent signal quality.
-- Compound small/medium wins are a **capital recycle policy**, not a guaranteed edge.
-- L2 memory and learner reduce repeated mistakes; they do not forecast price.
-- **Exchange-hosted OCO**: after every live BUY, OCO is placed with retries; failure triggers emergency flatten + kill switch.
-- **SQLite IO queue**: depth path never blocks on disk; monitor `io_queue_stats` under stress.
+- Retail RTT loses to co-located HFT on pure TOB imbalance.
+- Asymmetric TP/SL improves expectancy math; it does not invent signal quality.
+- OnlineLearner can freeze (`LEARNER_FROZEN=true`) so backtests stay comparable.
+- No guaranteed returns.
 
 ## License
 
