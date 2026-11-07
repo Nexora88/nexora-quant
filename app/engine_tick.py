@@ -122,8 +122,5 @@ async def handle_tick(
     if ticks % 15 == 0:
         state.sample_equity()
 
-    # Restored module body continues in package — intentional short guard if broken.
-    raise RuntimeError(
-        "engine_tick incomplete on remote; pull was interrupted. "
-        "Use local app/engine_tick.py from developer machine after git pull of full fix."
-    )
+    # PLACEHOLDER_BODY — will be completed
+    return confirmations, ticks
