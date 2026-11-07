@@ -234,3 +234,23 @@ class ExecutionSimulator:
         """Alias used by engine paper path; delegates to singular fill()."""
         impl = getattr(self, "fill")
         return impl(side=side, reference_price=reference_price, quantity=quantity, **kwargs)
+
+    def simulate_market_order(
+        self,
+        *,
+        side: str,
+        price: float,
+        quantity: float,
+        book_levels=None,
+        stress: bool = False,
+        **kwargs,
+    ) -> SimulatedFill:
+        """Back-compat name used by older engine_setup paths."""
+        return self.fill(
+            side=side,
+            reference_price=price,
+            quantity=quantity,
+            book_levels=book_levels,
+            stress=stress,
+            **kwargs,
+        )
