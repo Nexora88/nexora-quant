@@ -52,6 +52,12 @@ class RuntimeState:
         self.btc_filter_snap: str | None = None
         self.last_flow: dict | None = None
         self.score_ema: float = 0.0
+        self.position_opened_at: float | None = None  # unix ts
+        self.last_entry_at: float | None = None
+        self.session_fees_usdt: float = 0.0
+        self.session_fee_day: str | None = None
+        self.hourly_trade_ts: list[float] = []
+        self.blockers_live: list[str] = []
 
     def update_book(self, book: BookTicker) -> None:
         self.latest_book = book
@@ -118,7 +124,27 @@ class RuntimeState:
         self.decision_history.appendleft(d)
 
     def record_fill(self, trade: dict) -> None:
-        self.recent_fills.appendleft(dict(trade))
+        row = dict(trade)
+        if not row.get("symbol"):
+            row["symbol"] = (self.trade_symbol or settings.symbol or "").lower()
+        self.recent_fills.appendleft(row)
+        fee = float(row.get("fee_usdt") or 0.0)
+        if fee > 0:
+            day = datetime.now(timezone.utc).date().isoformat()
+            if self.session_fee_day != day:
+                self.session_fee_day = day
+                self.session_fees_usdt = 0.0
+            self.session_fees_usdt += fee
+        side = str(row.get("side") or "").lower()
+        if side in {"buy", "long"}:
+            import time as _t
+            self.position_opened_at = _t.time()
+            self.last_entry_at = _t.time()
+            self.hourly_trade_ts.append(_t.time())
+            cutoff = _t.time() - 3600.0
+            self.hourly_trade_ts = [x for x in self.hourly_trade_ts if x >= cutoff]
+        elif side in {"sell", "short"}:
+            self.position_opened_at = None
 
     def sample_equity(self) -> None:
         if not self.executor:
@@ -181,6 +207,10 @@ class RuntimeState:
             "equity_curve": list(self.equity_curve)[-120:],
             "price_curve": list(self.price_curve)[-120:],
             "recent_fills": list(self.recent_fills)[:20],
+            "session_fees_usdt": round(float(self.session_fees_usdt), 4),
+            "hourly_trade_count": len(self.hourly_trade_ts),
+            "position_opened_at": self.position_opened_at,
+            "blockers_live": list(self.blockers_live)[:12],
             "shadow_leaderboard": list(self.shadow_leaderboard)[:5],
             "last_decision": self.last_decision,
             "decision_history": list(self.decision_history)[:15],
