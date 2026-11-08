@@ -212,7 +212,7 @@ async def run() -> None:
         use_multi = len(watched) > 1 and bool(getattr(settings, "universe_auto", False))
 
         async def _consume(depth, *, symbol: str | None = None) -> None:
-            nonlocal confirmations, ticks
+            nonlocal confirmations, ticks, primary
             sym = (symbol or primary).lower()
             if sym != primary:
                 try:
