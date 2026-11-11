@@ -67,6 +67,10 @@ th{color:var(--m);font-weight:600;font-size:10px;text-transform:uppercase}
 .log{font-family:ui-monospace,Consolas,monospace;font-size:11px;max-height:140px;overflow:auto;background:#070e0b;border:1px solid var(--line);border-radius:10px;padding:8px;color:#9bbfad}
 .log div{padding:2px 0}
 .spark{height:36px;width:100%}
+.coin{display:inline-flex;align-items:center;gap:6px}
+.coin-logo{width:16px;height:16px;border-radius:50%}
+.uni-row{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #152018}
+.uni-row .sc{color:var(--g);font-weight:700}
 .footer{margin-top:12px;color:var(--m);font-size:11px;text-align:center}
 @media(max-width:900px){
   .stats{grid-template-columns:repeat(3,1fr)}
@@ -99,6 +103,15 @@ th{color:var(--m);font-weight:600;font-size:10px;text-transform:uppercase}
     <div class=\"stat\"><div class=\"l\">Drawdown</div><div class=\"v\" id=\"dd\">—</div></div>
   </div>
 
+  <div class=\"stats\" style=\"grid-template-columns:repeat(6,1fr);margin-top:-2px\">
+    <div class=\"stat\"><div class=\"l\">Saatlik işlem</div><div class=\"v\" id=\"tph\">—</div></div>
+    <div class=\"stat\"><div class=\"l\">Günlük fee</div><div class=\"v\" id=\"dfee\">—</div></div>
+    <div class=\"stat\"><div class=\"l\">Kapanan</div><div class=\"v\" id=\"closedn\">—</div></div>
+    <div class=\"stat\"><div class=\"l\">Session PnL</div><div class=\"v\" id=\"spnl\">—</div></div>
+    <div class=\"stat\"><div class=\"l\">Son çıkış</div><div class=\"v\" id=\"lexit\">—</div></div>
+    <div class=\"stat\"><div class=\"l\">Pozisyon</div><div class=\"v\" id=\"mhold\">—</div></div>
+  </div>
+
   <div class=\"row\">
     <div class=\"card\">
       <h2>Sinyal skometresi</h2>
@@ -114,6 +127,8 @@ th{color:var(--m);font-weight:600;font-size:10px;text-transform:uppercase}
     <div class=\"card\">
       <h2>Neden işlem var / yok</h2>
       <div class=\"why\" id=\"why\"><div class=\"lbl\">bekleniyor…</div></div>
+      <h2 style=\"margin-top:12px\">Throttle / blockers</h2>
+      <div class=\"why\" id=\"blk\"></div>
       <h2 style=\"margin-top:12px\">Motor oyları</h2>
       <div class=\"why\" id=\"votes\"></div>
     </div>
@@ -130,7 +145,7 @@ th{color:var(--m);font-weight:600;font-size:10px;text-transform:uppercase}
       <h2>Son işlemler</h2>
       <div style=\"overflow:auto\">
         <table>
-          <thead><tr><th>Saat</th><th>Yön</th><th>Miktar</th><th>Fiyat</th><th>PnL</th><th>Fee</th></tr></thead>
+          <thead><tr><th>Saat</th><th>Coin</th><th>Yön</th><th>Miktar</th><th>Fiyat</th><th>PnL</th><th>Fee</th></tr></thead>
           <tbody id=\"fills\"></tbody>
         </table>
       </div>
@@ -143,9 +158,12 @@ th{color:var(--m);font-weight:600;font-size:10px;text-transform:uppercase}
         <div><div class=\"l\">Mod</div><div class=\"v\" id=\"lm\">—</div></div>
         <div><div class=\"l\">Not</div><div class=\"v\" id=\"ln\" style=\"font-size:11px\">—</div></div>
       </div>
+      <h2 style=\"margin-top:10px\">Universe</h2>
+      <div class=\"why\" id=\"uni\"></div>
+      <div class=\"sub\" style=\"margin-top:6px\">Aktif: <span id=\"act\">—</span></div>
     </div>
   </div>
-  <div class=\"footer\">Ölçülen edge olmadan kâr yok · fee round-trip hesaba katılır · yatırım tavsiyesi değildir</div>
+  <div class=\"footer\">Ölçülen edge olmadan kâr yok · fee round-trip · investment advice değil</div>
 </main>
 <script>
 const el=id=>document.getElementById(id);
@@ -181,6 +199,8 @@ function drawSpark(arr){
   ys.forEach((y,i)=>{const x=i/(ys.length-1)*(w-4)+2;const yy=h-4-((y-mn)/(mx-mn))*(h-8);
     i?ctx.lineTo(x,yy):ctx.moveTo(x,yy)});ctx.stroke();
 }
+function coinLogo(sym){const b=String(sym||'').toLowerCase().replace('usdt','').replace('busd','');return 'https://cryptoicons.org/api/icon/'+b+'/32';}
+function coinCell(sym){const s=String(sym||'—').toUpperCase();return '<span class=\"coin\"><img class=\"coin-logo\" src=\"'+coinLogo(sym)+'\" onerror=\"this.style.display=\'none\'\" alt=\"\"/>'+s+'</span>';}
 async function tick(){
   try{
     const s=await(await fetch('/status')).json();
@@ -231,12 +251,24 @@ async function tick(){
     el('votes').innerHTML=votes.length?votes.map(v=>'<div><b>'+String(v.name||'')+'</b> '+(v.direction||'')+' · '+String(v.note||'')+'</div>').join(''):'<div class=\"lbl\">oy yok</div>';
     drawLine('pc',s.price_curve||[],'mid','#2eff9a');
     drawLine('ec',s.equity_curve||[],'equity','#ffc14d');
-    el('fills').innerHTML=fills.length?fills.slice(0,14).map(t=>{const pnl=Number(t.pnl_usdt);return '<tr><td>'+String(t.timestamp||'').slice(11,19)+'</td><td>'+String(t.side||'').toUpperCase()+'</td><td>'+num(t.quantity,5)+'</td><td>'+num(t.price,2)+'</td><td class=\"'+(pnl>=0?'pos':'neg')+'\">'+num(pnl,3)+'</td><td>'+num(t.fee_usdt,4)+'</td></tr>';}).join(''):'<tr><td colspan=\"6\" style=\"color:#7f9a8c\">Henüz fill yok</td></tr>';
+    el('fills').innerHTML=fills.length?fills.slice(0,16).map(t=>{const pnl=Number(t.pnl_usdt);const side=String(t.side||'').toUpperCase();const sideCls=side==='BUY'||side==='LONG'?'pos':'neg';return '<tr><td>'+String(t.timestamp||'').slice(11,19)+'</td><td>'+coinCell(t.symbol||s.symbol)+'</td><td class=\"'+sideCls+'\"><b>'+side+'</b></td><td>'+num(t.quantity,5)+'</td><td>'+num(t.price,2)+'</td><td class=\"'+(pnl>=0?'pos':'neg')+'\">'+num(pnl,3)+'</td><td>'+num(t.fee_usdt,4)+'</td></tr>';}).join(''):'<tr><td colspan=\"7\" style=\"color:#7f9a8c\">Henüz fill yok — edge + hold + fee kapısı bekleniyor</td></tr>';
     const logs=s.live_log||[];
     el('log').innerHTML=logs.length?logs.slice(0,30).map(x=>'<div>'+String(x).replace(/[<>]/g,'')+'</div>').join(''):'<div>log boş</div>';
     const L=s.learner_snapshot||{};
     el('lm').textContent=L.growth_mode||'—';
     el('ln').textContent=L.note||'—';
+    const uni=s.universe_board||s.router_board||[];
+    el('uni').innerHTML=uni.length?uni.slice(0,8).map(u=>'<div class=\"uni-row\"><span class=\"coin\"><img class=\"coin-logo\" src=\"'+coinLogo(u.symbol)+'\" onerror=\"this.style.display=\'none\'\"/>'+String(u.symbol||'').toUpperCase()+'</span><span class=\"sc\">'+(u.rank_score!=null?num(u.rank_score,3):num(u.score,2))+'</span></div>').join(''):'<div class=\"lbl\">universe taranıyor…</div>';
+    el('tph').textContent=String(s.hourly_trade_count!=null?s.hourly_trade_count:'—');
+    el('dfee').textContent=num(s.session_fees_usdt,3)+' USDT';
+    el('closedn').textContent=String(s.closed_trade_count!=null?s.closed_trade_count:'—');
+    const sp=Number(s.session_realized_pnl_usdt||0);
+    if(el('spnl')){el('spnl').textContent=num(sp,3)+' USDT';el('spnl').className='v '+(sp>=0?'pos':'neg');}
+    if(el('lexit'))el('lexit').textContent=String(s.last_exit_reason||'—').slice(0,28);
+    el('mhold').textContent=(s.position_opened_at?('açık ' + Math.round((Date.now()/1000-Number(s.position_opened_at)))+'s'):'flat');
+    el('act').textContent=String(s.trade_symbol||s.symbol||'—').toUpperCase();
+    const bl=s.blockers_live||[];
+    el('blk').innerHTML=bl.length?bl.slice(0,8).map(x=>'<div class=\"bad\">⛔ '+String(x).replace(/[<>]/g,'')+'</div>').join(''):'<div class=\"ok\">Throttle temiz</div>';
   }catch(e){console.warn(e)}
 }
 setInterval(tick,900);tick();
@@ -257,7 +289,8 @@ async def lifespan(app: FastAPI):
             return
         if exc:
             import logging
-            logging.getLogger(__name__).exception("Engine task crashed: %s", exp)
+
+            logging.getLogger(__name__).exception("Engine task crashed: %s", exc)
 
     task.add_done_callback(_done)
     try:
@@ -268,7 +301,7 @@ async def lifespan(app: FastAPI):
             await task
 
 
-app = FastAPI(title="Nexora Quant", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="Nexora Quant", version="0.3.0", lifespan=lifespan)
 
 
 def _is_private_lan(host: str) -> bool:
@@ -313,6 +346,7 @@ def dashboard() -> str:
 @app.get("/health")
 def health() -> dict[str, str]:
     from app.config import settings as _s
+
     return {"status": "ok", "mode": getattr(_s, "trading_mode", "paper")}
 
 
