@@ -1,6 +1,4 @@
-"""Assembled handle_tick body (split modules for reliable CI/git pushes)."""
-from app._et_part0 import S as _s0
-from app._et_part1 import S as _s1
-from app._et_part2 import S as _s2
+"""Shim — handle_tick is defined in app.engine_tick (monolithic)."""
+from app.engine_tick import handle_tick  # noqa: F401
 
-exec(_s0 + _s1 + _s2, globals())
+__all__ = ["handle_tick"]

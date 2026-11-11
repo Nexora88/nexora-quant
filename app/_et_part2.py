@@ -1,1 +1,1 @@
-S = """PLACEHOLDER_PART2"""
+S = ""  # unused; body is in engine_tick.py
