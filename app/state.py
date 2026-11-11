@@ -58,6 +58,9 @@ class RuntimeState:
         self.session_fee_day: str | None = None
         self.hourly_trade_ts: list[float] = []
         self.blockers_live: list[str] = []
+        self.closed_trade_count: int = 0
+        self.session_realized_pnl_usdt: float = 0.0
+        self.last_exit_reason: str | None = None
 
     def update_book(self, book: BookTicker) -> None:
         self.latest_book = book
@@ -145,6 +148,17 @@ class RuntimeState:
             self.hourly_trade_ts = [x for x in self.hourly_trade_ts if x >= cutoff]
         elif side in {"sell", "short"}:
             self.position_opened_at = None
+            try:
+                self.closed_trade_count = int(getattr(self, "closed_trade_count", 0) or 0) + 1
+                pnl = float(row.get("pnl_usdt") or 0.0)
+                self.session_realized_pnl_usdt = float(
+                    getattr(self, "session_realized_pnl_usdt", 0.0) or 0.0
+                ) + pnl
+                reason = str(row.get("reason") or "")
+                if reason:
+                    self.last_exit_reason = reason.split(";")[0][:64]
+            except Exception:
+                pass
 
     def sample_equity(self) -> None:
         if not self.executor:
@@ -209,6 +223,9 @@ class RuntimeState:
             "recent_fills": list(self.recent_fills)[:20],
             "session_fees_usdt": round(float(self.session_fees_usdt), 4),
             "hourly_trade_count": len(self.hourly_trade_ts),
+            "closed_trade_count": int(getattr(self, "closed_trade_count", 0) or 0),
+            "session_realized_pnl_usdt": round(float(getattr(self, "session_realized_pnl_usdt", 0) or 0), 4),
+            "last_exit_reason": getattr(self, "last_exit_reason", None),
             "position_opened_at": self.position_opened_at,
             "blockers_live": list(self.blockers_live)[:12],
             "shadow_leaderboard": list(self.shadow_leaderboard)[:5],
