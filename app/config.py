@@ -8,7 +8,7 @@
   STARTING_CASH_USDT — paper bankroll (env wins; default 100)
   USE_ATR_TARGETS / RISK_PER_TRADE_PCT — dynamic size + stops
   ENTRY_MIN_SCORE default 0.28 — selective but not frozen
-  MIN_HOLD_SECONDS / MAX_TRADES_PER_HOUR / MAX_DAILY_FEE — anti-churn
+  MIN_HOLD_SECONDS / MAX_HOLD_SECONDS / MAX_TRADES_PER_HOUR / MAX_DAILY_FEE — anti-churn + time stop
   Scalp defaults: TP 0.55 / SL 0.18, BNB fee discount, wick stop confirmations
 """
 from dataclasses import dataclass
@@ -96,6 +96,7 @@ class Settings:
     max_trades_per_hour: int = int(os.getenv("MAX_TRADES_PER_HOUR", "8"))
     max_daily_fee_usdt: float = _float("MAX_DAILY_FEE_USDT", 3.0)
     entry_cooldown_seconds: float = _float("ENTRY_COOLDOWN_SECONDS", 45.0)
+    max_hold_seconds: float = _float("MAX_HOLD_SECONDS", 2700.0)  # 45m scalp time stop
     risk_per_trade_pct: float = _float("RISK_PER_TRADE_PCT", 0.40)
     max_concurrent_positions: int = int(os.getenv("MAX_CONCURRENT_POSITIONS", "1"))
     vol_target_enabled: bool = _bool("VOL_TARGET_ENABLED", True)
@@ -168,6 +169,8 @@ class Settings:
             raise ValueError("MAX_DAILY_FEE_USDT must be positive.")
         if self.entry_cooldown_seconds < 0:
             raise ValueError("ENTRY_COOLDOWN_SECONDS cannot be negative.")
+        if self.max_hold_seconds < 0:
+            raise ValueError("MAX_HOLD_SECONDS cannot be negative.")
         rr = self.take_profit_pct / self.stop_loss_pct if self.stop_loss_pct > 0 else 0
         if rr < self.min_reward_risk_ratio:
             raise ValueError(
