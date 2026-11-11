@@ -7,7 +7,7 @@
   UNIVERSE_AUTO — screen majors; DEPTH_TOP_N depth streams
   STARTING_CASH_USDT — paper bankroll (env wins; default 100)
   USE_ATR_TARGETS / RISK_PER_TRADE_PCT — dynamic size + stops
-  ENTRY_MIN_SCORE default 0.28 — selective but not frozen
+  ENTRY_MIN_SCORE default 0.20 — paper-learnable, not frozen
   MIN_HOLD_SECONDS / MAX_HOLD_SECONDS / MAX_TRADES_PER_HOUR / MAX_DAILY_FEE — anti-churn + time stop
   Scalp defaults: TP 0.55 / SL 0.18, BNB fee discount, wick stop confirmations
 """
@@ -66,12 +66,12 @@ class Settings:
     max_consecutive_losses: int = int(os.getenv("MAX_CONSECUTIVE_LOSSES", "5"))
     max_spread_bps: float = _float("MAX_SPREAD_BPS", 25.0)
     max_data_age_seconds: float = _float("MAX_DATA_AGE_SECONDS", 8.0)
-    imbalance_threshold: float = _float("IMBALANCE_THRESHOLD", 0.58)
+    imbalance_threshold: float = _float("IMBALANCE_THRESHOLD", 0.55)
     take_profit_pct: float = _float("TAKE_PROFIT_PCT", 0.55)
     stop_loss_pct: float = _float("STOP_LOSS_PCT", 0.18)
     trailing_stop_pct: float = _float("TRAILING_STOP_PCT", 0.12)
     min_reward_risk_ratio: float = _float("MIN_REWARD_RISK_RATIO", 2.0)
-    entry_min_score: float = _float("ENTRY_MIN_SCORE", 0.28)
+    entry_min_score: float = _float("ENTRY_MIN_SCORE", 0.20)
     signal_confirmations: int = int(os.getenv("SIGNAL_CONFIRMATIONS", "1"))
     target_price: float | None = _optional_float("TARGET_PRICE")
     target_equity_usdt: float | None = _optional_float("TARGET_EQUITY_USDT")
@@ -91,12 +91,12 @@ class Settings:
     compound_fraction: float = _float("COMPOUND_FRACTION", 0.85)
     use_atr_targets: bool = _bool("USE_ATR_TARGETS", True)
     wick_stop_confirmations: int = int(os.getenv("WICK_STOP_CONFIRMATIONS", "2"))
-    min_edge_over_fees: float = _float("MIN_EDGE_OVER_FEES", 1.5)
-    min_hold_seconds: float = _float("MIN_HOLD_SECONDS", 180.0)
-    max_trades_per_hour: int = int(os.getenv("MAX_TRADES_PER_HOUR", "8"))
-    max_daily_fee_usdt: float = _float("MAX_DAILY_FEE_USDT", 3.0)
-    entry_cooldown_seconds: float = _float("ENTRY_COOLDOWN_SECONDS", 45.0)
-    max_hold_seconds: float = _float("MAX_HOLD_SECONDS", 2700.0)  # 45m scalp time stop
+    min_edge_over_fees: float = _float("MIN_EDGE_OVER_FEES", 1.2)
+    min_hold_seconds: float = _float("MIN_HOLD_SECONDS", 90.0)
+    max_trades_per_hour: int = int(os.getenv("MAX_TRADES_PER_HOUR", "12"))
+    max_daily_fee_usdt: float = _float("MAX_DAILY_FEE_USDT", 4.0)
+    entry_cooldown_seconds: float = _float("ENTRY_COOLDOWN_SECONDS", 30.0)
+    max_hold_seconds: float = _float("MAX_HOLD_SECONDS", 2700.0)
     risk_per_trade_pct: float = _float("RISK_PER_TRADE_PCT", 0.40)
     max_concurrent_positions: int = int(os.getenv("MAX_CONCURRENT_POSITIONS", "1"))
     vol_target_enabled: bool = _bool("VOL_TARGET_ENABLED", True)
