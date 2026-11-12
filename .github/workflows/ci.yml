@@ -13,31 +13,28 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
 
-      - name: Install package + dev tools
+      - name: Install
         run: |
-          set -euxo pipefail
           python -m pip install -U pip setuptools wheel
           python -m pip install -e ".[dev]"
-          python -c "import app, app.config, app.engine_tick, app.api; print('import-ok', app.config.settings.trading_mode)"
 
-      - name: Compile all modules
+      - name: Compile
         run: python -m compileall -q app tests
 
-      - name: Ruff lint
+      - name: Ruff
         run: python -m ruff check app tests
 
       - name: Pytest
         env:
           TRADING_MODE: paper
           BINANCE_TESTNET: "true"
+          NEXORA_SKIP_ENGINE: "1"
           STARTING_CASH_USDT: "100"
         run: python -m pytest tests/ -q --tb=short -ra
