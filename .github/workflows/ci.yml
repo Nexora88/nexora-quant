@@ -11,22 +11,33 @@ permissions:
 jobs:
   quality:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
 
       - name: Install package + dev tools
         run: |
-          python -m pip install -U pip
+          set -euxo pipefail
+          python -m pip install -U pip setuptools wheel
           python -m pip install -e ".[dev]"
+          python -c "import app, app.config, app.engine_tick, app.api; print('import-ok', app.config.settings.trading_mode)"
+
+      - name: Compile all modules
+        run: python -m compileall -q app tests
 
       - name: Ruff lint
         run: python -m ruff check app tests
 
       - name: Pytest
-        run: python -m pytest tests/ -q --tb=short
+        env:
+          TRADING_MODE: paper
+          BINANCE_TESTNET: "true"
+          STARTING_CASH_USDT: "100"
+        run: python -m pytest tests/ -q --tb=short -ra
