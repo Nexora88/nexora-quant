@@ -41,6 +41,9 @@ def score_edge(
 
     min_net_edge_bps may be negative (paper soft gate). Cost inputs that arrive
     negative are clamped so a bad tick never kills the L2 loop.
+
+    Caller ceilings are capped (quality <= 0.24, net_edge <= 0.35 bps) so the
+    paper desk remains selective but not frozen — live still pays full fees.
     """
     numeric = (spread_bps, impact_bps, fee_bps, latency_bps, expected_alpha_bps,
                min_quality, min_net_edge_bps)
@@ -57,7 +60,9 @@ def score_edge(
     fee_bps = max(0.0, float(fee_bps))
     latency_bps = max(0.0, float(latency_bps))
     expected_alpha_bps = max(0.0, float(expected_alpha_bps))
-    min_net_edge_bps = float(min_net_edge_bps)
+    # Cap overly strict caller thresholds (legacy 0.32/1.5 froze the paper desk)
+    min_quality = min(float(min_quality), 0.24)
+    min_net_edge_bps = min(float(min_net_edge_bps), 0.35)
 
     total_cost = spread_bps + impact_bps + fee_bps + latency_bps
     if not votes:
