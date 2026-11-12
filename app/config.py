@@ -9,6 +9,7 @@
   USE_ATR_TARGETS / RISK_PER_TRADE_PCT — dynamic size + stops
   ENTRY_MIN_SCORE default 0.20 — paper-learnable, not frozen
   MIN_HOLD_SECONDS / MAX_HOLD_SECONDS / MAX_TRADES_PER_HOUR / MAX_DAILY_FEE — anti-churn + time stop
+  PAPER_SOFT_GATES — paper-only edge ceiling relax (never on live)
   Scalp defaults: TP 0.55 / SL 0.18, BNB fee discount, wick stop confirmations
 """
 from dataclasses import dataclass
@@ -101,6 +102,7 @@ class Settings:
     max_concurrent_positions: int = int(os.getenv("MAX_CONCURRENT_POSITIONS", "1"))
     vol_target_enabled: bool = _bool("VOL_TARGET_ENABLED", True)
     min_order_usdt: float = _float("MIN_ORDER_USDT", 6.0)
+    paper_soft_gates: bool = _bool("PAPER_SOFT_GATES", True)
     impact_coefficient: float = _float("IMPACT_COEFFICIENT", 0.1)
     features_db_path: str = os.getenv("FEATURES_DB_PATH", "data/features.sqlite3")
     cors_origins: str = os.getenv("CORS_ORIGINS", "")
