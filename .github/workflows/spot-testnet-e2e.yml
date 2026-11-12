@@ -67,7 +67,7 @@ jobs:
           pytest -q tests/test_spot_testnet_e2e.py --junitxml=testnet-e2e-results.xml
       - name: Upload sanitized test result
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: spot-testnet-e2e-results
           path: testnet-e2e-results.xml
