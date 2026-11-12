@@ -29,12 +29,7 @@ def estimate_alpha_bps(
     regime: str = "unknown",
     base_alpha_bps: float = 15.0,
 ) -> float:
-    """Gross-move budget from TP target, ATR, and regime — not a forecast.
-
-    - TP contributes ~85% of the target move in bps.
-    - ATR scales a floor so quiet books don't pretend 15 bps of edge.
-    - Trend regimes slightly raise, mean-revert slightly lower.
-    """
+    """Gross-move budget from TP target, ATR, and regime — not a forecast."""
     tp = max(0.0, float(take_profit_pct))
     atr = max(0.0, float(atr_pct))
     from_tp = tp * 100.0 * 0.85
@@ -61,14 +56,7 @@ def score_edge(
     min_net_edge_bps: float = 2.0,
     paper_soft_gates: bool = False,
 ) -> EdgeReport:
-    """Estimate net edge after costs; all costs are round-trip bps.
-
-    expected_alpha_bps is a heuristic gross-move budget, not a calibrated
-    forecast. fee_bps should include both entry and exit fees.
-
-    paper_soft_gates: when True (paper only), caller thresholds are capped so
-    the desk can enter and learn. Live must leave this False — full gates.
-    """
+    """Estimate net edge after costs; all costs are round-trip bps."""
     numeric = (
         spread_bps,
         impact_bps,
@@ -135,3 +123,47 @@ def score_edge(
             f"edge_ok q={quality:.2f} gross={gross:.2f} cost={total_cost:.2f} net={net:.2f}bps"
         )
     return EdgeReport(quality, agreement, total_cost, net, tradeable, notes)
+
+
+def score_edge_for_desk(
+    *,
+    votes: Sequence[FeatureVote],
+    spread_bps: float,
+    impact_bps: float = 0.0,
+    fee_bps: float = 0.0,
+    latency_bps: float = 0.0,
+    take_profit_pct: float = 0.55,
+    atr_pct: float = 0.0,
+    regime: str = "unknown",
+    mode: str = "paper",
+    entry_min_score: float = 0.20,
+    paper_soft_gates: bool | None = None,
+) -> EdgeReport:
+    """Wire alpha + soft gates for the trading desk (paper vs live)."""
+    alpha = estimate_alpha_bps(
+        take_profit_pct=take_profit_pct,
+        atr_pct=atr_pct,
+        regime=regime,
+    )
+    soft = bool(paper_soft_gates) if paper_soft_gates is not None else (mode == "paper")
+    if mode == "paper":
+        return score_edge(
+            votes=votes,
+            spread_bps=spread_bps,
+            impact_bps=impact_bps,
+            fee_bps=fee_bps,
+            latency_bps=latency_bps,
+            expected_alpha_bps=alpha,
+            min_quality=max(0.18, float(entry_min_score)),
+            min_net_edge_bps=0.25 if soft else 1.0,
+            paper_soft_gates=soft,
+        )
+    return score_edge(
+        votes=votes,
+        spread_bps=spread_bps,
+        impact_bps=impact_bps,
+        fee_bps=fee_bps,
+        latency_bps=latency_bps,
+        expected_alpha_bps=alpha,
+        paper_soft_gates=False,
+    )
