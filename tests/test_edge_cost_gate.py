@@ -48,7 +48,9 @@ def test_paper_soft_min_net_edge_allowed():
     assert "paper_soft_gates" in report.notes
 
 
-def test_live_does_not_cap_strict_gates():
+def test_live_does_not_cap_strict_gates(monkeypatch):
+    monkeypatch.setenv("TRADING_MODE", "live")
+    monkeypatch.setenv("PAPER_SOFT_GATES", "false")
     votes = [FeatureVote("obi", "long", 1.0, 0.5, "weak agreement")]
     report = score_edge(
         votes=votes, spread_bps=1, impact_bps=1, fee_bps=2,
