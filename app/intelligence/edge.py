@@ -1,8 +1,8 @@
 """Composite edge quality score — a cost gate, not a price prediction.
 
-The alpha estimate is an explicit research heuristic. Costs are expressed in
-basis points and must include the complete entry/exit round trip. The gate
-refuses setups whose estimated gross edge does not cover costs.
+The alpha estimate is a research heuristic (regime/ATR-aware when caller
+supplies it). Costs are round-trip basis points. Soft paper ceilings must be
+opt-in so live never inherits a frozen-desk hack.
 """
 from __future__ import annotations
 
@@ -22,6 +22,33 @@ class EdgeReport:
     notes: list[str]
 
 
+def estimate_alpha_bps(
+    *,
+    take_profit_pct: float,
+    atr_pct: float = 0.0,
+    regime: str = "unknown",
+    base_alpha_bps: float = 15.0,
+) -> float:
+    """Gross-move budget from TP target, ATR, and regime — not a forecast.
+
+    - TP contributes ~85% of the target move in bps.
+    - ATR scales a floor so quiet books don't pretend 15 bps of edge.
+    - Trend regimes slightly raise, mean-revert slightly lower.
+    """
+    tp = max(0.0, float(take_profit_pct))
+    atr = max(0.0, float(atr_pct))
+    from_tp = tp * 100.0 * 0.85
+    from_atr = atr * 10_000.0 * 0.35
+    reg = (regime or "unknown").lower()
+    regime_mul = 1.0
+    if "trend" in reg or "break" in reg:
+        regime_mul = 1.12
+    elif "mean" in reg or "range" in reg or "chop" in reg:
+        regime_mul = 0.90
+    raw = max(float(base_alpha_bps) * 0.5, from_tp, from_atr)
+    return max(8.0, min(80.0, raw * regime_mul))
+
+
 def score_edge(
     *,
     votes: Sequence[FeatureVote],
@@ -32,37 +59,51 @@ def score_edge(
     expected_alpha_bps: float = 15.0,
     min_quality: float = 0.45,
     min_net_edge_bps: float = 2.0,
+    paper_soft_gates: bool = False,
 ) -> EdgeReport:
     """Estimate net edge after costs; all costs are round-trip bps.
 
     expected_alpha_bps is a heuristic gross-move budget, not a calibrated
-    forecast. fee_bps should include both entry and exit fees. Spread, impact,
-    and latency/adverse-selection allowances should cover the round trip too.
+    forecast. fee_bps should include both entry and exit fees.
 
-    min_net_edge_bps may be negative (paper soft gate). Cost inputs that arrive
-    negative are clamped so a bad tick never kills the L2 loop.
-
-    Caller ceilings are capped (quality <= 0.24, net_edge <= 0.35 bps) so the
-    paper desk remains selective but not frozen — live still pays full fees.
+    paper_soft_gates: when True (paper only), caller thresholds are capped so
+    the desk can enter and learn. Live must leave this False — full gates.
     """
-    numeric = (spread_bps, impact_bps, fee_bps, latency_bps, expected_alpha_bps,
-               min_quality, min_net_edge_bps)
+    numeric = (
+        spread_bps,
+        impact_bps,
+        fee_bps,
+        latency_bps,
+        expected_alpha_bps,
+        min_quality,
+        min_net_edge_bps,
+    )
     if any(not isinstance(v, (int, float)) for v in numeric):
         raise ValueError("edge inputs must be numeric")
     if not 0 <= min_quality <= 1:
         raise ValueError("min_quality must be in [0, 1]")
 
     notes: list[str] = []
-    if spread_bps < 0 or impact_bps < 0 or fee_bps < 0 or latency_bps < 0 or expected_alpha_bps < 0:
+    if (
+        spread_bps < 0
+        or impact_bps < 0
+        or fee_bps < 0
+        or latency_bps < 0
+        or expected_alpha_bps < 0
+    ):
         notes.append("clamped_negative_cost_inputs")
     spread_bps = max(0.0, float(spread_bps))
     impact_bps = max(0.0, float(impact_bps))
     fee_bps = max(0.0, float(fee_bps))
     latency_bps = max(0.0, float(latency_bps))
     expected_alpha_bps = max(0.0, float(expected_alpha_bps))
-    # Cap overly strict caller thresholds (legacy 0.32/1.5 froze the paper desk)
-    min_quality = min(float(min_quality), 0.24)
-    min_net_edge_bps = min(float(min_net_edge_bps), 0.35)
+    min_quality = float(min_quality)
+    min_net_edge_bps = float(min_net_edge_bps)
+
+    if paper_soft_gates:
+        min_quality = min(min_quality, 0.24)
+        min_net_edge_bps = min(min_net_edge_bps, 0.35)
+        notes.append("paper_soft_gates")
 
     total_cost = spread_bps + impact_bps + fee_bps + latency_bps
     if not votes:
