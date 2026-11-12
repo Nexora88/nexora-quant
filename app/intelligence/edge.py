@@ -100,6 +100,13 @@ def score_edge(
     min_quality = float(min_quality)
     min_net_edge_bps = float(min_net_edge_bps)
 
+    if not paper_soft_gates:
+        import os
+
+        mode = os.getenv("TRADING_MODE", "paper").strip().lower()
+        env_soft = os.getenv("PAPER_SOFT_GATES", "true").strip().lower()
+        if mode == "paper" and env_soft in {"1", "true", "yes", "on", ""}:
+            paper_soft_gates = True
     if paper_soft_gates:
         min_quality = min(min_quality, 0.24)
         min_net_edge_bps = min(min_net_edge_bps, 0.35)
