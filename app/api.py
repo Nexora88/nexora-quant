@@ -280,25 +280,31 @@ setInterval(tick,900);tick();
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    task = asyncio.create_task(run())
+    # Tests / CI must not open Binance L2 sockets.
+    skip = os.getenv("NEXORA_SKIP_ENGINE", "").strip().lower() in {"1", "true", "yes", "on"}
+    skip = skip or bool(os.getenv("PYTEST_CURRENT_TEST"))
+    task = None
+    if not skip:
+        task = asyncio.create_task(run())
 
-    def _done(t: asyncio.Task) -> None:
-        try:
-            exc = t.exception()
-        except asyncio.CancelledError:
-            return
-        if exc:
-            import logging
+        def _done(t: asyncio.Task) -> None:
+            try:
+                exc = t.exception()
+            except asyncio.CancelledError:
+                return
+            if exc:
+                import logging
 
-            logging.getLogger(__name__).exception("Engine task crashed: %s", exc)
+                logging.getLogger(__name__).exception("Engine task crashed: %s", exc)
 
-    task.add_done_callback(_done)
+        task.add_done_callback(_done)
     try:
         yield
     finally:
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
+        if task is not None:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
 
 app = FastAPI(title="Nexora Quant", version="0.3.0", lifespan=lifespan)
