@@ -105,7 +105,7 @@ async def handle_tick(
         es.execution_costs.observe_mid(analysis.mid, now_ms)
     try:
         features.append(
-            ts_ns=time.time_ns(), symbol=settings.symbol, mid=analysis.mid,
+            ts_ns=time.time_ns(), symbol=trade_sym, mid=analysis.mid,
             spread_bps=analysis.spread_bps, imbalance=analysis.imbalance,
             momentum_bps=analysis.momentum_bps, score=analysis.score, bid=bid, ask=ask,
             extra={
@@ -281,14 +281,18 @@ async def handle_tick(
         from app.intelligence.edge import score_edge_for_desk
         atr_now = float(getattr(atr_tracker, "atr_pct", 0.0) or 0.0)
         soft = mode == "paper" and bool(getattr(settings, "paper_soft_gates", True))
+        # Round-trip cost model (paper ≈ live): 2× impact + RT fee; paper uses latency buffer
+        # so paper wins do not evaporate under live impact/latency wall.
+        rt_impact = max(0.0, 2.0 * float(impact_est or 0.0))
+        rt_fee_bps = max(0.0, 2.0 * float(settings.effective_fee_rate()) * 10_000)
         if mode == "paper":
-            rt_fee_bps = max(0.0, 2.0 * float(settings.effective_fee_rate()) * 10_000)
+            paper_latency_buffer_bps = 1.0  # honest stand-in for unmeasured retail latency
             edge = score_edge_for_desk(
                 votes=_pre.votes,
                 spread_bps=max(0.0, float(analysis.spread_bps or 0.0)),
-                impact_bps=max(0.0, float(impact_est or 0.0)),
+                impact_bps=rt_impact,
                 fee_bps=rt_fee_bps,
-                latency_bps=0.0,
+                latency_bps=paper_latency_buffer_bps,
                 take_profit_pct=float(settings.take_profit_pct),
                 atr_pct=atr_now,
                 regime=str(getattr(analysis, "regime", "unknown") or "unknown"),
@@ -300,8 +304,8 @@ async def handle_tick(
             edge = score_edge_for_desk(
                 votes=_pre.votes,
                 spread_bps=max(0.0, float(analysis.spread_bps or 0.0)),
-                impact_bps=max(0.0, 2.0 * float(impact_est or 0.0)),
-                fee_bps=max(0.0, 2.0 * float(settings.effective_fee_rate()) * 10_000),
+                impact_bps=rt_impact,
+                fee_bps=rt_fee_bps,
                 latency_bps=max(0.0, float(calibrated_latency_cost or 0.0)),
                 take_profit_pct=float(settings.take_profit_pct),
                 atr_pct=atr_now,
