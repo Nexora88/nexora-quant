@@ -54,3 +54,25 @@ Phone: Binance app ready for manual flatten if network dies.
 ## 6. Data to keep
 - `data/paper.sqlite3` (learner + memory)
 - Snapshot before any host migration
+
+## 7. Automated gate (required for mainnet)
+
+```bash
+# After overnight paper passes:
+PYTHONPATH=. python scripts/go_live_gate.py --i-understand-real-money \
+  --overnight-log /path/to/overnight_out.txt
+
+# Writes data/GO_LIVE_OK — config refuses mainnet live without this stamp
+# (unless REQUIRE_GO_LIVE_GATE=false).
+```
+
+## 8. Maker entry
+
+Set `PREFER_MAKER=true` so live uses LIMIT_MAKER (post-only) and paper fills near bid.
+Fee math + execution now align with maker path when the book fills you.
+
+## 9. Walk-forward (before trusting params)
+
+```bash
+PYTHONPATH=. python scripts/walk_forward_params.py path/to/market-history.jsonl.gz
+```

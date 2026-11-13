@@ -46,6 +46,7 @@ def test_mainnet_live_accepted_with_explicit_confirmation():
         binance_api_secret="s",
         binance_testnet=False,
         live_confirm="I_UNDERSTAND_REAL_MONEY",
+        require_go_live_gate=False,
     ).validate()
     assert s.trading_mode == "live"
     assert s.binance_testnet is False
