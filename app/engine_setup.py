@@ -113,6 +113,11 @@ def _build_executor():
     if settings.trading_mode == "live":
         from app.binance_rest import BinanceRestClient
         from app.live import LiveExecutor
+        try:
+            from app.live_hardening import install_maker_entry
+            install_maker_entry()
+        except Exception:
+            log.exception("install_maker_entry failed")
 
         client = BinanceRestClient(
             api_key=settings.binance_api_key,
