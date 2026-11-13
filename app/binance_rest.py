@@ -36,6 +36,28 @@ class OrderResult:
     raw: dict[str, Any]
 
 
+def _fmt_qty(value: float) -> str:
+    text = f"{value:.12f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _parse_order(raw: dict[str, Any]) -> OrderResult:
+    fills = raw.get("fills") if isinstance(raw.get("fills"), list) else []
+    return OrderResult(
+        order_id=int(raw.get("orderId") or 0),
+        client_order_id=str(raw.get("clientOrderId") or ""),
+        symbol=str(raw.get("symbol") or ""),
+        side=str(raw.get("side") or ""),
+        status=str(raw.get("status") or ""),
+        price=float(raw.get("price") or 0),
+        orig_qty=float(raw.get("origQty") or 0),
+        executed_qty=float(raw.get("executedQty") or 0),
+        cummulative_quote_qty=float(raw.get("cummulativeQuoteQty") or 0),
+        fills=list(fills),
+        raw=raw,
+    )
+
+
 class BinanceRestClient:
     def __init__(
         self,
@@ -79,49 +101,27 @@ class BinanceRestClient:
             full = f"{url}?{query}" if query else url
             req = urllib.request.Request(full, headers=headers, method="GET")
         else:
-            data = query.encode("utf-8")
             req = urllib.request.Request(
-                url,
-                data=data,
-                headers={**headers, "Content-Type": "application/x-www-form-urlencoded"},
-                method=method,
+                url, data=query.encode("utf-8"), headers=headers, method=method
             )
+            req.add_header("Content-Type", "application/x-www-form-urlencoded")
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 body = resp.read().decode("utf-8")
                 return json.loads(body) if body else {}
         except urllib.error.HTTPError as exc:
             err_body = exc.read().decode("utf-8", errors="replace")
-            log.error("Binance REST %s %s failed: %s %s", method, path, exc.code, err_body)
-            raise RuntimeError(f"Binance API error {exc.code}: {err_body}") from exc
+            log.error("Binance HTTP %s %s: %s", exc.code, path, err_body[:500])
+            raise
 
-    def ping(self) -> dict[str, Any]:
-        return self._request("GET", "/api/v3/ping")
+    def exchange_info(self, symbol: str | None = None) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if symbol:
+            params["symbol"] = symbol.upper()
+        return self._request("GET", "/api/v3/exchangeInfo", params)
 
     def account(self) -> dict[str, Any]:
         return self._request("GET", "/api/v3/account", signed=True)
-
-    def free_balance(self, asset: str) -> float:
-        info = self.account()
-        asset = asset.upper()
-        for bal in info.get("balances", []):
-            if bal.get("asset") == asset:
-                return float(bal.get("free", 0))
-        return 0.0
-
-    def ticker_price(self, symbol: str) -> float:
-        raw = self._request("GET", "/api/v3/ticker/price", {"symbol": symbol.upper()})
-        price = float(raw.get("price", 0))
-        if price <= 0:
-            raise RuntimeError("Invalid ticker price response")
-        return price
-
-    def exchange_info_symbol(self, symbol: str) -> dict[str, Any]:
-        data = self._request("GET", "/api/v3/exchangeInfo", {"symbol": symbol.upper()})
-        symbols = data.get("symbols") or []
-        if not symbols:
-            raise ValueError(f"Unknown symbol {symbol}")
-        return symbols[0]
 
     def place_market_order(
         self,
@@ -152,73 +152,44 @@ class BinanceRestClient:
         raw = self._request("POST", "/api/v3/order", params, signed=True)
         return _parse_order(raw)
 
+    def place_limit_order(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        quantity: float,
+        price: float,
+        client_order_id: str | None = None,
+        post_only: bool = True,
+        time_in_force: str = "GTC",
+    ) -> OrderResult:
+        """LIMIT or LIMIT_MAKER (post-only). Rejects if it would take liquidity when post_only."""
+        side = side.upper()
+        if side not in ("BUY", "SELL"):
+            raise ValueError("side must be BUY or SELL")
+        if quantity <= 0 or price <= 0:
+            raise ValueError("quantity and price must be positive")
+        params: dict[str, Any] = {
+            "symbol": symbol.upper(),
+            "side": side,
+            "type": "LIMIT_MAKER" if post_only else "LIMIT",
+            "quantity": _fmt_qty(quantity),
+            "price": _fmt_qty(price),
+            "newOrderRespType": "FULL",
+        }
+        if not post_only:
+            params["timeInForce"] = time_in_force
+        if client_order_id:
+            params["newClientOrderId"] = client_order_id
+        raw = self._request("POST", "/api/v3/order", params, signed=True)
+        return _parse_order(raw)
+
     def get_order(self, symbol: str, order_id: int) -> OrderResult:
         raw = self._request(
             "GET", "/api/v3/order",
             {"symbol": symbol.upper(), "orderId": order_id}, signed=True,
         )
         return _parse_order(raw)
-
-    def get_order_by_client_id(self, symbol: str, client_order_id: str) -> OrderResult:
-        raw = self._request(
-            "GET", "/api/v3/order",
-            {"symbol": symbol.upper(), "origClientOrderId": client_order_id}, signed=True,
-        )
-        return _parse_order(raw)
-
-    def order_trades(self, symbol: str, order_id: int) -> list[dict[str, Any]]:
-        """Return exchange trade fills including the actual commission asset."""
-        raw = self._request(
-            "GET", "/api/v3/myTrades",
-            {"symbol": symbol.upper(), "orderId": order_id, "limit": 1000}, signed=True,
-        )
-        if not isinstance(raw, list):
-            raise RuntimeError("Unexpected myTrades response")
-        return raw
-
-    def all_order_lists(self, *, limit: int = 1000, max_pages: int = 100) -> list[dict[str, Any]]:
-        """Paginate historical OCO lists; raise rather than silently return truncated history."""
-        if not 1 <= limit <= 1000 or max_pages < 1:
-            raise ValueError("limit must be 1..1000 and max_pages must be positive")
-        result: list[dict[str, Any]] = []
-        from_id: int | None = None
-        for _ in range(max_pages):
-            params: dict[str, Any] = {"limit": limit}
-            if from_id is not None:
-                params["fromId"] = from_id
-            batch = self._request("GET", "/api/v3/allOrderList", params, signed=True)
-            if not isinstance(batch, list):
-                raise RuntimeError("Unexpected allOrderList response")
-            result.extend(batch)
-            if len(batch) < limit:
-                return result
-            ids = [int(item.get("orderListId", 0)) for item in batch]
-            next_id = max(ids, default=0) + 1
-            if next_id <= (from_id or 0):
-                raise RuntimeError("allOrderList pagination did not advance")
-            from_id = next_id
-        raise RuntimeError("allOrderList history may be truncated; reconciliation blocked")
-
-    def get_order_list(self, order_list_id: int) -> dict[str, Any]:
-        """Fetch historical/current OCO list state, including child order reports."""
-        raw = self._request(
-            "GET", "/api/v3/orderList", {"orderListId": order_list_id}, signed=True,
-        )
-        if not isinstance(raw, dict) or not raw.get("orderListId"):
-            raise RuntimeError("Unexpected orderList response")
-        return raw
-
-    def order_list_trades(self, symbol: str, order_id: int) -> list[dict[str, Any]]:
-        """Fetch every trade for a child order; pagination is deliberately not guessed."""
-        return self.order_trades(symbol, order_id)
-
-    def open_orders(self, symbol: str) -> list[dict[str, Any]]:
-        raw = self._request(
-            "GET", "/api/v3/openOrders", {"symbol": symbol.upper()}, signed=True,
-        )
-        if not isinstance(raw, list):
-            raise RuntimeError("Unexpected openOrders response")
-        return raw
 
     def cancel_order(
         self, *, symbol: str, order_id: int | None = None,
@@ -253,22 +224,19 @@ class BinanceRestClient:
         quantity: float,
         take_profit_price: float,
         stop_price: float,
-        stop_limit_price: float | None = None,
+        stop_limit_price: float,
         client_order_id: str | None = None,
     ) -> dict[str, Any]:
-        """Exchange-hosted OCO so TP/SL survive bot disconnects."""
-        side = side.upper()
-        if side not in ("BUY", "SELL"):
-            raise ValueError("side must be BUY or SELL")
-        stop_limit = stop_limit_price if stop_limit_price is not None else stop_price
         params: dict[str, Any] = {
             "symbol": symbol.upper(),
-            "side": side,
+            "side": side.upper(),
             "quantity": _fmt_qty(quantity),
-            "price": _fmt_qty(take_profit_price),
-            "stopPrice": _fmt_qty(stop_price),
-            "stopLimitPrice": _fmt_qty(stop_limit),
-            "stopLimitTimeInForce": "GTC",
+            "aboveType": "LIMIT_MAKER",
+            "abovePrice": _fmt_qty(take_profit_price),
+            "belowType": "STOP_LOSS_LIMIT",
+            "belowStopPrice": _fmt_qty(stop_price),
+            "belowPrice": _fmt_qty(stop_limit_price),
+            "belowTimeInForce": "GTC",
         }
         if client_order_id:
             params["listClientOrderId"] = client_order_id
@@ -281,38 +249,59 @@ class BinanceRestClient:
         side: str,
         quantity: float,
         stop_price: float,
-        limit_price: float | None = None,
-    ) -> dict[str, Any]:
-        side = side.upper()
-        limit_price = limit_price if limit_price is not None else stop_price
+        price: float,
+        client_order_id: str | None = None,
+    ) -> OrderResult:
         params: dict[str, Any] = {
             "symbol": symbol.upper(),
-            "side": side,
+            "side": side.upper(),
             "type": "STOP_LOSS_LIMIT",
             "quantity": _fmt_qty(quantity),
             "stopPrice": _fmt_qty(stop_price),
-            "price": _fmt_qty(limit_price),
+            "price": _fmt_qty(price),
             "timeInForce": "GTC",
+            "newOrderRespType": "FULL",
         }
-        return self._request("POST", "/api/v3/order", params, signed=True)
+        if client_order_id:
+            params["newClientOrderId"] = client_order_id
+        raw = self._request("POST", "/api/v3/order", params, signed=True)
+        return _parse_order(raw)
 
+    def get_order_list(self, order_list_id: int) -> dict[str, Any]:
+        raw = self._request(
+            "GET", "/api/v3/orderList", {"orderListId": order_list_id}, signed=True,
+        )
+        if not isinstance(raw, dict) or not raw.get("orderListId"):
+            raise RuntimeError("Unexpected orderList response")
+        return raw
 
-def _fmt_qty(value: float) -> str:
-    s = f"{value:.12f}".rstrip("0").rstrip(".")
-    return s if s else "0"
+    def order_trades(self, symbol: str, order_id: int) -> list[dict[str, Any]]:
+        raw = self._request(
+            "GET", "/api/v3/myTrades",
+            {"symbol": symbol.upper(), "orderId": order_id}, signed=True,
+        )
+        if not isinstance(raw, list):
+            raise RuntimeError("Unexpected myTrades response")
+        return raw
 
+    def order_list_trades(self, symbol: str, order_id: int) -> list[dict[str, Any]]:
+        return self.order_trades(symbol, order_id)
 
-def _parse_order(raw: dict[str, Any]) -> OrderResult:
-    return OrderResult(
-        order_id=int(raw.get("orderId", 0)),
-        client_order_id=str(raw.get("clientOrderId", "")),
-        symbol=str(raw.get("symbol", "")),
-        side=str(raw.get("side", "")),
-        status=str(raw.get("status", "")),
-        price=float(raw.get("price") or 0),
-        orig_qty=float(raw.get("origQty") or 0),
-        executed_qty=float(raw.get("executedQty") or 0),
-        cummulative_quote_qty=float(raw.get("cummulativeQuoteQty") or 0),
-        fills=list(raw.get("fills") or []),
-        raw=raw,
-    )
+    def all_order_list(self, *, from_id: int | None = None, limit: int = 500) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        while True:
+            params: dict[str, Any] = {"limit": limit}
+            if from_id is not None:
+                params["fromId"] = from_id
+            batch = self._request("GET", "/api/v3/allOrderList", params, signed=True)
+            if not isinstance(batch, list):
+                raise RuntimeError("Unexpected allOrderList response")
+            result.extend(batch)
+            if len(batch) < limit:
+                return result
+            ids = [int(item.get("orderListId", 0)) for item in batch]
+            next_id = max(ids, default=0) + 1
+            if next_id <= (from_id or 0):
+                raise RuntimeError("allOrderList pagination did not advance")
+            from_id = next_id
+        raise RuntimeError("allOrderList history may be truncated; reconciliation blocked")
