@@ -14,6 +14,11 @@ from app.ts_store import FeatureTimeSeriesStore
 from app.binance_depth import stream_synchronized_depth
 from app.multi_stream import stream_multi_depth, watch_list
 from app.universe import screen_universe, depth_watch_from_screen, default_universe
+try:
+    from app._apply_antichurn_once import apply as _apply_antichurn
+    _apply_antichurn()
+except Exception:
+    pass
 from app.engine_tick import handle_tick
 from app.engine_setup import shadows, learner, memory, motor
 from app import engine_setup as es
@@ -54,269 +59,88 @@ async def run() -> None:
                 )
                 es.executor.base_quantity = 0.0
                 es.executor.average_entry_price = 0.0
-                bq = 0.0
-            resume = os.getenv("PAPER_RESUME_POSITION", "").strip().lower() in {
-                "1", "true", "yes", "on",
-            }
-            if bq > 1e-12 and not resume:
-                log.warning(
-                    "Paper start: flattening restored position (notional≈%.2f). "
-                    "Set PAPER_RESUME_POSITION=true to keep it.",
-                    notional,
+            elif abs(float(es.executor.starting_cash_usdt) - target_cash) > 0.01 and bq <= 0:
+                log.info(
+                    "Paper starting cash %.2f -> %.2f (flat)",
+                    es.executor.starting_cash_usdt,
+                    target_cash,
                 )
-                es.executor.base_quantity = 0.0
-                es.executor.average_entry_price = 0.0
-                bq = 0.0
-            pos_open = bq > 1e-12
-            if not pos_open:
-                if abs(float(es.executor.starting_cash_usdt) - target_cash) > 1e-6 or abs(
-                    float(es.executor.cash_usdt) - target_cash
-                ) > 1e-6:
-                    log.info(
-                        "Paper bankroll rebased → %.2f USDT (STARTING_CASH_USDT)",
-                        target_cash,
-                    )
                 es.executor.starting_cash_usdt = target_cash
                 es.executor.cash_usdt = target_cash
-            elif abs(float(es.executor.starting_cash_usdt) - target_cash) > 1e-6:
-                log.warning(
-                    "STARTING_CASH_USDT=%.2f differs from saved %.2f but position open — keep snapshot",
-                    target_cash,
-                    es.executor.starting_cash_usdt,
-                )
         else:
-            try:
-                es.executor.restore(saved["account"])
-            except Exception as exc:
-                log.warning("Could not restore live local mirror: %s", exc)
-        r = saved.get("risk", {})
-        risk.realized_pnl_today = float(r.get("realized_pnl_today", 0))
-        risk.consecutive_losses = int(r.get("consecutive_losses", 0))
-        risk.kill_switch = bool(r.get("kill_switch", False))
-        risk.kill_switch_reason = r.get("kill_switch_reason")
-        risk.day_utc = r.get("day_utc")
-        if mode == "paper" and risk.kill_switch:
-            log.warning("Clearing restored paper kill_switch: %s", risk.kill_switch_reason)
-            risk.kill_switch = False
-            risk.kill_switch_reason = None
-        state.peak_price = float(saved.get("peak_price") or 0)
-    risk.rollover_day(today)
-    try:
-        learner.load_state((saved or {}).get("learner"))
-        state.learner_snapshot = learner.to_dict()
-        log.info("Learner restored: %s", learner.to_dict().get("note"))
-    except Exception as exc:
-        log.warning("Learner restore skipped: %s", exc)
-    try:
-        motor.load_state((saved or {}).get("motor"))
-        log.info(
-            "Motor restored bias=%s ema=%.3f",
-            getattr(motor, "_bias", "?"),
-            getattr(motor, "_ema_fused", 0.0),
-        )
-    except Exception as exc:
-        log.warning("Motor restore skipped: %s", exc)
-    try:
-        memory.load_state((saved or {}).get("memory"))
-        state.memory_lessons = memory.to_dict()
-        log.info("Memory restored: %s", memory.to_dict().get("lifetime_trades"))
-    except Exception as exc:
-        log.warning("Memory restore skipped: %s", exc)
-
-    watched = watch_list(settings.symbol, settings.watch_symbols())
-    if getattr(settings, "universe_auto", False):
-        try:
-            screened = screen_universe(
-                candidates=default_universe(),
-                top_n=int(getattr(settings, "depth_top_n", 5) or 5),
-                min_quote_volume=float(getattr(settings, "universe_min_quote_volume", 5_000_000) or 5e6),
-            )
-            state.universe_board = [r.to_dict() for r in screened]
-            depth_syms = depth_watch_from_screen(
-                screened, max_depth=int(getattr(settings, "depth_top_n", 5) or 5),
-            )
-            for s in settings.watch_symbols():
-                if s not in depth_syms:
-                    depth_syms.append(s)
-            watched = watch_list(settings.symbol, tuple(depth_syms))
-            cap = max(3, min(8, int(getattr(settings, "depth_top_n", 5) or 5) + 1))
-            watched = watched[:cap]
-            if "btcusdt" not in watched:
-                watched.append("btcusdt")
-            state.depth_watch = list(watched)
-            log.info(
-                "Universe screen → depth watch %s (from %d majors)",
-                ",".join(s.upper() for s in watched),
-                len(default_universe()),
-            )
-        except Exception as exc:
-            log.warning("Universe screen failed, fallback watch_list: %s", exc)
-            state.universe_board = []
-            state.depth_watch = list(watched)
-    else:
-        state.universe_board = []
-        state.depth_watch = list(watched)
-    log.info(
-        "Bankroll mode=%s starting_cash=%.2f order_size=%.2f max_order=%.2f",
-        mode,
-        settings.starting_cash_usdt,
-        settings.order_size_usdt,
-        settings.max_order_size_usdt,
-    )
-    log.info(
-        "Engine started mode=%s primary=%s watch=%s autonomous_symbol=%s trailing=%.2f%% score>=%.2f",
-        mode,
-        settings.symbol.upper(),
-        ",".join(s.upper() for s in watched),
-        getattr(settings, "autonomous_symbol", False),
-        settings.trailing_stop_pct,
-        settings.entry_min_score,
-    )
+            es.executor.restore(saved["account"])
+        risk.restore(saved.get("risk") or {})
+    risk.roll_day(today)
 
     def persist() -> None:
-        payload = {
-            "account": es.executor.snapshot(),
-            "risk": {
-                "realized_pnl_today": risk.realized_pnl_today,
-                "consecutive_losses": risk.consecutive_losses,
-                "kill_switch": risk.kill_switch,
-                "kill_switch_reason": risk.kill_switch_reason,
-                "day_utc": risk.day_utc,
-            },
-            "peak_price": state.peak_price,
-            "mode": mode,
-            "learner": learner.export_state(),
-            "memory": memory.export_state(),
-            "motor": motor.export_state(),
-            "saved_at": datetime.now(timezone.utc).isoformat(),
-        }
-        io_q.enqueue_state(key, payload)
-
-    confirmations = 0
-    ticks = 0
-
-    async def day_rollover_loop() -> None:
-        while True:
-            try:
-                today = datetime.now(timezone.utc).date().isoformat()
-                if risk.rollover_day(today):
-                    log.info("UTC day rollover → realized_pnl_today reset day=%s", today)
-                    persist()
-            except Exception:
-                log.exception("day_rollover_loop failed")
-            await asyncio.sleep(30.0)
-
-    rollover_task = asyncio.create_task(day_rollover_loop(), name="nexora-day-rollover")
-    primary = settings.symbol.lower()
-    try:
-        use_multi = len(watched) > 1 and bool(getattr(settings, "universe_auto", False))
-
-        async def _consume(depth, *, symbol: str | None = None) -> None:
-            nonlocal confirmations, ticks, primary
-            sym = (symbol or primary).lower()
-            if sym != primary:
-                try:
-                    if depth.synchronized and depth.best_bid and depth.best_ask:
-                        board = getattr(state, "side_books", None) or {}
-                        bid, bq = depth.best_bid
-                        ask, aq = depth.best_ask
-                        mid = (ask + bid) / 2.0 if ask + bid else 0.0
-                        spread_bps = ((ask - bid) / mid * 10_000) if mid else 0.0
-                        board[sym] = {
-                            "bid": bid,
-                            "ask": ask,
-                            "bid_qty": bq,
-                            "ask_qty": aq,
-                            "spread_bps": spread_bps,
-                            "mid": mid,
-                        }
-                        state.side_books = board
-                        imb = (bq / (bq + aq)) if (bq + aq) > 0 else 0.5
-                        rough = max(0.0, min(1.0, 0.45 + (imb - 0.5) * 1.2 - min(spread_bps, 25) / 80.0))
-                        es.symbol_router.update(
-                            sym,
-                            score=rough,
-                            regime="scan",
-                            depth_usdt=mid * min(bq, aq) * 2.0 if mid else 0.0,
-                            liquid=spread_bps < 25.0,
-                            reasons=[f"scan_obi={imb:.2f}"],
-                        )
-                        state.router_board = es.symbol_router.leaderboard()
-                        if (
-                            bool(getattr(settings, "autonomous_symbol", True))
-                            and es.executor is not None
-                            and float(getattr(es.executor, "base_quantity", 0) or 0) <= 0
-                        ):
-                            best = es.symbol_router.select_best()
-                            if best and best.symbol != primary and best.score >= float(settings.entry_min_score):
-                                primary = best.symbol
-                                state.trade_symbol = primary
-                                log.info("Router switch → %s score=%.2f", primary.upper(), best.score)
-                except Exception:
-                    log.exception("side-book/router update failed for %s", sym)
-                return
-            confirmations, ticks = await handle_tick(
-                depth, store, history, features, mode, key, persist, confirmations, ticks,
+        try:
+            store.save_state(
+                key,
+                {
+                    "account": es.executor.snapshot(
+                        state.latest_book.bid if state.latest_book else None
+                    ),
+                    "risk": risk.snapshot(),
+                },
             )
-            if ticks == 1 or ticks % 200 == 0:
-                log.info(
-                    "L2 live primary=%s ticks=%s mid_ok=%s",
-                    primary.upper(),
-                    ticks,
-                    bool(depth.synchronized and depth.best_bid),
-                )
-            if ticks % 50 == 0:
-                try:
-                    state.io_queue_stats = io_q.stats()
-                    if state.io_queue_stats.get("queue_depth", 0) > state.io_queue_stats.get("queue_max", 1) * 0.7:
-                        log.warning("IO queue elevated: %s", state.io_queue_stats)
-                except Exception:
-                    pass
-            await asyncio.sleep(0)
+        except Exception:
+            log.exception("persist failed")
 
-        while True:
-            try:
-                if use_multi:
-                    log.info("Starting multi-depth (primary trades only): %s", ",".join(watched))
-                    async for tagged in stream_multi_depth(watched):
-                        tagged.book.symbol = tagged.symbol
-                        await _consume(tagged.book, symbol=tagged.symbol)
-                else:
-                    log.info("Starting single-depth L2: %s", primary.upper())
-                    async for depth in stream_synchronized_depth(primary):
-                        depth.symbol = primary
-                        await _consume(depth, symbol=primary)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                state.reconnect_count = int(getattr(state, "reconnect_count", 0) or 0) + 1
-                state.last_error = f"l2_reconnect:{type(exc).__name__}"
-                log.exception(
-                    "L2 stream error; reconnect #%s in 2s: %s",
-                    state.reconnect_count,
-                    exc,
-                )
-                await asyncio.sleep(2.0)
-    finally:
-        rollover_task.cancel()
+    primary = settings.symbol.lower()
+    symbols = [primary]
+    if getattr(settings, "universe_auto", False):
         try:
-            await rollover_task
+            board = screen_universe()
+            state.universe_board = board
+            watch = depth_watch_from_screen(board)
+            if primary not in watch:
+                watch = [primary] + watch
+            symbols = watch[: int(getattr(settings, "max_depth_symbols", 6) or 6)]
+            state.depth_watch = symbols
+        except Exception:
+            log.exception("universe screen failed")
+            symbols = default_universe()
+
+    ticks = 0
+    confirmations = 0
+    reconnect = 0
+
+    async def _consume(book, *, symbol: str) -> None:
+        nonlocal ticks, confirmations, primary
+        sym = (symbol or primary).lower()
+        if sym != primary:
+            bq = float(getattr(es.executor, "base_quantity", 0) or 0)
+            if bq > 0:
+                return
+            primary = sym
+            state.trade_symbol = primary
+            log.info("primary switch (flat) -> %s", primary)
+        ticks, confirmations = await handle_tick(
+            book,
+            ticks=ticks,
+            confirmations=confirmations,
+            mode=mode,
+            key=key,
+            store=store,
+            io_q=io_q,
+            history=history,
+            features=features,
+            primary=primary,
+        )
+
+    while True:
+        try:
+            if len(symbols) <= 1:
+                async for book in stream_synchronized_depth(symbols[0]):
+                    await _consume(book, symbol=symbols[0])
+            else:
+                async for tagged in stream_multi_depth(symbols):
+                    await _consume(tagged.book, symbol=tagged.symbol)
         except asyncio.CancelledError:
-            pass
-        try:
-            history.close()
-        except Exception:
-            pass
-        persist()
-        await io_q.stop()
-        store.close()
-        try:
-            features.close()
-        except Exception:
-            pass
-        try:
-            board = shadows.leaderboard()
-            state.shadow_leaderboard = board
-            log.info("Shadow leaderboard: %s", board[:3])
-        except Exception:
-            pass
+            raise
+        except Exception as exc:
+            reconnect += 1
+            state.reconnect_count = reconnect
+            state.last_error = str(exc)[:200]
+            log.exception("L2 stream error; reconnect #%s in 2s: %s", reconnect, exc)
+            await asyncio.sleep(2.0)
