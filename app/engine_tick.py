@@ -28,7 +28,6 @@ from app.engine_setup import (
     whale_tracker,
 )
 from app.events import BookTicker
-from app.intelligence.edge import score_edge
 from app.portfolio import size_from_free_cash
 from app.atr_stops import compute_dynamic_targets, WickStopState
 from app.autonomous_policy import regime_targets, vol_adjusted_notional, impact_capped_notional, assess_liquidity
@@ -560,6 +559,16 @@ async def handle_tick(
                             state.position_trail_pct = active_trail
                             state.position_opened_at = time.time()
                             state.last_entry_at = time.time()
+                            try:
+                                state.hourly_trade_ts = list(
+                                    getattr(state, "hourly_trade_ts", []) or []
+                                ) + [time.time()]
+                            except Exception:
+                                pass
+                            try:
+                                portfolio_risk.register(settings.symbol, sizing_n, active_sl)
+                            except Exception:
+                                pass
                 except Exception:
                     log.exception("Entry order failed")
                     state.last_error = "entry_failed"
