@@ -10,7 +10,7 @@
   ENTRY_MIN_SCORE default 0.20 — paper-learnable, not frozen
   MIN_HOLD_SECONDS / MAX_HOLD_SECONDS / MAX_TRADES_PER_HOUR / MAX_DAILY_FEE — anti-churn + time stop
   PAPER_SOFT_GATES — paper-only edge ceiling relax (never on live)
-  PREFER_MAKER — price round-trip with maker entry when True (math only)
+  PREFER_MAKER — post-only LIMIT_MAKER entry when True (live+paper)
   Scalp defaults: TP 0.55 / SL 0.18, BNB fee discount, wick stop confirmations
 """
 from dataclasses import dataclass
@@ -105,6 +105,8 @@ class Settings:
     min_order_usdt: float = _float("MIN_ORDER_USDT", 6.0)
     paper_soft_gates: bool = _bool("PAPER_SOFT_GATES", True)
     prefer_maker: bool = _bool("PREFER_MAKER", False)
+    maker_wait_seconds: float = float(os.getenv("MAKER_WAIT_SECONDS", "8") or 8)
+    require_go_live_gate: bool = _bool("REQUIRE_GO_LIVE_GATE", True)
     impact_coefficient: float = _float("IMPACT_COEFFICIENT", 0.1)
     features_db_path: str = os.getenv("FEATURES_DB_PATH", "data/features.sqlite3")
     cors_origins: str = os.getenv("CORS_ORIGINS", "")
@@ -188,6 +190,14 @@ class Settings:
                     raise ValueError(
                         "Mainnet live requires LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY."
                     )
+                if bool(getattr(self, "require_go_live_gate", True)):
+                    from pathlib import Path as _P
+                    stamp = _P(os.getenv("GO_LIVE_STAMP_PATH", "data/GO_LIVE_OK"))
+                    if not stamp.is_file():
+                        raise ValueError(
+                            "Mainnet live blocked: run scripts/go_live_gate.py first "
+                            f"(missing stamp {stamp}). Set REQUIRE_GO_LIVE_GATE=false to bypass."
+                        )
         return self
 
     def watch_symbols(self) -> tuple[str, ...]:
