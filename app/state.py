@@ -52,6 +52,7 @@ class RuntimeState:
         self.btc_filter_snap: str | None = None
         self.last_flow: dict | None = None
         self.score_ema: float = 0.0
+        self._score_ema_seeded: bool = False
         self.position_opened_at: float | None = None  # unix ts
         self.last_entry_at: float | None = None
         self.session_fees_usdt: float = 0.0
@@ -79,26 +80,30 @@ class RuntimeState:
         return max(0.0, (datetime.now(timezone.utc) - ref).total_seconds())
 
     def record_analysis(self, analysis: Any) -> None:
+        """Update dashboard EMA; do NOT mutate analysis.score (entry uses raw)."""
         raw = float(getattr(analysis, "score", 0) or 0)
         alpha = 0.12
-        if not self.score_ema:
+        # None-safe: 0.0 is a valid score and must not force-reset EMA
+        if self.score_ema is None or (
+            isinstance(self.score_ema, float)
+            and self.score_ema == 0.0
+            and not getattr(self, "_score_ema_seeded", False)
+        ):
             self.score_ema = raw
+            self._score_ema_seeded = True
         else:
             self.score_ema = alpha * raw + (1.0 - alpha) * float(self.score_ema)
-        try:
-            analysis.score = float(self.score_ema)
-        except Exception:
-            pass
+            self._score_ema_seeded = True
+        # Snapshot for UI only — leave analysis.score as raw for entry/decision
         if hasattr(analysis, "__dataclass_fields__"):
-            self.last_analysis = asdict(analysis)
+            snap = asdict(analysis)
         elif isinstance(analysis, dict):
-            self.last_analysis = dict(analysis)
-            self.last_analysis["score"] = float(self.score_ema)
+            snap = dict(analysis)
         else:
-            self.last_analysis = {"score": float(self.score_ema)}
-        if self.last_analysis is not None and "score" in self.last_analysis:
-            self.last_analysis["score"] = float(self.score_ema)
-            self.last_analysis["score_raw"] = raw
+            snap = {"score": raw}
+        snap["score"] = float(self.score_ema)
+        snap["score_raw"] = raw
+        self.last_analysis = snap
         self.score_history.append(
             {"ts": datetime.now(timezone.utc).isoformat(), "score": float(self.score_ema), "raw": raw}
         )
