@@ -62,6 +62,54 @@ class RuntimeState:
         self.closed_trade_count: int = 0
         self.session_realized_pnl_usdt: float = 0.0
         self.last_exit_reason: str | None = None
+        # Maker entry metrics (paper + live). Timeout rate > ~30% → maker path weak.
+        self.maker_entry_attempts: int = 0
+        self.maker_entry_fills: int = 0
+        self.maker_entry_timeouts: int = 0
+
+    def session_expectancy(self) -> dict[str, Any]:
+        """Fee-net expectancy from closed sells in recent_fills (session window)."""
+        sells = [
+            f
+            for f in list(self.recent_fills)
+            if str(f.get("side") or "").lower() in {"sell", "short"}
+        ]
+        if not sells:
+            return {
+                "n": 0,
+                "expectancy_usdt": None,
+                "win_rate": None,
+                "sum_pnl_usdt": 0.0,
+                "avg_win_usdt": None,
+                "avg_loss_usdt": None,
+            }
+        pnls = [float(f.get("pnl_usdt") or 0.0) for f in sells]
+        wins = [p for p in pnls if p > 0]
+        losses = [p for p in pnls if p <= 0]
+        n = len(pnls)
+        return {
+            "n": n,
+            "expectancy_usdt": round(sum(pnls) / n, 4),
+            "win_rate": round(len(wins) / n, 3),
+            "sum_pnl_usdt": round(sum(pnls), 4),
+            "avg_win_usdt": round(sum(wins) / len(wins), 4) if wins else None,
+            "avg_loss_usdt": round(sum(losses) / len(losses), 4) if losses else None,
+        }
+
+    def maker_stats(self) -> dict[str, Any]:
+        attempts = int(getattr(self, "maker_entry_attempts", 0) or 0)
+        fills = int(getattr(self, "maker_entry_fills", 0) or 0)
+        timeouts = int(getattr(self, "maker_entry_timeouts", 0) or 0)
+        fill_rate = round(fills / attempts, 3) if attempts else None
+        timeout_rate = round(timeouts / attempts, 3) if attempts else None
+        return {
+            "attempts": attempts,
+            "fills": fills,
+            "timeouts": timeouts,
+            "fill_rate": fill_rate,
+            "timeout_rate": timeout_rate,
+            "weak_maker_path": bool(timeout_rate is not None and timeout_rate > 0.30),
+        }
 
     def update_book(self, book: BookTicker) -> None:
         self.latest_book = book
@@ -83,7 +131,6 @@ class RuntimeState:
         """Update dashboard EMA; do NOT mutate analysis.score (entry uses raw)."""
         raw = float(getattr(analysis, "score", 0) or 0)
         alpha = 0.12
-        # None-safe: 0.0 is a valid score and must not force-reset EMA
         if self.score_ema is None or (
             isinstance(self.score_ema, float)
             and self.score_ema == 0.0
@@ -94,7 +141,6 @@ class RuntimeState:
         else:
             self.score_ema = alpha * raw + (1.0 - alpha) * float(self.score_ema)
             self._score_ema_seeded = True
-        # Snapshot for UI only — leave analysis.score as raw for entry/decision
         if hasattr(analysis, "__dataclass_fields__"):
             snap = asdict(analysis)
         elif isinstance(analysis, dict):
@@ -231,6 +277,8 @@ class RuntimeState:
             "closed_trade_count": int(getattr(self, "closed_trade_count", 0) or 0),
             "session_realized_pnl_usdt": round(float(getattr(self, "session_realized_pnl_usdt", 0) or 0), 4),
             "last_exit_reason": getattr(self, "last_exit_reason", None),
+            "session_expectancy": self.session_expectancy(),
+            "maker_stats": self.maker_stats(),
             "position_opened_at": self.position_opened_at,
             "blockers_live": list(self.blockers_live)[:12],
             "shadow_leaderboard": list(self.shadow_leaderboard)[:5],
