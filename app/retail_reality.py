@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.fees import FeeSchedule, schedule_from_settings
+from app.fees import schedule_from_settings
 
 
 @dataclass(frozen=True, slots=True)
