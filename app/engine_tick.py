@@ -1,30 +1,11 @@
-"""Per-depth-tick entrypoint — loads body from part files or full body."""
-from __future__ import annotations
+"""TEMPORARY: broken placeholder after bad push. Run recovery:
 
-from pathlib import Path
+  git fetch origin 7a4ee79d74fbf286eac46956a0a04d7423972e81
+  python scripts/restore_engine_tick.py
+  git add app/engine_tick.py && git commit -m "fix: restore engine_tick" && git push
 
-_DIR = Path(__file__).resolve().parent
-_FULL = _DIR / "_engine_tick_body.py"
-_P1 = _DIR / "_engine_tick_body_p1.py"
-_P2 = _DIR / "_engine_tick_body_p2.py"
-
-
-def _source() -> str:
-    if _FULL.is_file() and _FULL.stat().st_size >= 5_000:
-        text = _FULL.read_text(encoding="utf-8")
-        if "async def handle_tick" in text:
-            return text
-    if _P1.is_file() and _P2.is_file():
-        text = _P1.read_text(encoding="utf-8") + _P2.read_text(encoding="utf-8")
-        if "async def handle_tick" in text:
-            return text
-    raise RuntimeError(
-        "Missing engine_tick body. Need app/_engine_tick_body.py "
-        "or app/_engine_tick_body_p1.py + _p2.py"
-    )
-
-
-_ns: dict = {"__name__": "app.engine_tick"}
-exec(compile(_source(), str(_FULL if _FULL.is_file() else _P1), "exec"), _ns)
-handle_tick = _ns["handle_tick"]
-__all__ = ["handle_tick"]
+Until then, imports will fail on purpose so CI does not look healthy.
+"""
+raise RuntimeError(
+    "app/engine_tick.py needs restore. Run: python scripts/restore_engine_tick.py"
+)
