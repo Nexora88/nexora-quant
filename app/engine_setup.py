@@ -113,11 +113,21 @@ def _build_executor():
     if settings.trading_mode == "live":
         from app.binance_rest import BinanceRestClient
         from app.live import LiveExecutor
+        from app.live_maker import install_buy_limit
+
+        # Prefer-maker path requires buy_limit; fail closed if install breaks.
         try:
-            from app.live_hardening import install_maker_entry
-            install_maker_entry()
-        except Exception:
-            log.exception("install_maker_entry failed")
+            install_buy_limit(LiveExecutor)
+        except Exception as exc:
+            log.exception("install_buy_limit failed")
+            if bool(getattr(settings, "prefer_maker", False)):
+                raise RuntimeError(
+                    "PREFER_MAKER=true but buy_limit could not be installed on LiveExecutor"
+                ) from exc
+        if bool(getattr(settings, "prefer_maker", False)) and not hasattr(LiveExecutor, "buy_limit"):
+            raise RuntimeError(
+                "PREFER_MAKER=true but LiveExecutor.buy_limit is missing after install"
+            )
 
         client = BinanceRestClient(
             api_key=settings.binance_api_key,
