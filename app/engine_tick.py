@@ -1,26 +1,26 @@
-"""Per-depth-tick trading core — body shipped as base64 parts under app/_et_b64/.
+"""Per-depth-tick trading core.
 
-On first import, parts are decoded into this module's namespace (handle_tick).
-This avoids a single mega-blob in git history while keeping one import path.
+Body is shipped as zlib+base64 halves under app/_et_b64/body.z0 + body.z1
+to keep git commits reliable. Decodes into handle_tick on import.
 """
 from __future__ import annotations
 
 import base64
+import zlib
 from pathlib import Path
 
-_PARTS = Path(__file__).resolve().parent / "_et_b64"
+_DIR = Path(__file__).resolve().parent / "_et_b64"
 
 
 def _load_source() -> str:
-    parts = sorted(_PARTS.glob("part_*.b64"))
-    if not parts:
-        raise RuntimeError(
-            "Missing app/_et_b64/part_*.b64 — restore engine_tick body parts."
-        )
-    b64 = "".join(p.read_text(encoding="ascii").strip() for p in parts)
-    text = base64.b64decode(b64.encode("ascii")).decode("utf-8")
+    z0 = _DIR / "body.z0"
+    z1 = _DIR / "body.z1"
+    if not z0.is_file() or not z1.is_file():
+        raise RuntimeError("Missing app/_et_b64/body.z0 or body.z1")
+    b64 = z0.read_text(encoding="ascii").strip() + z1.read_text(encoding="ascii").strip()
+    text = zlib.decompress(base64.b64decode(b64.encode("ascii"))).decode("utf-8")
     if "async def handle_tick" not in text:
-        raise RuntimeError("Decoded engine_tick body is invalid")
+        raise RuntimeError("Decoded engine_tick body invalid")
     return text
 
 
