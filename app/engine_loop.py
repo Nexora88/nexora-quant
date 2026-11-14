@@ -14,11 +14,6 @@ from app.ts_store import FeatureTimeSeriesStore
 from app.binance_depth import stream_synchronized_depth
 from app.multi_stream import stream_multi_depth, watch_list
 from app.universe import screen_universe, depth_watch_from_screen, default_universe
-try:
-    from app._apply_antichurn_once import apply as _apply_antichurn
-    _apply_antichurn()
-except Exception:
-    pass
 from app.engine_tick import handle_tick
 from app.engine_setup import shadows, learner, memory, motor
 from app import engine_setup as es
@@ -94,16 +89,10 @@ async def run() -> None:
                 es.executor.restore(saved["account"])
             except Exception as exc:
                 log.warning("Could not restore live local mirror: %s", exc)
-        r = saved.get("risk", {})
-        risk.realized_pnl_today = float(r.get("realized_pnl_today", 0))
-        risk.consecutive_losses = int(r.get("consecutive_losses", 0))
-        risk.kill_switch = bool(r.get("kill_switch", False))
-        risk.kill_switch_reason = r.get("kill_switch_reason")
-        risk.day_utc = r.get("day_utc")
+        risk.restore(saved.get("risk") or {})
         if mode == "paper" and risk.kill_switch:
             log.warning("Clearing restored paper kill_switch: %s", risk.kill_switch_reason)
-            risk.kill_switch = False
-            risk.kill_switch_reason = None
+            risk.clear_kill_switch()
         state.peak_price = float(saved.get("peak_price") or 0)
     risk.rollover_day(today)
     try:
@@ -181,13 +170,7 @@ async def run() -> None:
     def persist() -> None:
         payload = {
             "account": es.executor.snapshot(),
-            "risk": {
-                "realized_pnl_today": risk.realized_pnl_today,
-                "consecutive_losses": risk.consecutive_losses,
-                "kill_switch": risk.kill_switch,
-                "kill_switch_reason": risk.kill_switch_reason,
-                "day_utc": risk.day_utc,
-            },
+            "risk": risk.snapshot(),
             "peak_price": state.peak_price,
             "mode": mode,
             "learner": learner.export_state(),
