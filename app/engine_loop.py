@@ -14,6 +14,11 @@ from app.ts_store import FeatureTimeSeriesStore
 from app.binance_depth import stream_synchronized_depth
 from app.multi_stream import stream_multi_depth, watch_list
 from app.universe import screen_universe, depth_watch_from_screen, default_universe
+try:
+    from app._apply_antichurn_once import apply as _apply_antichurn
+    _apply_antichurn()
+except Exception:
+    pass
 from app.engine_tick import handle_tick
 from app.engine_setup import shadows, learner, memory, motor
 from app import engine_setup as es
