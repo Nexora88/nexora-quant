@@ -87,6 +87,18 @@ async function tick(){
     const sp=Number(s.session_realized_pnl_usdt||0);
     el('spnl').textContent=num(sp,3);
     el('spnl').className='v '+(sp>=0?'pos':'neg');
+    const exp=s.session_expectancy||{};
+    const ms=s.maker_stats||{};
+    const expN=Number(exp.n||0);
+    let extra='';
+    if(expN>0){
+      extra+=' · exp '+num(exp.expectancy_usdt,3)+' ('+expN+'x, wr '+num((exp.win_rate||0)*100,0)+'%)';
+    }
+    if(ms.attempts){
+      extra+=' · maker '+(ms.fills||0)+'/'+ms.attempts+(ms.timeout_rate!=null?' to '+num(ms.timeout_rate*100,0)+'%':'');
+      if(ms.weak_maker_path) extra+=' ⚠';
+    }
+    el('eqsub').textContent='realized '+num(realized,3)+' · fees '+num(p.fees_paid_usdt,3)+extra;
     const rr=s.retail_reality||{};
     el('posture').textContent=rr.posture||'—';
     const pills=[];
