@@ -1,38 +1,25 @@
-"""Per-depth-tick: microstructure analysis, decision, edge, adverse, paper/live fills."""
+"""Per-depth-tick entrypoint — loads body from shipped app/_engine_tick_body.py."""
 from __future__ import annotations
 
-import time
-from datetime import datetime, timezone
+from pathlib import Path
 
-from app import engine_setup as es
-from app.config import settings
-from app.decision import build_decision
-from app.engine_setup import (
-    _event_key,
-    _paper_fill,
-    adverse_filter,
-    atr_tracker,
-    circuit_breaker,
-    kelly,
-    learner,
-    log,
-    order_flow,
-    ou_tracker,
-    portfolio_risk,
-    price_window,
-    regime_clf,
-    risk,
-    shadows,
-    state,
-    sustained,
-    wall_tracker,
-    whale_tracker,
-)
-from app.events import BookTicker
-from app.portfolio import size_from_free_cash
-from app.atr_stops import compute_dynamic_targets, WickStopState
-from app.autonomous_policy import regime_targets, vol_adjusted_notional, impact_capped_notional, assess_liquidity
-from app.simulation import market_impact_bps
-from app.strategy import analyze_market, entry_signal_from_analysis, exit_reason
+_CACHE = Path(__file__).resolve().with_name("_engine_tick_body.py")
 
-# NOTE: full body continues in repo — this push was truncated; use local restore
+
+def _load():
+    if not _CACHE.is_file() or _CACHE.stat().st_size < 5_000:
+        raise RuntimeError(
+            "app/_engine_tick_body.py missing or truncated. "
+            "Restore full handle_tick body to app/_engine_tick_body.py"
+        )
+    text = _CACHE.read_text(encoding="utf-8")
+    if "async def handle_tick" not in text:
+        raise RuntimeError("app/_engine_tick_body.py does not define handle_tick")
+    ns: dict = {"__name__": "app.engine_tick"}
+    exec(compile(text, str(_CACHE), "exec"), ns)
+    return ns
+
+
+_ns = _load()
+handle_tick = _ns["handle_tick"]
+__all__ = ["handle_tick"]
