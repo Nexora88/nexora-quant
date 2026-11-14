@@ -17,15 +17,25 @@ def _buy_limit(
     wait_seconds: float = 8.0,
     post_only: bool = True,
 ):
-    """Post-only LIMIT_MAKER entry. Poll briefly; cancel residual if unfilled."""
+    """Post-only LIMIT_MAKER entry. Poll briefly; cancel residual if unfilled.
+
+    Blocking sleeps are intentional for thread offload — call via
+    ``asyncio.to_thread(ex.buy_limit, ...)`` from async handle_tick.
+    """
     if notional_usdt <= 0 or limit_price <= 0:
         raise ValueError("Price and notional must be positive")
     if notional_usdt < self._min_notional():
         raise ValueError(f"Notional below exchange minimum ({self._min_notional()})")
+    # Round price first so qty/notional edge cases use exchange tick.
+    limit_price = self._round_price(float(limit_price), round_up=False)
+    if limit_price <= 0:
+        return None
     qty = self._round_step(notional_usdt / limit_price)
     if qty <= 0:
         return None
-    limit_price = self._round_price(limit_price, round_up=False)
+    # Re-check min notional after rounding (qty * price may undershoot).
+    if qty * limit_price < self._min_notional() * 0.999:
+        return None
     with self._order_lock:
         if self.order_state_uncertain:
             raise RuntimeError(
@@ -79,3 +89,7 @@ def _buy_limit(
 def install_buy_limit(LiveExecutor: type) -> None:
     if not hasattr(LiveExecutor, "buy_limit"):
         LiveExecutor.buy_limit = _buy_limit  # type: ignore[attr-defined]
+
+
+# Back-compat alias used by older engine_setup snippets
+install_maker_entry = install_buy_limit
