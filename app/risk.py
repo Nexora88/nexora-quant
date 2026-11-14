@@ -1,5 +1,16 @@
 """Central pre-trade risk gate for simulated orders."""
+from __future__ import annotations
+
+import json
+import logging
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+log = logging.getLogger(__name__)
+
+# Durable kill-switch file so Restart=always cannot clear same-day brakes.
+_KILL_FILE = Path("data/risk_kill_switch.json")
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +33,78 @@ class RiskManager:
         self.kill_switch = False
         self.kill_switch_reason = None
         self.day_utc: str | None = None
+        # Only live mode uses durable kill file (survives systemd Restart=always).
+        if self._durable_enabled():
+            self._load_durable_kill()
+
+    @staticmethod
+    def _durable_enabled() -> bool:
+        import os
+
+        mode = (os.getenv("TRADING_MODE") or "paper").strip().lower()
+        force = (os.getenv("NEXORA_DURABLE_KILL") or "").strip().lower() in {
+            "1", "true", "yes", "on",
+        }
+        return force or mode == "live"
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "realized_pnl_today": float(self.realized_pnl_today),
+            "consecutive_losses": int(self.consecutive_losses),
+            "kill_switch": bool(self.kill_switch),
+            "kill_switch_reason": self.kill_switch_reason,
+            "day_utc": self.day_utc,
+        }
+
+    def restore(self, data: dict[str, Any] | None) -> None:
+        if not data:
+            if self._durable_enabled():
+                self._load_durable_kill()
+            return
+        self.realized_pnl_today = float(data.get("realized_pnl_today", 0) or 0)
+        self.consecutive_losses = int(data.get("consecutive_losses", 0) or 0)
+        self.kill_switch = bool(data.get("kill_switch", False))
+        self.kill_switch_reason = data.get("kill_switch_reason")
+        self.day_utc = data.get("day_utc")
+        # Durable kill file wins if still active (live only).
+        if self._durable_enabled():
+            self._load_durable_kill(merge=True)
+
+    def _load_durable_kill(self, *, merge: bool = False) -> None:
+        try:
+            if not _KILL_FILE.is_file():
+                return
+            payload = json.loads(_KILL_FILE.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict) or not payload.get("kill_switch"):
+                return
+            if merge and self.kill_switch:
+                return
+            self.kill_switch = True
+            self.kill_switch_reason = payload.get("kill_switch_reason") or self.kill_switch_reason
+            if payload.get("day_utc"):
+                self.day_utc = payload.get("day_utc")
+            if "realized_pnl_today" in payload:
+                self.realized_pnl_today = float(payload.get("realized_pnl_today") or 0)
+            if "consecutive_losses" in payload:
+                self.consecutive_losses = int(payload.get("consecutive_losses") or 0)
+            log.warning("Restored durable kill switch: %s", self.kill_switch_reason)
+        except Exception:
+            log.exception("Failed to load durable kill switch file")
+
+    def _persist_durable_kill(self) -> None:
+        if not self._durable_enabled():
+            return
+        try:
+            _KILL_FILE.parent.mkdir(parents=True, exist_ok=True)
+            if self.kill_switch:
+                _KILL_FILE.write_text(
+                    json.dumps(self.snapshot(), indent=2),
+                    encoding="utf-8",
+                )
+            elif _KILL_FILE.is_file():
+                _KILL_FILE.unlink(missing_ok=True)
+        except Exception:
+            log.exception("Failed to persist durable kill switch")
 
     def rollover_day(self, day_utc: str) -> bool:
         """Reset only the daily counter at UTC date change; preserve other risk brakes."""
@@ -32,6 +115,7 @@ class RiskManager:
         if self.kill_switch_reason == "Daily loss limit reached":
             self.kill_switch = False
             self.kill_switch_reason = None
+            self._persist_durable_kill()
         return True
 
     def evaluate_entry(self, *, notional_usdt: float, available_cash: float,
@@ -74,6 +158,7 @@ class RiskManager:
         was = self.kill_switch
         self.kill_switch = True
         self.kill_switch_reason = reason
+        self._persist_durable_kill()
         if not was:
             try:
                 from app.alerts import alert_kill_switch
@@ -85,3 +170,4 @@ class RiskManager:
     def clear_kill_switch(self) -> None:
         self.kill_switch = False
         self.kill_switch_reason = None
+        self._persist_durable_kill()
