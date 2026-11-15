@@ -37,6 +37,17 @@ harden_live_executor()
 
 log = logging.getLogger(__name__)
 state = RuntimeState()
+# goal_status for dashboard (TARGET_EQUITY soft-halt reports here)
+if not hasattr(state, "goal_status"):
+    state.goal_status = {}
+_orig_snapshot = state.snapshot
+
+def _snapshot_with_goal():
+    snap = _orig_snapshot()
+    snap["goal_status"] = dict(getattr(state, "goal_status", None) or {})
+    return snap
+
+state.snapshot = _snapshot_with_goal  # type: ignore[method-assign]
 
 risk = RiskManager(
     max_order_size_usdt=settings.max_order_size_usdt,
