@@ -14,6 +14,8 @@ class PaperExecutor:
         self.average_entry_price = 0.0
         self.realized_pnl_usdt = 0.0
         self.fees_paid_usdt = 0.0
+        # Entry fees are allocated to each close so realized PnL is fee-net.
+        self.entry_fee_remaining_usdt = 0.0
         self.trades: list[dict[str, Any]] = []
 
     def restore(self, snapshot: dict[str, Any]) -> None:
@@ -21,12 +23,13 @@ class PaperExecutor:
         numeric = ("starting_cash_usdt", "cash_usdt", "base_quantity",
                    "average_entry_price", "realized_pnl_usdt", "fees_paid_usdt")
         values = {key: float(snapshot[key]) for key in numeric}
-        if any(value != value or abs(value) == float("inf") for value in values.values()):
+        entry_fee_remaining = float(snapshot.get("entry_fee_remaining_usdt", 0.0))
+        if any(value != value or abs(value) == float("inf") for value in (*values.values(), entry_fee_remaining)):
             raise ValueError("Paper snapshot contains non-finite values")
         if values["starting_cash_usdt"] <= 0 or values["cash_usdt"] < -1e-8:
             raise ValueError("Paper snapshot has invalid cash")
-        if values["base_quantity"] < 0 or values["average_entry_price"] < 0:
-            raise ValueError("Paper snapshot has invalid position")
+        if values["base_quantity"] < 0 or values["average_entry_price"] < 0 or entry_fee_remaining < 0:
+            raise ValueError("Paper snapshot has invalid position or entry fees")
         if (values["base_quantity"] > 0) != (values["average_entry_price"] > 0):
             raise ValueError("Paper snapshot position and entry price are inconsistent")
         self.starting_cash_usdt = values["starting_cash_usdt"]
@@ -38,6 +41,7 @@ class PaperExecutor:
             self.average_entry_price = 0.0
         self.realized_pnl_usdt = values["realized_pnl_usdt"]
         self.fees_paid_usdt = values["fees_paid_usdt"]
+        self.entry_fee_remaining_usdt = entry_fee_remaining if self.base_quantity > 0 else 0.0
         self.trades = list(snapshot.get("trades", []))
 
     def buy(self, *, notional_usdt: float, price: float, reason: str) -> dict:
@@ -52,6 +56,7 @@ class PaperExecutor:
         self.average_entry_price = (old_cost + notional_usdt) / self.base_quantity
         self.cash_usdt -= notional_usdt + fee
         self.fees_paid_usdt += fee
+        self.entry_fee_remaining_usdt += fee
         trade = {
             "side": "buy",
             "price": price,
@@ -75,7 +80,9 @@ class PaperExecutor:
         quantity = min(quantity, self.base_quantity)
         gross = quantity * price
         fee = gross * self.fee_rate
-        pnl = (price - self.average_entry_price) * quantity - fee
+        entry_fee_allocated = self.entry_fee_remaining_usdt * (quantity / self.base_quantity)
+        pnl = (price - self.average_entry_price) * quantity - fee - entry_fee_allocated
+        self.entry_fee_remaining_usdt = max(0.0, self.entry_fee_remaining_usdt - entry_fee_allocated)
         self.cash_usdt += gross - fee
         self.realized_pnl_usdt += pnl
         self.fees_paid_usdt += fee
@@ -85,6 +92,7 @@ class PaperExecutor:
             "quantity": quantity,
             "notional_usdt": gross,
             "fee_usdt": fee,
+            "entry_fee_allocated_usdt": entry_fee_allocated,
             "pnl_usdt": pnl,
             "reason": reason,
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -95,6 +103,7 @@ class PaperExecutor:
         if self.base_quantity < 1e-12:
             self.base_quantity = 0.0
             self.average_entry_price = 0.0
+            self.entry_fee_remaining_usdt = 0.0
         return trade
 
     def sell_all(self, *, price: float, reason: str = "manual_paper_exit") -> dict | None:
@@ -118,6 +127,7 @@ class PaperExecutor:
             "unrealized_pnl_usdt": unrealized,
             "realized_pnl_usdt": self.realized_pnl_usdt,
             "fees_paid_usdt": self.fees_paid_usdt,
+            "entry_fee_remaining_usdt": self.entry_fee_remaining_usdt,
             "trade_count": len(self.trades),
             "trades": self.trades[-100:],
         }
