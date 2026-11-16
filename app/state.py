@@ -73,6 +73,8 @@ class RuntimeState:
             f
             for f in list(self.recent_fills)
             if str(f.get("side") or "").lower() in {"sell", "short"}
+            and f.get("accounting_complete", True) is True
+            and f.get("pnl_usdt") is not None
         ]
         if not sells:
             return {
@@ -199,17 +201,20 @@ class RuntimeState:
             self.hourly_trade_ts = [x for x in self.hourly_trade_ts if x >= cutoff]
         elif side in {"sell", "short"}:
             self.position_opened_at = None
-            try:
-                self.closed_trade_count = int(getattr(self, "closed_trade_count", 0) or 0) + 1
-                pnl = float(row.get("pnl_usdt") or 0.0)
-                self.session_realized_pnl_usdt = float(
-                    getattr(self, "session_realized_pnl_usdt", 0.0) or 0.0
-                ) + pnl
-                reason = str(row.get("reason") or "")
-                if reason:
-                    self.last_exit_reason = reason.split(";")[0][:64]
-            except Exception:
-                pass
+            if row.get("accounting_complete", True) is True and row.get("pnl_usdt") is not None:
+                try:
+                    self.closed_trade_count = int(getattr(self, "closed_trade_count", 0) or 0) + 1
+                    pnl = float(row["pnl_usdt"])
+                    self.session_realized_pnl_usdt = float(
+                        getattr(self, "session_realized_pnl_usdt", 0.0) or 0.0
+                    ) + pnl
+                    reason = str(row.get("reason") or "")
+                    if reason:
+                        self.last_exit_reason = reason.split(";")[0][:64]
+                except (TypeError, ValueError):
+                    self.last_exit_reason = "accounting_incomplete"
+            else:
+                self.last_exit_reason = "accounting_incomplete"
 
     def sample_equity(self) -> None:
         if not self.executor:

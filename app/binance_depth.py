@@ -11,7 +11,7 @@ import random
 import urllib.parse
 import urllib.request
 from collections import deque
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 import websockets
@@ -39,8 +39,12 @@ def _levels(values: list[list[str]]) -> list[tuple[float, float]]:
     return [(float(price), float(quantity)) for price, quantity in values]
 
 
-async def stream_synchronized_depth(symbol: str) -> AsyncIterator[DepthBook]:
-    """Yield only synchronized books. Reconnect and re-snapshot on any gap."""
+async def stream_synchronized_depth(
+    symbol: str,
+    *,
+    on_reconnect: Callable[[str, Exception], None] | None = None,
+) -> AsyncIterator[DepthBook]:
+    """Yield synchronized books and report every reconnect/resnapshot event."""
     backoff = 1.0
     url = f"{WS_BASE}/{symbol.lower()}@depth@100ms"
     while True:
@@ -72,22 +76,25 @@ async def stream_synchronized_depth(symbol: str) -> AsyncIterator[DepthBook]:
                 # Binance bridge rule: first event must span lastUpdateId + 1.
                 while buffer and int(buffer[0]["u"]) <= book.last_update_id:
                     buffer.popleft()
+                bridged = False
                 while buffer:
                     event = buffer.popleft()
                     first_id, final_id = int(event["U"]), int(event["u"])
                     if final_id <= book.last_update_id:
                         continue
-                    if first_id > book.last_update_id + 1:
+                    if bridged and "pu" not in event:
                         book.synchronized = False
                         break
                     if not book.apply_diff(
                         first_update_id=first_id,
                         final_update_id=final_id,
+                        previous_final_update_id=int(event["pu"]) if bridged else None,
                         bids=_levels(event["b"]),
                         asks=_levels(event["a"]),
                     ):
                         book.synchronized = False
                         break
+                    bridged = True
                 if not book.synchronized:
                     raise RuntimeError("Depth snapshot buffer could not be bridged")
                 backoff = 1.0
@@ -97,19 +104,28 @@ async def stream_synchronized_depth(symbol: str) -> AsyncIterator[DepthBook]:
                     event = json.loads(raw)
                     if event.get("e") != "depthUpdate":
                         continue
+                    if bridged and "pu" not in event:
+                        raise RuntimeError("Binance depth event missing previous update ID")
                     accepted = book.apply_diff(
                         first_update_id=int(event["U"]),
                         final_update_id=int(event["u"]),
-                        previous_final_update_id=int(event["pu"]) if "pu" in event else None,
+                        previous_final_update_id=int(event["pu"]) if bridged else None,
                         bids=_levels(event["b"]),
                         asks=_levels(event["a"]),
                     )
                     if not accepted:
                         raise RuntimeError("Binance depth sequence gap; resynchronizing")
+                    bridged = True
                     yield book
+                raise ConnectionError("Binance depth websocket closed")
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            log.warning("Depth stream unavailable (%s); retrying", exc)
+            log.warning("Depth stream unavailable symbol=%s (%s); retrying", symbol.upper(), exc)
+            if on_reconnect is not None:
+                try:
+                    on_reconnect(symbol.lower(), exc)
+                except Exception:
+                    log.exception("Depth reconnect callback failed symbol=%s", symbol.upper())
             await asyncio.sleep(min(backoff, 30.0) + random.uniform(0, 0.25))
             backoff = min(backoff * 2, 30.0)

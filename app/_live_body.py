@@ -108,6 +108,9 @@ class LiveExecutor:
         base_free = float(base.get("free", 0))
         self.locked_base_quantity = float(base.get("locked", 0))
         self.base_quantity = base_free + self.locked_base_quantity
+        if self.base_quantity <= 1e-12:
+            self.base_quantity = 0.0
+            self.average_entry_price = 0.0
         if self.base_quantity > 0 and self.average_entry_price <= 0:
             # Exchange balances alone do not reconstruct the strategy's cost basis
             # or historical fills. Never resume strategy management as if accounting
@@ -136,6 +139,14 @@ class LiveExecutor:
             "fees_paid_usdt",
         )
         values = {key: float(snapshot.get(key, 0)) for key in numeric}
+        if any(not math.isfinite(value) for value in values.values()):
+            raise ValueError("Live snapshot contains non-finite accounting values")
+        if values["cash_usdt"] < -1e-8 or values["base_quantity"] < 0:
+            raise ValueError("Live snapshot contains a negative balance")
+        if values["average_entry_price"] < 0 or values["fees_paid_usdt"] < 0:
+            raise ValueError("Live snapshot contains invalid cost/fee values")
+        if (values["base_quantity"] > 1e-12) != (values["average_entry_price"] > 0):
+            raise ValueError("Live snapshot position and cost basis are inconsistent")
         self.starting_cash_usdt = values["starting_cash_usdt"]
         self.cash_usdt = values["cash_usdt"]
         self.base_quantity = values["base_quantity"]
@@ -487,6 +498,7 @@ class LiveExecutor:
                 log.warning("Actual commission fills unavailable for orderId=%s", result.order_id, exc_info=True)
 
         fee_by_asset: dict[str, float] = {}
+        missing_commission_asset = False
         total_cost = 0.0
         total_qty = 0.0
         for fill in fills:
@@ -497,8 +509,10 @@ class LiveExecutor:
                 total_qty += q
             asset = str(fill.get("commissionAsset", "")).upper()
             commission = float(fill.get("commission", 0))
-            if asset and commission:
+            if commission > 0 and asset:
                 fee_by_asset[asset] = fee_by_asset.get(asset, 0.0) + commission
+            elif commission > 0:
+                missing_commission_asset = True
 
         if total_qty > 0:
             avg_price = total_cost / total_qty
@@ -513,8 +527,19 @@ class LiveExecutor:
             asset: amount for asset, amount in fee_by_asset.items()
             if asset not in (self.base_asset, self.quote_asset)
         }
-        fee_usdt = quote_fee + base_fee * avg_price
-        accounting_complete = not other_fees and bool(fills)
+        other_fee_usdt = 0.0
+        unpriced_fees: dict[str, float] = {}
+        for asset, amount in other_fees.items():
+            try:
+                fee_price = float(self.client.ticker_price(f"{asset}{self.quote_asset}"))
+                if not math.isfinite(fee_price) or fee_price <= 0:
+                    raise ValueError("invalid commission conversion price")
+                other_fee_usdt += amount * fee_price
+            except Exception as exc:
+                unpriced_fees[asset] = amount
+                log.error("Cannot value %s commission in %s: %s", asset, self.quote_asset, exc)
+        fee_usdt = quote_fee + base_fee * avg_price + other_fee_usdt
+        accounting_complete = not unpriced_fees and not missing_commission_asset and bool(fills)
         fee_estimated = not fills
         if fee_estimated:
             fee_usdt = quote * self.fee_rate
@@ -527,7 +552,9 @@ class LiveExecutor:
             "notional_usdt": quote,
             "fee_usdt": fee_usdt,
             "commission_by_asset": fee_by_asset,
-            "unpriced_commission_by_asset": other_fees,
+            "other_fee_usdt": other_fee_usdt,
+            "unpriced_commission_by_asset": unpriced_fees,
+            "missing_commission_asset": missing_commission_asset,
             "accounting_complete": accounting_complete,
             "fee_estimated": fee_estimated,
             "reason": reason,
@@ -545,7 +572,7 @@ class LiveExecutor:
             old_cost = self.base_quantity * self.average_entry_price
             self.base_quantity += net_base
             self.average_entry_price = (
-                (old_cost + quote + quote_fee) / self.base_quantity
+                (old_cost + quote + quote_fee + other_fee_usdt) / self.base_quantity
                 if self.base_quantity else 0.0
             )
             self.cash_usdt = max(0.0, self.cash_usdt - quote - quote_fee)
@@ -553,9 +580,14 @@ class LiveExecutor:
         else:
             pnl = (avg_price - self.average_entry_price) * executed_qty - fee_usdt
             self.cash_usdt += quote - quote_fee
-            self.realized_pnl_usdt += pnl
             self.fees_paid_usdt += fee_usdt
-            trade["pnl_usdt"] = pnl
+            # Do not publish or learn from a partial PnL when a commission asset
+            # could not be valued in quote currency.
+            if accounting_complete:
+                self.realized_pnl_usdt += pnl
+                trade["pnl_usdt"] = pnl
+            else:
+                trade["pnl_usdt"] = None
             self.base_quantity = max(0.0, self.base_quantity - executed_qty - base_fee)
             if self.base_quantity < 1e-12:
                 self.base_quantity = 0.0

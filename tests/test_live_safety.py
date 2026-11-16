@@ -1,3 +1,5 @@
+import pytest
+
 from app.binance_rest import OrderResult
 from app.live import LiveExecutor
 from app.risk import RiskManager
@@ -141,3 +143,85 @@ def test_startup_position_without_restored_cost_basis_fails_closed():
         assert "cost basis" in str(exc).lower()
     else:
         raise AssertionError("startup position without cost basis must not be accepted")
+
+def test_live_startup_reconciles_exchange_before_any_order():
+    class EmptyAccountClient(FakeClient):
+        def account(self):
+            return {"balances": [
+                {"asset": "USDT", "free": "250", "locked": "0"},
+                {"asset": "BTC", "free": "0", "locked": "0"},
+            ]}
+
+    executor = LiveExecutor(EmptyAccountClient(), symbol="BTCUSDT", fee_rate=0.001)
+    executor.sync_balances()
+    assert executor.order_lists_reconciled is True
+    assert executor.base_quantity == 0
+    assert executor.cash_usdt == 250
+    assert executor.starting_cash_usdt == 250
+
+
+def test_live_restore_rejects_non_finite_snapshot_values():
+    import math
+
+    executor = LiveExecutor(FakeClient(), symbol="BTCUSDT", fee_rate=0.001)
+    snapshot = executor.snapshot()
+    snapshot["cash_usdt"] = math.nan
+    try:
+        executor.restore(snapshot)
+    except ValueError as exc:
+        assert "non-finite" in str(exc)
+    else:
+        raise AssertionError("non-finite live ledger must not be restored")
+
+def test_unpriced_bnb_commission_marks_live_fill_incomplete_and_withholds_pnl():
+    class BnbFeeClient(FakeClient):
+        def result(self, client_order_id, side="BUY"):
+            return OrderResult(
+                order_id=321, client_order_id=client_order_id, symbol="BTCUSDT",
+                side=side, status="FILLED", price=100, orig_qty=0.1,
+                executed_qty=0.1, cummulative_quote_qty=10,
+                fills=[{
+                    "price": "100", "qty": "0.1",
+                    "commission": "0.0001", "commissionAsset": "BNB",
+                }],
+                raw={"orderId": 321},
+            )
+
+    executor = LiveExecutor(BnbFeeClient(), symbol="BTCUSDT", fee_rate=0.001)
+    executor.base_quantity = 0.1
+    executor.average_entry_price = 100.0
+    trade = executor.sell_quantity(quantity=0.1, price=110, reason="test_exit")
+    assert trade is not None
+    assert trade["accounting_complete"] is False
+    assert trade["pnl_usdt"] is None
+    assert executor.realized_pnl_usdt == 0.0
+    assert executor.base_quantity == 0.0
+
+def test_bnb_commission_is_converted_to_quote_and_included_in_live_pnl():
+    class PricedBnbFeeClient(FakeClient):
+        def ticker_price(self, symbol):
+            assert symbol == "BNBUSDT"
+            return 600.0
+
+        def result(self, client_order_id, side="BUY"):
+            return OrderResult(
+                order_id=322, client_order_id=client_order_id, symbol="BTCUSDT",
+                side=side, status="FILLED", price=110, orig_qty=0.1,
+                executed_qty=0.1, cummulative_quote_qty=11,
+                fills=[{
+                    "price": "110", "qty": "0.1",
+                    "commission": "0.0001", "commissionAsset": "BNB",
+                }],
+                raw={"orderId": 322},
+            )
+
+    executor = LiveExecutor(PricedBnbFeeClient(), symbol="BTCUSDT", fee_rate=0.001)
+    executor.base_quantity = 0.1
+    executor.average_entry_price = 100.0
+    trade = executor.sell_quantity(quantity=0.1, price=110, reason="test_exit")
+    assert trade is not None
+    assert trade["accounting_complete"] is True
+    assert trade["other_fee_usdt"] == pytest.approx(0.06)
+    assert trade["fee_usdt"] == pytest.approx(0.06)
+    assert trade["pnl_usdt"] == pytest.approx(0.94)
+    assert executor.realized_pnl_usdt == pytest.approx(0.94)

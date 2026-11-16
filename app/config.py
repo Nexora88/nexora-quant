@@ -14,9 +14,14 @@
   Scalp defaults: TP 0.55 / SL 0.18, BNB fee discount, wick stop confirmations
 """
 from dataclasses import dataclass
+from datetime import datetime, timezone
+import json
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
+
+from app.build_info import source_fingerprint
 
 load_dotenv()
 
@@ -106,7 +111,6 @@ class Settings:
     paper_soft_gates: bool = _bool("PAPER_SOFT_GATES", True)
     prefer_maker: bool = _bool("PREFER_MAKER", False)
     maker_wait_seconds: float = float(os.getenv("MAKER_WAIT_SECONDS", "8") or 8)
-    require_go_live_gate: bool = _bool("REQUIRE_GO_LIVE_GATE", True)
     impact_coefficient: float = _float("IMPACT_COEFFICIENT", 0.1)
     features_db_path: str = os.getenv("FEATURES_DB_PATH", "data/features.sqlite3")
     cors_origins: str = os.getenv("CORS_ORIGINS", "")
@@ -183,6 +187,20 @@ class Settings:
                 f"TP/SL ratio {rr:.2f} is below MIN_REWARD_RISK_RATIO {self.min_reward_risk_ratio}."
             )
         if self.trading_mode == "live":
+            # This executor is single-symbol/single-position. Keep live exposure
+            # bounded until multi-asset account reconciliation is implemented.
+            if self.max_concurrent_positions != 1:
+                raise ValueError("Live mode currently requires MAX_CONCURRENT_POSITIONS=1.")
+            if self.max_data_age_seconds > 10:
+                raise ValueError("Live mode requires MAX_DATA_AGE_SECONDS <= 10.")
+            if self.risk_per_trade_pct > 1.0:
+                raise ValueError("Live mode requires RISK_PER_TRADE_PCT <= 1.0.")
+            if self.max_order_size_usdt > self.starting_cash_usdt * 0.25:
+                raise ValueError("Live MAX_ORDER_SIZE_USDT cannot exceed 25% of starting cash.")
+            if self.max_daily_loss_usdt > self.starting_cash_usdt * 0.10:
+                raise ValueError("Live MAX_DAILY_LOSS_USDT cannot exceed 10% of starting cash.")
+            if self.min_edge_over_fees < 1.25:
+                raise ValueError("Live mode requires MIN_EDGE_OVER_FEES >= 1.25.")
             if not self.binance_api_key or not self.binance_api_secret:
                 raise ValueError("Live mode requires BINANCE_API_KEY and BINANCE_API_SECRET.")
             if not self.binance_testnet:
@@ -190,14 +208,32 @@ class Settings:
                     raise ValueError(
                         "Mainnet live requires LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY."
                     )
-                if bool(getattr(self, "require_go_live_gate", True)):
-                    from pathlib import Path as _P
-                    stamp = _P(os.getenv("GO_LIVE_STAMP_PATH", "data/GO_LIVE_OK"))
-                    if not stamp.is_file():
-                        raise ValueError(
-                            "Mainnet live blocked: run scripts/go_live_gate.py first "
-                            f"(missing stamp {stamp}). Set REQUIRE_GO_LIVE_GATE=false to bypass."
-                        )
+                stamp = Path(os.getenv("GO_LIVE_STAMP_PATH", "data/GO_LIVE_OK"))
+                if not stamp.is_file():
+                    raise ValueError(
+                        "Mainnet live blocked: run scripts/go_live_gate.py after the "
+                        f"required paper validation (missing stamp {stamp})."
+                    )
+                try:
+                    approval = json.loads(stamp.read_text(encoding="utf-8"))
+                    approved_at = datetime.fromisoformat(
+                        str(approval.get("ts", "")).replace("Z", "+00:00")
+                    )
+                    if approved_at.tzinfo is None:
+                        approved_at = approved_at.replace(tzinfo=timezone.utc)
+                    age_seconds = (datetime.now(timezone.utc) - approved_at).total_seconds()
+                except Exception as exc:
+                    raise ValueError("Mainnet live blocked: GO_LIVE stamp is invalid") from exc
+                if approval.get("ok") is not True:
+                    raise ValueError("Mainnet live blocked: GO_LIVE stamp is not approved")
+                if age_seconds < -300 or age_seconds > 7 * 24 * 3600:
+                    raise ValueError("Mainnet live blocked: GO_LIVE stamp is expired or from the future")
+                current_fingerprint = source_fingerprint(Path(__file__).resolve().parents[1])
+                if approval.get("source_fingerprint") != current_fingerprint:
+                    raise ValueError(
+                        "Mainnet live blocked: source changed since approval; rerun paper "
+                        "validation and scripts/go_live_gate.py"
+                    )
         return self
 
     def watch_symbols(self) -> tuple[str, ...]:

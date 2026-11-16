@@ -3,11 +3,14 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
+import uuid
 from datetime import datetime, timezone
 
 from app.config import settings
 from app.engine_setup import state, risk, log
 from app.storage import PaperStore
+from app.paper import restore_paper_account
 from app.io_queue import AsyncIoQueue
 from app.market_history import MarketHistoryWriter
 from app.ts_store import FeatureTimeSeriesStore
@@ -43,62 +46,112 @@ async def run() -> None:
     key = f"{mode}:{settings.symbol}"
     today = datetime.now(timezone.utc).date().isoformat()
     saved = store.load_state(key)
+
+    def reconcile_live_startup() -> None:
+        es.executor.sync_balances()
+        if (
+            float(getattr(es.executor, "base_quantity", 0) or 0) > 1e-12
+            and getattr(es.executor, "protective_order_list_id", None) is None
+        ):
+            # A restored live position without exchange-hosted protection is not
+            # allowed to run naked after a process restart.
+            current_price = float(es.executor.client.ticker_price(es.executor.symbol))
+            take_profit = float(
+                (saved or {}).get("position_tp_pct") or settings.take_profit_pct
+            )
+            stop_loss = float(
+                (saved or {}).get("position_sl_pct") or settings.stop_loss_pct
+            )
+            if not es.executor.install_protection_or_flatten(
+                current_price=current_price,
+                take_profit_pct=take_profit,
+                stop_loss_pct=stop_loss,
+                mark_price=current_price,
+            ):
+                risk.activate_kill_switch("Could not restore exchange-hosted position protection")
+                raise RuntimeError("Live position protection could not be restored; refusing to start")
+
     if saved:
         if mode == "paper":
-            es.executor.restore(saved["account"])
-            target_cash = float(settings.starting_cash_usdt)
-            bq = float(getattr(es.executor, "base_quantity", 0) or 0)
-            ep = float(getattr(es.executor, "average_entry_price", 0) or 0)
-            notional = bq * ep if bq > 0 and ep > 0 else 0.0
-            min_n = float(getattr(settings, "min_order_usdt", 6.0) or 6.0)
-            if bq > 0 and (notional < min_n or bq < 1e-10 or ep <= 0):
-                log.warning(
-                    "Clearing dust/zombie paper position qty=%.8f notional=%.4f",
-                    bq,
-                    notional,
-                )
-                es.executor.base_quantity = 0.0
-                es.executor.average_entry_price = 0.0
-                bq = 0.0
-            resume = os.getenv("PAPER_RESUME_POSITION", "").strip().lower() in {
+            resume = os.getenv("PAPER_RESUME_POSITION", "true").strip().lower() in {
                 "1", "true", "yes", "on",
             }
-            if bq > 1e-12 and not resume:
+            has_position = restore_paper_account(
+                es.executor, saved["account"], resume_position=resume,
+            )
+            bq = float(es.executor.base_quantity)
+            ep = float(es.executor.average_entry_price)
+            notional = bq * ep if bq > 0 and ep > 0 else 0.0
+            min_n = float(getattr(settings, "min_order_usdt", 6.0) or 6.0)
+            if has_position and notional < min_n:
                 log.warning(
-                    "Paper start: flattening restored position (notional≈%.2f). "
-                    "Set PAPER_RESUME_POSITION=true to keep it.",
-                    notional,
+                    "Restored paper dust position retained qty=%.8f notional=%.4f",
+                    bq, notional,
                 )
-                es.executor.base_quantity = 0.0
-                es.executor.average_entry_price = 0.0
-                bq = 0.0
-            pos_open = bq > 1e-12
-            if not pos_open:
-                if abs(float(es.executor.starting_cash_usdt) - target_cash) > 1e-6 or abs(
-                    float(es.executor.cash_usdt) - target_cash
-                ) > 1e-6:
-                    log.info(
-                        "Paper bankroll rebased → %.2f USDT (STARTING_CASH_USDT)",
-                        target_cash,
-                    )
-                es.executor.starting_cash_usdt = target_cash
-                es.executor.cash_usdt = target_cash
-            elif abs(float(es.executor.starting_cash_usdt) - target_cash) > 1e-6:
+            target_cash = float(settings.starting_cash_usdt)
+            if abs(float(es.executor.starting_cash_usdt) - target_cash) > 1e-6:
                 log.warning(
-                    "STARTING_CASH_USDT=%.2f differs from saved %.2f but position open — keep snapshot",
-                    target_cash,
-                    es.executor.starting_cash_usdt,
+                    "STARTING_CASH_USDT=%.2f differs from saved bankroll %.2f; preserving saved account",
+                    target_cash, es.executor.starting_cash_usdt,
                 )
         else:
+            if saved:
+                try:
+                    es.executor.restore(saved["account"])
+                except Exception as exc:
+                    risk.activate_kill_switch("Live local ledger restore failed")
+                    state.last_error = "live_ledger_restore_failed"
+                    raise RuntimeError("Live local ledger restore failed; refusing to start") from exc
             try:
-                es.executor.restore(saved["account"])
+                # Reconcile balances, OCO history, and restore missing protection
+                # before the engine can submit or manage any live order.
+                reconcile_live_startup()
             except Exception as exc:
-                log.warning("Could not restore live local mirror: %s", exc)
+                risk.activate_kill_switch("Live exchange startup reconciliation failed")
+                state.last_error = "live_startup_reconciliation_failed"
+                log.exception("Live startup reconciliation failed; engine will not trade")
+                raise RuntimeError("Live startup reconciliation failed; refusing to start") from exc
         risk.restore(saved.get("risk") or {})
         if mode == "paper" and risk.kill_switch:
             log.warning("Clearing restored paper kill_switch: %s", risk.kill_switch_reason)
             risk.clear_kill_switch()
         state.peak_price = float(saved.get("peak_price") or 0)
+        restored_symbol = settings.symbol.lower()
+        if mode == "paper" and float(getattr(es.executor, "base_quantity", 0) or 0) > 1e-12:
+            restored_symbol = str(saved.get("trade_symbol") or settings.symbol).lower()
+        if not restored_symbol.isalnum():
+            raise RuntimeError("Saved trade symbol is invalid; refusing to restore position")
+        state.trade_symbol = restored_symbol
+        state.position_opened_at = saved.get("position_opened_at")
+        state.position_tp_pct = saved.get("position_tp_pct")
+        state.position_sl_pct = saved.get("position_sl_pct")
+        state.position_trail_pct = saved.get("position_trail_pct")
+        state.last_entry_at = saved.get("last_entry_at")
+        state.hourly_trade_ts = [
+            float(value) for value in (saved.get("hourly_trade_ts") or [])
+            if isinstance(value, (int, float))
+        ]
+        from app.atr_stops import WickStopState
+        state.wick_stop_state = WickStopState(
+            below_count=max(0, int(saved.get("wick_stop_below_count", 0) or 0))
+        )
+        if (
+            mode == "paper"
+            and float(getattr(es.executor, "base_quantity", 0) or 0) > 1e-12
+            and not state.position_opened_at
+        ):
+            state.position_opened_at = time.time() - float(
+                getattr(settings, "max_hold_seconds", 2700.0) or 2700.0
+            )
+            log.warning("Legacy paper position has no open timestamp; forcing time-stop on first fresh tick")
+    if mode == "live" and not saved:
+        try:
+            reconcile_live_startup()
+        except Exception as exc:
+            risk.activate_kill_switch("Live exchange startup reconciliation failed")
+            state.last_error = "live_startup_reconciliation_failed"
+            log.exception("Live startup reconciliation failed; engine will not trade")
+            raise RuntimeError("Live startup reconciliation failed; refusing to start") from exc
     risk.rollover_day(today)
     try:
         learner.load_state((saved or {}).get("learner"))
@@ -155,6 +208,12 @@ async def run() -> None:
     else:
         state.universe_board = []
         state.depth_watch = list(watched)
+    if mode == "paper" and float(getattr(es.executor, "base_quantity", 0) or 0) > 1e-12:
+        restored_symbol = str(state.trade_symbol or settings.symbol).lower()
+        if restored_symbol not in watched:
+            watched = [restored_symbol] + [symbol for symbol in watched if symbol != restored_symbol]
+            watched = watched[:8]
+            state.depth_watch = list(watched)
     log.info(
         "Bankroll mode=%s starting_cash=%.2f order_size=%.2f max_order=%.2f",
         mode,
@@ -177,6 +236,14 @@ async def run() -> None:
             "account": es.executor.snapshot(),
             "risk": risk.snapshot(),
             "peak_price": state.peak_price,
+            "trade_symbol": state.trade_symbol or settings.symbol.lower(),
+            "position_opened_at": state.position_opened_at,
+            "position_tp_pct": state.position_tp_pct,
+            "position_sl_pct": state.position_sl_pct,
+            "position_trail_pct": state.position_trail_pct,
+            "last_entry_at": state.last_entry_at,
+            "hourly_trade_ts": list(state.hourly_trade_ts),
+            "wick_stop_below_count": int(getattr(state.wick_stop_state, "below_count", 0) or 0),
             "mode": mode,
             "learner": learner.export_state(),
             "memory": memory.export_state(),
@@ -195,12 +262,29 @@ async def run() -> None:
                 if risk.rollover_day(today):
                     log.info("UTC day rollover → realized_pnl_today reset day=%s", today)
                     persist()
+                store.heartbeat_session(
+                    session_id, ticks=ticks, reconnects=state.reconnect_count,
+                    trade_count=len(getattr(es.executor, "trades", []) or []),
+                    realized_pnl_usdt=float(getattr(es.executor, "realized_pnl_usdt", 0.0) or 0.0),
+                )
             except Exception:
                 log.exception("day_rollover_loop failed")
             await asyncio.sleep(30.0)
 
+    session_id = uuid.uuid4().hex
+    store.start_session(session_id, mode)
     rollover_task = asyncio.create_task(day_rollover_loop(), name="nexora-day-rollover")
-    primary = settings.symbol.lower()
+
+    def on_depth_reconnect(symbol: str, exc: Exception) -> None:
+        state.reconnect_count += 1
+        state.last_error = f"depth_reconnect:{symbol}:{type(exc).__name__}"
+        log.warning("Depth resynchronization symbol=%s reconnect_count=%s", symbol, state.reconnect_count)
+
+    primary = (
+        str(state.trade_symbol or settings.symbol).lower()
+        if mode == "paper" and float(getattr(es.executor, "base_quantity", 0) or 0) > 1e-12
+        else settings.symbol.lower()
+    )
     try:
         use_multi = len(watched) > 1 and bool(getattr(settings, "universe_auto", False))
 
@@ -236,7 +320,8 @@ async def run() -> None:
                         )
                         state.router_board = es.symbol_router.leaderboard()
                         if (
-                            bool(getattr(settings, "autonomous_symbol", True))
+                            mode == "paper"
+                            and bool(getattr(settings, "autonomous_symbol", True))
                             and es.executor is not None
                             and float(getattr(es.executor, "base_quantity", 0) or 0) <= 0
                         ):
@@ -271,12 +356,14 @@ async def run() -> None:
             try:
                 if use_multi:
                     log.info("Starting multi-depth (primary trades only): %s", ",".join(watched))
-                    async for tagged in stream_multi_depth(watched):
+                    async for tagged in stream_multi_depth(watched, on_reconnect=on_depth_reconnect):
                         tagged.book.symbol = tagged.symbol
                         await _consume(tagged.book, symbol=tagged.symbol)
                 else:
                     log.info("Starting single-depth L2: %s", primary.upper())
-                    async for depth in stream_synchronized_depth(primary):
+                    async for depth in stream_synchronized_depth(
+                        primary, on_reconnect=on_depth_reconnect,
+                    ):
                         depth.symbol = primary
                         await _consume(depth, symbol=primary)
             except asyncio.CancelledError:
@@ -302,7 +389,18 @@ async def run() -> None:
             pass
         persist()
         await io_q.stop()
-        store.close()
+        try:
+            store.end_session(
+                session_id, ticks=ticks, reconnects=state.reconnect_count,
+                trade_count=len(getattr(es.executor, "trades", []) or []),
+                realized_pnl_usdt=float(getattr(es.executor, "realized_pnl_usdt", 0.0) or 0.0),
+            )
+        except Exception:
+            log.exception("Could not finalize paper session telemetry")
+        try:
+            store.close()
+        except Exception:
+            log.exception("PaperStore close failed; durable ledger flush is incomplete")
         try:
             features.close()
         except Exception:

@@ -105,7 +105,12 @@ learner = OnlineLearner(
     window=40,
     base_entry_min=float(settings.entry_min_score),
     base_compound=float(settings.compound_fraction),
-    frozen=os.getenv("LEARNER_FROZEN", "").strip().lower() in {"1", "true", "yes", "on"},
+    # Online adaptation is paper-only until multi-regime out-of-sample evidence
+    # exists; mainnet/testnet execution uses a frozen, reproducible policy.
+    frozen=(
+        settings.trading_mode == "live"
+        or os.getenv("LEARNER_FROZEN", "").strip().lower() in {"1", "true", "yes", "on"}
+    ),
     min_trades_before_adapt=int(os.getenv("LEARNER_MIN_TRADES", "25")),
 )
 memory = TradeMemory(capacity=200)

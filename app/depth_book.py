@@ -4,6 +4,7 @@ The caller must fetch a REST snapshot and pass buffered websocket updates in ord
 A gap invalidates the book; fetch a fresh snapshot before accepting more diffs.
 """
 from dataclasses import dataclass, field
+from math import isfinite
 from typing import Iterable
 
 
@@ -21,10 +22,21 @@ class DepthBook:
     ) -> None:
         if last_update_id < 0:
             raise ValueError("last_update_id must be non-negative")
-        self.bids = {float(p): float(q) for p, q in bids if float(q) > 0}
-        self.asks = {float(p): float(q) for p, q in asks if float(q) > 0}
-        if any(p <= 0 or q < 0 for p, q in [*self.bids.items(), *self.asks.items()]):
-            raise ValueError("prices must be positive and quantities non-negative")
+
+        def validated(levels: Iterable[tuple[float, float]]) -> dict[float, float]:
+            result: dict[float, float] = {}
+            for price, qty in levels:
+                p, q = float(price), float(qty)
+                if not isfinite(p) or not isfinite(q) or p <= 0 or q < 0:
+                    raise ValueError("depth levels must have finite positive prices and non-negative quantities")
+                if q > 0:
+                    result[p] = q
+            return result
+
+        new_bids = validated(bids)
+        new_asks = validated(asks)
+        self.bids = new_bids
+        self.asks = new_asks
         self.last_update_id = last_update_id
         self.synchronized = True
 
@@ -36,26 +48,45 @@ class DepthBook:
         """Apply a Binance diff event; return True if accepted, False on gap/stale."""
         if not self.synchronized or self.last_update_id is None:
             return False
+        if first_update_id < 0 or final_update_id < first_update_id:
+            self.synchronized = False
+            return False
         if final_update_id <= self.last_update_id:
             return False  # stale or duplicate event
-        if previous_final_update_id is not None:
-            if first_update_id > self.last_update_id + 1:
-                self.synchronized = False
-                return False
-        elif first_update_id > self.last_update_id + 1:
+
+        # Binance Spot continuity: after the initial snapshot bridge, each event's
+        # pu must equal the previous event's final update ID. U/u range checks alone
+        # can accept a broken chain when update ranges overlap.
+        if previous_final_update_id is not None and previous_final_update_id != self.last_update_id:
+            self.synchronized = False
+            return False
+        if first_update_id > self.last_update_id + 1:
             self.synchronized = False
             return False
 
-        def _apply(side: dict[float, float], levels: Iterable[tuple[float, float]]) -> None:
+        def validated(levels: Iterable[tuple[float, float]]) -> list[tuple[float, float]]:
+            result: list[tuple[float, float]] = []
             for price, qty in levels:
                 p, q = float(price), float(qty)
-                if q == 0:
-                    side.pop(p, None)
-                elif p > 0 and q > 0:
-                    side[p] = q
+                if not isfinite(p) or not isfinite(q) or p <= 0 or q < 0:
+                    self.synchronized = False
+                    raise ValueError("depth levels must have finite positive prices and non-negative quantities")
+                result.append((p, q))
+            return result
 
-        _apply(self.bids, bids)
-        _apply(self.asks, asks)
+        # Validate both sides before mutating either side.
+        bid_levels = validated(bids)
+        ask_levels = validated(asks)
+
+        def apply(side: dict[float, float], levels: list[tuple[float, float]]) -> None:
+            for price, qty in levels:
+                if qty == 0:
+                    side.pop(price, None)
+                else:
+                    side[price] = qty
+
+        apply(self.bids, bid_levels)
+        apply(self.asks, ask_levels)
         self.last_update_id = final_update_id
         return True
 

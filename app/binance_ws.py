@@ -33,6 +33,7 @@ async def stream_events(symbol: str) -> AsyncIterator[BookTicker | TradeTick]:
                         yield parse_message(raw)
                     except (ValueError, KeyError, TypeError) as exc:
                         log.warning("Skipping malformed market event: %s", exc)
+                raise ConnectionError("Binance market websocket closed")
         except asyncio.CancelledError:
             raise
         except Exception as exc:

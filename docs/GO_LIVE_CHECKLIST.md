@@ -13,10 +13,11 @@ uvicorn app.api:app --host 127.0.0.1 --port 8000
 PYTHONPATH=. python scripts/overnight_paper_check.py
 ```
 Pass criteria:
-- No crash / reconnect storm
+- A durable paper session spans at least 48 hours and is recently active/cleanly stopped
+- At least 1,000 primary depth ticks and 20 fee-complete closed paper trades
+- Closed-trade expectancy is positive after entry and exit fees
 - Expectancy check script prints `OVERNIGHT_CHECK_PASS`
-- Daily loss kill-switch not spurious
-- At least a few paper fills over 48h OR honest blockers (not freeze bugs)
+- Review reconnects, daily-loss behavior, and logs; the script does not replace manual review
 
 ## 2. Binance API (both testnet and mainnet)
 Create API key with:
@@ -49,6 +50,8 @@ Phone: Binance app ready for manual flatten if network dies.
 
 ## 5. Explicitly NOT yet
 - Multi-position concurrent books
+- Autonomous symbol switching in live mode (the live executor is bound to one configured symbol; other streams are scan-only)
+- Online learner updates in live mode (policy remains frozen until independent multi-regime validation)
 - HFT / co-lo competition (step 5: order-flow accumulation)
 
 ## 6. Data to keep
@@ -62,8 +65,9 @@ Phone: Binance app ready for manual flatten if network dies.
 PYTHONPATH=. python scripts/go_live_gate.py --i-understand-real-money \
   --overnight-log /path/to/overnight_out.txt
 
-# Writes data/GO_LIVE_OK — config refuses mainnet live without this stamp
-# (unless REQUIRE_GO_LIVE_GATE=false).
+# Writes a source-fingerprinted data/GO_LIVE_OK approval after the real paper checks.
+# The stamp expires after 7 days and any runtime source change invalidates it.
+# Mainnet cannot disable or bypass this gate through an environment variable.
 ```
 
 ## 8. Maker entry
@@ -73,6 +77,10 @@ Fee math + execution now align with maker path when the book fills you.
 
 ## 9. Walk-forward (before trusting params)
 
+Enable `MARKET_HISTORY_ENABLED=true` during a separate paper collection period, then run:
+
 ```bash
-PYTHONPATH=. python scripts/walk_forward_params.py path/to/market-history.jsonl.gz
+PYTHONPATH=. python scripts/walk_forward_params.py path/to/market-history.jsonl.gz --fee 0.001
 ```
+
+The script selects parameters on the training segment and evaluates only the selected candidate on the later unseen segment. Repeat on rolling windows, multiple symbols, and distinct market regimes; one split is not proof of robustness.

@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from math import isfinite
 from typing import Any
 
 
@@ -143,6 +144,8 @@ class OnlineLearner:
 
     def record_trade(self, pnl_usdt: float, *, regime: str = "unknown", reason: str = "") -> None:
         p = float(pnl_usdt)
+        if not isfinite(p):
+            raise ValueError("trade PnL must be finite")
         anomaly = self._is_anomaly(p)
         self._lifetime_trades += 1
         if p > 0:
@@ -247,27 +250,21 @@ class OnlineLearner:
         flow_ready: bool = False,
         in_position: bool = False,
     ) -> None:
-        if self.frozen:
-            return
+        """Record context only; unlabeled market ticks must not train live gates.
+
+        Policy changes are driven by fee-complete closed-trade outcomes in
+        record_trade(). Repeated correlated ticks are not independent evidence.
+        """
         sc = float(score)
+        pressure = float(flow_pressure)
+        if not isfinite(sc) or not isfinite(pressure):
+            return
         reg = str(regime or "unknown")
         self._last_regime = reg
-        if not in_position and flow_ready and abs(float(flow_pressure)) >= 0.15:
-            if sc >= self._entry_min:
-                self._entry_min = max(self.min_entry, self._entry_min - 0.005)
-                if reg not in ("unknown", "stressed"):
-                    self._prefer = reg if self._prefer in ("any", reg) else self._prefer
-                self._note = f"idle_flow_ready score={sc:.2f} reg={reg}"
-            elif sc < self._entry_min - 0.1:
-                self._entry_min = min(self.max_entry, self._entry_min + 0.002)
-                self._note = f"idle_weak_score score={sc:.2f}"
-        if in_position:
+        if self.frozen or in_position:
             return
-        if self._lifetime_trades == 0:
-            self._entry_min = min(
-                self.max_entry,
-                max(self.min_entry, 0.9 * self._entry_min + 0.1 * self.base_entry_min),
-            )
+        if flow_ready and abs(pressure) >= 0.15:
+            self._note = f"observe_waiting_for_closed_trade score={sc:.2f} reg={reg}"
 
     @property
     def entry_min_score(self) -> float:
@@ -357,6 +354,8 @@ class OnlineLearner:
             "compound": self._compound,
             "prefer": self._prefer,
             "growth": self._growth,
+            "last_regime": self._last_regime,
+            "note": self._note,
             "total_pnl": self._total_pnl,
             "lifetime_trades": self._lifetime_trades,
             "lifetime_wins": self._lifetime_wins,
@@ -368,21 +367,50 @@ class OnlineLearner:
     def load_state(self, data: dict[str, Any] | None) -> None:
         if not data:
             return
-        self._pnls = deque((float(x) for x in data.get("pnls") or []), maxlen=self.window)
-        self._regimes = deque((str(x) for x in data.get("regimes") or []), maxlen=self.window)
-        self._reasons = deque((str(x) for x in data.get("reasons") or []), maxlen=self.window)
-        self._entry_min = float(data.get("entry_min", self.base_entry_min))
-        self._size_bias = float(data.get("size_bias", 1.0))
-        self._tp_scale = float(data.get("tp_scale", 0.9))
-        self._compound = float(data.get("compound", self.base_compound))
+        pnls = [float(x) for x in data.get("pnls") or []]
+        regimes = [str(x) for x in data.get("regimes") or []]
+        reasons = [str(x) for x in data.get("reasons") or []]
+        if len(pnls) != len(regimes) or len(pnls) != len(reasons):
+            raise ValueError("learner history arrays have inconsistent lengths")
+        if any(not isfinite(x) for x in pnls):
+            raise ValueError("learner history contains non-finite PnL")
+
+        entry_min = float(data.get("entry_min", self.base_entry_min))
+        size_bias = float(data.get("size_bias", 1.0))
+        tp_scale = float(data.get("tp_scale", 0.9))
+        compound = float(data.get("compound", self.base_compound))
+        total_pnl = float(data.get("total_pnl", 0.0))
+        values = (entry_min, size_bias, tp_scale, compound, total_pnl)
+        if any(not isfinite(x) for x in values):
+            raise ValueError("learner state contains non-finite weights")
+        if not self.min_entry <= entry_min <= self.max_entry:
+            raise ValueError("learner entry threshold is outside configured bounds")
+        if not 0.4 <= size_bias <= 1.6 or not 0.55 <= tp_scale <= 1.25:
+            raise ValueError("learner sizing/target weights are outside configured bounds")
+        if not 0.5 <= compound <= 0.95:
+            raise ValueError("learner compound weight is outside configured bounds")
+
+        lifetime_trades = int(data.get("lifetime_trades", 0))
+        lifetime_wins = int(data.get("lifetime_wins", 0))
+        anomaly_skips = int(data.get("anomaly_skips", 0))
+        if min(lifetime_trades, lifetime_wins, anomaly_skips) < 0 or lifetime_wins > lifetime_trades:
+            raise ValueError("learner lifetime counters are invalid")
+
+        self._pnls = deque(pnls, maxlen=self.window)
+        self._regimes = deque(regimes, maxlen=self.window)
+        self._reasons = deque(reasons, maxlen=self.window)
+        self._entry_min = entry_min
+        self._size_bias = size_bias
+        self._tp_scale = tp_scale
+        self._compound = compound
         self._prefer = str(data.get("prefer", "any"))
         self._growth = str(data.get("growth", "rebuild"))
-        self._total_pnl = float(data.get("total_pnl", 0.0))
-        self._lifetime_trades = int(data.get("lifetime_trades", 0))
-        self._lifetime_wins = int(data.get("lifetime_wins", 0))
+        self._last_regime = str(data.get("last_regime", regimes[-1] if regimes else "unknown"))
+        self._note = str(data.get("note", "restored"))
+        self._total_pnl = total_pnl
+        self._lifetime_trades = lifetime_trades
+        self._lifetime_wins = lifetime_wins
         self.frozen = bool(data.get("frozen", False))
-        self._anomaly_skips = int(data.get("anomaly_skips", 0))
+        self._anomaly_skips = anomaly_skips
         prod = data.get("production")
         self._production = dict(prod) if isinstance(prod, dict) else None
-        if self._pnls and not self.frozen:
-            self._recompute()

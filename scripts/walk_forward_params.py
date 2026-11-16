@@ -1,48 +1,22 @@
 #!/usr/bin/env python3
-"""Time-based walk-forward for L2 desk params (out-of-sample, fee-aware).
+"""Chronological walk-forward for L2 desk parameters.
 
-Does NOT claim profitability. Splits history chronologically (default 70/30),
-grids a small TP/SL/min_score space on the train window, evaluates on test.
-
-Usage:
-  PYTHONPATH=. python scripts/walk_forward_params.py path/to/market-history.jsonl.gz
-  PYTHONPATH=. python scripts/walk_forward_params.py hist.jsonl.gz --train-frac 0.7 --fee 0.001
+Candidates are ranked only on the training segment. Exactly one selected
+configuration is evaluated on the later unseen test segment; test performance
+is never used to select or re-rank candidates.
 """
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.l2_backtest import L2BacktestConfig, run_l2_backtest, summarize_l2_result
-
-
-def _split_history(path: Path, train_frac: float) -> tuple[Path, Path]:
-    """Split JSONL/JSONL.GZ by line count into temp train/test files."""
-    import gzip
-
-    open_fn = gzip.open if path.suffix == ".gz" or path.name.endswith(".gz") else open
-    mode = "rt"
-    lines: list[str] = []
-    with open_fn(path, mode, encoding="utf-8") as f:  # type: ignore[arg-type]
-        for line in f:
-            line = line.strip()
-            if line:
-                lines.append(line)
-    if len(lines) < 200:
-        raise SystemExit(f"need >=200 events, got {len(lines)}")
-    cut = max(50, int(len(lines) * train_frac))
-    train_lines, test_lines = lines[:cut], lines[cut:]
-    out_dir = path.parent / "_wf_split"
-    out_dir.mkdir(exist_ok=True)
-    train_p = out_dir / "train.jsonl"
-    test_p = out_dir / "test.jsonl"
-    train_p.write_text("\n".join(train_lines) + "\n", encoding="utf-8")
-    test_p.write_text("\n".join(test_lines) + "\n", encoding="utf-8")
-    return train_p, test_p
 
 
 GRID = [
@@ -54,53 +28,122 @@ GRID = [
 ]
 
 
-def main() -> int:
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("history", type=Path)
-    p.add_argument("--train-frac", type=float, default=0.70)
-    p.add_argument("--cash", type=float, default=100.0)
-    p.add_argument("--order-size", type=float, default=12.0)
-    p.add_argument("--fee", type=float, default=0.001)
-    p.add_argument("--output", type=Path, default=Path("walk-forward-report.json"))
-    args = p.parse_args()
+def _split_history(path: Path, train_frac: float) -> tuple[Path, Path]:
+    """Split JSONL/JSONL.GZ by event order; never shuffle."""
+    if not 0.5 <= train_frac < 1.0:
+        raise ValueError("train_frac must be in [0.5, 1.0)")
+    open_fn = gzip.open if path.suffix == ".gz" or path.name.endswith(".gz") else open
+    lines: list[str] = []
+    with open_fn(path, "rt", encoding="utf-8") as stream:
+        for line in stream:
+            line = line.strip()
+            if line:
+                lines.append(line)
+    if len(lines) < 200:
+        raise ValueError(f"need >=200 events, got {len(lines)}")
+    cut = int(len(lines) * train_frac)
+    if cut < 100 or len(lines) - cut < 50:
+        raise ValueError("train/test split is too small for meaningful diagnostics")
+    out_dir = path.parent / "_wf_split"
+    out_dir.mkdir(exist_ok=True)
+    train_path = out_dir / "train.jsonl"
+    test_path = out_dir / "test.jsonl"
+    train_path.write_text("\n".join(lines[:cut]) + "\n", encoding="utf-8")
+    test_path.write_text("\n".join(lines[cut:]) + "\n", encoding="utf-8")
+    return train_path, test_path
 
-    train_p, test_p = _split_history(args.history, args.train_frac)
-    rows = []
-    best = None
-    for g in GRID:
-        cfg = L2BacktestConfig(
-            starting_cash_usdt=args.cash,
-            order_size_usdt=args.order_size,
-            entry_min_score=float(g["entry_min_score"]),
+
+def evaluate_train_then_test(
+    train_path: Path,
+    test_path: Path,
+    *,
+    candidates: list[dict[str, float]] | None = None,
+    fee_rate: float = 0.001,
+    cash: float = 100.0,
+    order_size: float = 12.0,
+) -> dict[str, Any]:
+    """Select using train metrics, then evaluate only the winner out of sample."""
+    choices = candidates or GRID
+    if not choices:
+        raise ValueError("at least one candidate is required")
+    if not 0 <= fee_rate < 0.1:
+        raise ValueError("fee_rate must be in [0, 0.1)")
+
+    training: list[dict[str, Any]] = []
+    for candidate in choices:
+        config = L2BacktestConfig(
+            starting_cash_usdt=cash,
+            order_size_usdt=order_size,
+            fee_rate=fee_rate,
+            entry_min_score=float(candidate["entry_min_score"]),
+            take_profit_pct=float(candidate.get("take_profit_pct", 0.55)),
+            stop_loss_pct=float(candidate.get("stop_loss_pct", 0.18)),
             impact_coefficient=0.1,
         )
-        try:
-            tr = summarize_l2_result(run_l2_backtest(train_p, cfg))
-            te = summarize_l2_result(run_l2_backtest(test_p, cfg))
-        except Exception as exc:
-            rows.append({"params": g, "error": str(exc)})
-            continue
-        row = {
-            "params": g,
-            "train": tr,
-            "test": te,
-            "test_net": te.get("net_pnl_usdt", te.get("pnl_usdt")),
-        }
-        rows.append(row)
-        score = float(row["test_net"] or -1e9)
-        if best is None or score > best[0]:
-            best = (score, row)
+        metrics = summarize_l2_result(run_l2_backtest(train_path, config))
+        training.append({"params": dict(candidate), "metrics": metrics})
 
-    report = {
+    # Return percentage is based on equity, not an absent/legacy pnl_usdt field.
+    winner = max(training, key=lambda row: float(row["metrics"].get("return_pct") or 0.0))
+    selected = winner["params"]
+    test_config = L2BacktestConfig(
+        starting_cash_usdt=cash,
+        order_size_usdt=order_size,
+        fee_rate=fee_rate,
+        entry_min_score=float(selected["entry_min_score"]),
+        take_profit_pct=float(selected.get("take_profit_pct", 0.55)),
+        stop_loss_pct=float(selected.get("stop_loss_pct", 0.18)),
+        impact_coefficient=0.1,
+    )
+    test_metrics = summarize_l2_result(run_l2_backtest(test_path, test_config))
+    return {
+        "selected_params": selected,
+        "selected_training_metrics": winner["metrics"],
+        "unseen_test_metrics": test_metrics,
+        "candidate_training_metrics": training,
+        "fee_rate": fee_rate,
+        "warning": (
+            "Only training data selected parameters. The later test segment was run "
+            "once for the winner. One split is not proof of robustness; repeat rolling "
+            "windows across multiple assets and market regimes."
+        ),
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("history", type=Path)
+    parser.add_argument("--train-frac", type=float, default=0.70)
+    parser.add_argument("--cash", type=float, default=100.0)
+    parser.add_argument("--order-size", type=float, default=12.0)
+    parser.add_argument("--fee", type=float, default=0.001)
+    parser.add_argument("--output", type=Path, default=Path("walk-forward-report.json"))
+    args = parser.parse_args()
+
+    if args.cash <= 0 or args.order_size <= 0:
+        parser.error("--cash and --order-size must be positive")
+    try:
+        train_path, test_path = _split_history(args.history, args.train_frac)
+        report = evaluate_train_then_test(
+            train_path, test_path, fee_rate=args.fee,
+            cash=args.cash, order_size=args.order_size,
+        )
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        print(f"WALK_FORWARD_FAIL: {exc}")
+        return 1
+
+    report.update({
         "history": str(args.history),
         "train_frac": args.train_frac,
-        "fee_note": args.fee,
-        "disclaimer": "OOS walk-forward only — not a profit guarantee. Prefer test net>0 and low trade churn.",
-        "rows": rows,
-        "best_test": best[1] if best else None,
-    }
+        "train_events_file": str(train_path),
+        "test_events_file": str(test_path),
+    })
     args.output.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    print(json.dumps({"best_test": report["best_test"], "n": len(rows)}, indent=2))
+    print(json.dumps({
+        "selected_params": report["selected_params"],
+        "train": report["selected_training_metrics"],
+        "unseen_test": report["unseen_test_metrics"],
+    }, indent=2))
     print(f"wrote {args.output}")
     return 0
 

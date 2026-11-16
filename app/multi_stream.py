@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 
 from app.binance_depth import stream_synchronized_depth
@@ -24,13 +24,18 @@ class TaggedDepth:
     book: DepthBook
 
 
-async def _pump(symbol: str, out: asyncio.Queue[TaggedDepth], stop: asyncio.Event) -> None:
+async def _pump(
+    symbol: str,
+    out: asyncio.Queue[TaggedDepth],
+    stop: asyncio.Event,
+    on_reconnect: Callable[[str, Exception], None] | None = None,
+) -> None:
     """Keep a single-symbol depth pump alive across transient WS failures."""
     sym = symbol.lower()
     backoff = 1.0
     while not stop.is_set():
         try:
-            async for book in stream_synchronized_depth(sym):
+            async for book in stream_synchronized_depth(sym, on_reconnect=on_reconnect):
                 if stop.is_set():
                     return
                 if not book.synchronized:
@@ -71,6 +76,7 @@ async def stream_multi_depth(
     symbols: list[str],
     *,
     max_queue: int = 2000,
+    on_reconnect: Callable[[str, Exception], None] | None = None,
 ) -> AsyncIterator[TaggedDepth]:
     """Yield TaggedDepth from all symbols concurrently until cancelled."""
     if not symbols:
@@ -78,7 +84,7 @@ async def stream_multi_depth(
     q: asyncio.Queue[TaggedDepth] = asyncio.Queue(maxsize=max_queue)
     stop = asyncio.Event()
     tasks = [
-        asyncio.create_task(_pump(sym, q, stop), name=f"depth-{sym}")
+        asyncio.create_task(_pump(sym, q, stop, on_reconnect), name=f"depth-{sym}")
         for sym in symbols
     ]
     log.info("Multi-depth pumps started: %s", ",".join(s.upper() for s in symbols))

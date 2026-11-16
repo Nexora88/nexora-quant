@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import ipaddress
 import os
 from contextlib import asynccontextmanager, suppress
 
@@ -212,6 +213,8 @@ async function tick(){
     const pills=[];
     pills.push('<span class=\"pill \"'+(s.connected?'':'off')+'\">'+(s.connected?'LIVE L2':'L2 KOPUK')+'</span>');
     pills.push('<span class=\"pill\">'+(s.mode||'paper').toUpperCase()+'</span>');
+    const engineStatus=String(s.engine_task_status||'unknown').toUpperCase();
+    pills.push('<span class=\"pill '+(engineStatus==='RUNNING'?'':'off')+'\">ENGINE '+engineStatus+'</span>');
     if(s.kill_switch)pills.push('<span class=\"pill off\">KILL</span>');
     if(s.emergency)pills.push('<span class=\"pill off\">EMERGENCY</span>');
     pills.push('<span class=\"pill\">events '+(s.events_seen||0)+'</span>');
@@ -246,9 +249,14 @@ setInterval(tick,900);tick();
 """
 
 
+_engine_task: asyncio.Task | None = None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    task = asyncio.create_task(run())
+    global _engine_task
+    task = asyncio.create_task(run(), name="nexora-engine")
+    _engine_task = task
 
     def _done(t: asyncio.Task) -> None:
         try:
@@ -270,25 +278,24 @@ async def lifespan(app: FastAPI):
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
+        _engine_task = None
 
 
 app = FastAPI(title="Nexora Quant", version="0.2.0", lifespan=lifespan)
 
 
 def _is_private_lan(host: str) -> bool:
-    """Allow home/office Wi-Fi so phone can open dashboard on same network."""
-    if not host:
+    """Return True only for RFC1918 IPv4 or unique-local IPv6 client addresses."""
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
         return False
-    if host.startswith(("192.168.", "10.")):
-        return True
-    if host.startswith("172."):
-        parts = host.split(".")
-        try:
-            second = int(parts[1])
-        except (IndexError, ValueError):
-            return False
-        return 16 <= second <= 31
-    return False
+    if isinstance(address, ipaddress.IPv4Address):
+        return address in ipaddress.ip_network("10.0.0.0/8") or any(
+            address in ipaddress.ip_network(network)
+            for network in ("172.16.0.0/12", "192.168.0.0/16")
+        )
+    return address in ipaddress.ip_network("fc00::/7")
 
 
 @app.middleware("http")
@@ -296,7 +303,10 @@ async def restrict_remote_access(request: Request, call_next):
     client_host = request.client.host if request.client else ""
     if client_host in {"127.0.0.1", "::1", "localhost", "testclient"}:
         return await call_next(request)
-    if _is_private_lan(client_host):
+    # LAN access is an explicit opt-in. Otherwise every non-loopback client,
+    # including a phone on home Wi-Fi, must present the bearer token.
+    allow_lan = os.getenv("NEXORA_ALLOW_LAN", "").strip().lower() in {"1", "true", "yes", "on"}
+    if allow_lan and _is_private_lan(client_host):
         return await call_next(request)
     expected = os.getenv("NEXORA_API_TOKEN", "")
     supplied = request.headers.get("authorization", "")
@@ -314,15 +324,53 @@ def dashboard() -> str:
     return DASHBOARD
 
 
+def _engine_task_status() -> str:
+    task = _engine_task
+    if task is None:
+        return "not_started"
+    if not task.done():
+        return "running"
+    if task.cancelled():
+        return "stopped"
+    try:
+        return "failed" if task.exception() is not None else "stopped"
+    except asyncio.CancelledError:
+        return "stopped"
+
+
 @app.get("/health")
-def health() -> dict[str, str]:
+def health() -> dict:
     from app.config import settings as _s
-    return {"status": "ok", "mode": getattr(_s, "trading_mode", "paper")}
+
+    engine_status = _engine_task_status()
+    snapshot = state.snapshot()
+    market_connected = bool(snapshot.get("connected"))
+    safety_halted = bool(snapshot.get("kill_switch") or snapshot.get("emergency"))
+    if engine_status == "running" and market_connected and not safety_halted:
+        overall = "ok"
+    elif engine_status == "running":
+        overall = "degraded"
+    elif engine_status == "failed":
+        overall = "error"
+    else:
+        overall = "not_ready"
+    return {
+        "status": overall,
+        "mode": getattr(_s, "trading_mode", "paper"),
+        "engine": engine_status,
+        "market_data_connected": market_connected,
+        "data_age_seconds": snapshot.get("data_age_seconds"),
+        "kill_switch": snapshot.get("kill_switch", False),
+        "emergency": snapshot.get("emergency", False),
+        "last_error": snapshot.get("last_error"),
+    }
 
 
 @app.get("/status")
 def status() -> dict:
-    return state.snapshot()
+    snapshot = state.snapshot()
+    snapshot["engine_task_status"] = _engine_task_status()
+    return snapshot
 
 
 @app.get("/portfolio")

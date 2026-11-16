@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from datetime import datetime, timezone
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,17 @@ class PaperStore:
                 trade_json TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS paper_sessions (
+                session_id TEXT PRIMARY KEY,
+                mode TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                ended_at TEXT,
+                ticks INTEGER NOT NULL DEFAULT 0,
+                reconnects INTEGER NOT NULL DEFAULT 0,
+                trade_count INTEGER NOT NULL DEFAULT 0,
+                realized_pnl_usdt REAL NOT NULL DEFAULT 0
+            );
             """
         )
         self._db.commit()
@@ -63,37 +75,51 @@ class PaperStore:
             self._worker.start()
 
     def _flush_loop(self) -> None:
+        import logging
+
+        log = logging.getLogger(__name__)
         while not self._stop.wait(self._flush_interval_s):
             try:
                 self.flush()
             except Exception:
-                pass
+                # Keep the in-memory batch queued for retry and make durability
+                # failures visible instead of silently discarding ledger writes.
+                log.exception("PaperStore background flush failed; batch retained")
 
     def flush(self) -> None:
+        # Keep pending records in memory until the SQLite transaction commits.
+        # The lock prevents concurrent enqueue operations while this batch commits.
         with self._lock:
             states = dict(self._pending_states)
             trades = list(self._pending_trades)
-            self._pending_states.clear()
-            self._pending_trades.clear()
-            trade_keys = set(self._pending_trade_keys)
-            self._pending_trade_keys.clear()
-        if not states and not trades:
-            return
-        with self._lock, self._db:
+            if not states and not trades:
+                return
+            with self._db:
+                for key, payload in states.items():
+                    self._db.execute(
+                        """INSERT INTO paper_state(state_key,state_json,updated_at)
+                           VALUES(?,?,CURRENT_TIMESTAMP)
+                           ON CONFLICT(state_key) DO UPDATE SET
+                           state_json=excluded.state_json, updated_at=CURRENT_TIMESTAMP""",
+                        (key, payload),
+                    )
+                for event_key, payload in trades:
+                    self._db.execute(
+                        "INSERT OR IGNORE INTO paper_trades(event_key,trade_json) VALUES(?,?)",
+                        (event_key, payload),
+                    )
+            # The transaction committed successfully; now and only now clear
+            # exactly the records included in it.
             for key, payload in states.items():
-                self._db.execute(
-                    """INSERT INTO paper_state(state_key,state_json,updated_at)
-                       VALUES(?,?,CURRENT_TIMESTAMP)
-                       ON CONFLICT(state_key) DO UPDATE SET
-                       state_json=excluded.state_json, updated_at=CURRENT_TIMESTAMP""",
-                    (key, payload),
-                )
-            for event_key, payload in trades:
-                self._db.execute(
-                    "INSERT OR IGNORE INTO paper_trades(event_key,trade_json) VALUES(?,?)",
-                    (event_key, payload),
-                )
-                trade_keys.discard(event_key)
+                if self._pending_states.get(key) == payload:
+                    self._pending_states.pop(key, None)
+            committed_keys = {event_key for event_key, _ in trades}
+            self._pending_trades = deque(
+                (event_key, payload)
+                for event_key, payload in self._pending_trades
+                if event_key not in committed_keys
+            )
+            self._pending_trade_keys.difference_update(committed_keys)
 
     def save_state(self, key: str, state: dict[str, Any]) -> None:
         if not key:
@@ -180,10 +206,9 @@ class PaperStore:
         self._stop.set()
         if self._worker and self._worker.is_alive():
             self._worker.join(timeout=2.0)
-        try:
-            self.flush()
-        except Exception:
-            pass
+        # Do not close the connection or suppress the error if durability fails:
+        # callers must see that queued ledger writes were not committed.
+        self.flush()
         with self._lock:
             self._db.close()
 
@@ -192,3 +217,55 @@ class PaperStore:
 
     def __exit__(self, *_: object) -> None:
         self.close()
+
+    def start_session(self, session_id: str, mode: str) -> None:
+        if not session_id or mode not in {"paper", "live"}:
+            raise ValueError("valid session_id and trading mode are required")
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock, self._db:
+            self._db.execute(
+                """INSERT INTO paper_sessions
+                   (session_id, mode, started_at, last_seen_at)
+                   VALUES (?, ?, ?, ?)""",
+                (session_id, mode, now, now),
+            )
+
+    def heartbeat_session(
+        self, session_id: str, *, ticks: int, reconnects: int,
+        trade_count: int, realized_pnl_usdt: float,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock, self._db:
+            cursor = self._db.execute(
+                """UPDATE paper_sessions SET last_seen_at=?, ticks=?,
+                   reconnects=?, trade_count=?, realized_pnl_usdt=?
+                   WHERE session_id=?""",
+                (now, max(0, int(ticks)), max(0, int(reconnects)),
+                 max(0, int(trade_count)), float(realized_pnl_usdt), session_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(f"unknown paper session: {session_id}")
+
+    def end_session(
+        self, session_id: str, *, ticks: int, reconnects: int,
+        trade_count: int, realized_pnl_usdt: float,
+    ) -> None:
+        self.heartbeat_session(
+            session_id, ticks=ticks, reconnects=reconnects,
+            trade_count=trade_count, realized_pnl_usdt=realized_pnl_usdt,
+        )
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock, self._db:
+            self._db.execute(
+                "UPDATE paper_sessions SET ended_at=? WHERE session_id=?",
+                (now, session_id),
+            )
+
+    def latest_session(self, mode: str = "paper") -> dict[str, Any] | None:
+        with self._lock:
+            row = self._db.execute(
+                """SELECT * FROM paper_sessions WHERE mode=?
+                   ORDER BY started_at DESC LIMIT 1""",
+                (mode,),
+            ).fetchone()
+        return dict(row) if row else None

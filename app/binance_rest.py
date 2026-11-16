@@ -120,6 +120,16 @@ class BinanceRestClient:
             params["symbol"] = symbol.upper()
         return self._request("GET", "/api/v3/exchangeInfo", params)
 
+    def ticker_price(self, symbol: str) -> float:
+        """Return the latest public spot price for a symbol such as BNBUSDT."""
+        if not symbol or not symbol.isalnum():
+            raise ValueError("invalid ticker symbol")
+        raw = self._request("GET", "/api/v3/ticker/price", {"symbol": symbol.upper()})
+        price = float(raw.get("price") or 0.0)
+        if not price > 0:
+            raise RuntimeError(f"Binance returned an invalid ticker price for {symbol}")
+        return price
+
     def account(self) -> dict[str, Any]:
         return self._request("GET", "/api/v3/account", signed=True)
 

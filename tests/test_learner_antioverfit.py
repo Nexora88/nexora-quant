@@ -33,3 +33,37 @@ def test_production_snapshot_restore():
     L.record_trade(-2.0, regime="choppy")
     L.restore_production()
     assert abs(L.entry_min_score - moved) < 1e-9
+
+def test_export_restore_preserves_exact_policy_weights_and_regime():
+    source = OnlineLearner(window=20, base_entry_min=0.32)
+    for _ in range(12):
+        source.record_trade(0.2, regime="trend", reason="take_profit")
+    source.observe_market(
+        score=0.7, regime="range", flow_pressure=0.3, flow_ready=True,
+    )
+    saved = source.export_state()
+    expected = (
+        source.entry_min_score, source.size_bias, source.tp_scale,
+        source.compound_fraction, source.growth_mode,
+    )
+
+    restored = OnlineLearner(window=20, base_entry_min=0.32)
+    restored.load_state(saved)
+    actual = (
+        restored.entry_min_score, restored.size_bias, restored.tp_scale,
+        restored.compound_fraction, restored.growth_mode,
+    )
+    assert actual == expected
+    assert restored._last_regime == "range"
+
+
+def test_restore_rejects_corrupt_non_finite_weights():
+    learner = OnlineLearner()
+    saved = learner.export_state()
+    saved["entry_min"] = float("nan")
+    try:
+        learner.load_state(saved)
+    except ValueError as exc:
+        assert "non-finite" in str(exc)
+    else:
+        raise AssertionError("corrupt learner weights must be rejected")

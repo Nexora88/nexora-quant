@@ -12,7 +12,7 @@ from typing import Any
 from app.market_history import replay_market_history
 from app.paper import PaperExecutor
 from app.portfolio import size_from_free_cash
-from app.simulation import ExecutionSimulator, market_impact_bps
+from app.simulation import ExecutionSimulator
 from app.strategy import PriceWindow, analyze_market, entry_signal_from_analysis, exit_reason
 
 
@@ -100,6 +100,7 @@ def run_l2_backtest(path: str | Path, cfg: L2BacktestConfig | None = None) -> L2
     result = L2BacktestResult()
     confirmations = 0
     peak = 0.0
+    last_bid: float | None = None
 
     for event in replay_market_history(path):
         result.events_seen += 1
@@ -123,6 +124,7 @@ def run_l2_backtest(path: str | Path, cfg: L2BacktestConfig | None = None) -> L2
             continue
         bid, bid_qty = best_b
         ask, ask_qty = best_a
+        last_bid = bid
         if bid <= 0 or ask < bid:
             continue
         bids = payload.get("bids") if isinstance(payload.get("bids"), list) else [[bid, bid_qty]]
@@ -146,18 +148,17 @@ def run_l2_backtest(path: str | Path, cfg: L2BacktestConfig | None = None) -> L2
             )
             if reason:
                 qty = paper.base_quantity
-                impact = market_impact_bps(
-                    notional_usdt=qty * bid,
-                    visible_liquidity_usdt=max(bid * bid_qty, 1.0),
-                    coefficient=cfg.impact_coefficient,
+                stressed_exit = reason in {"stop_loss", "trailing_stop", "time_stop"}
+                fill = sim.fill(
+                    side="sell", reference_price=bid, quantity=qty,
+                    book_levels=bids or [[bid, bid_qty]], stress=stressed_exit,
                 )
-                avg_px, filled = _walk_book("sell", bids or [[bid, qty]], qty, impact_bps=impact)
-                if filled <= 0:
-                    fill = sim.fills(side="sell", reference_price=bid, quantity=qty)
-                    avg_px, filled = fill.fill_price, fill.filled_quantity
-                if filled > 0:
+                if fill.filled_quantity <= 0:
+                    fill = sim.fill(side="sell", reference_price=bid, quantity=qty, stress=stressed_exit)
+                if fill.filled_quantity > 0:
                     trade = paper.sell_quantity(
-                        quantity=filled, price=avg_px, reason=f"l2_{reason};impact_bps={impact:.2f}"
+                        quantity=fill.filled_quantity, price=fill.fill_price,
+                        reason=f"l2_{reason};slippage_bps={fill.slippage_bps:.2f};latency_ms={fill.latency_ms}",
                     )
                     if trade:
                         result.trades.append({**trade, "timestamp_ns": ts})
@@ -179,24 +180,21 @@ def run_l2_backtest(path: str | Path, cfg: L2BacktestConfig | None = None) -> L2
             )
             if sizing.notional_usdt > 0:
                 qty = sizing.notional_usdt / ask
-                impact = market_impact_bps(
-                    notional_usdt=sizing.notional_usdt,
-                    visible_liquidity_usdt=max(ask * ask_qty, 1.0),
-                    coefficient=cfg.impact_coefficient,
+                fill = sim.fill(
+                    side="buy", reference_price=ask, quantity=qty,
+                    book_levels=asks or [[ask, ask_qty]],
                 )
-                avg_px, filled = _walk_book("buy", asks or [[ask, qty]], qty, impact_bps=impact)
-                if filled <= 0:
-                    fill = sim.fills(side="buy", reference_price=ask, quantity=qty)
-                    avg_px, filled = fill.fill_price, fill.filled_quantity
-                notional = filled * avg_px
+                if fill.filled_quantity <= 0:
+                    fill = sim.fill(side="buy", reference_price=ask, quantity=qty)
+                notional = fill.filled_quantity * fill.fill_price
                 if notional > 0:
                     trade = paper.buy(
-                        notional_usdt=notional, price=avg_px,
-                        reason=f"l2_entry;score={analysis.score:.2f};impact_bps={impact:.2f}",
+                        notional_usdt=notional, price=fill.fill_price,
+                        reason=f"l2_entry;score={analysis.score:.2f};slippage_bps={fill.slippage_bps:.2f};latency_ms={fill.latency_ms}",
                     )
                     result.trades.append({**trade, "timestamp_ns": ts})
                     result.entries += 1
-                    peak = avg_px
+                    peak = fill.fill_price
                     confirmations = 0
 
         snap = paper.snapshot(bid)
@@ -205,7 +203,7 @@ def run_l2_backtest(path: str | Path, cfg: L2BacktestConfig | None = None) -> L2
             "mid": (bid + ask) / 2, "score": analysis.score,
         })
 
-    snap = paper.snapshot()
+    snap = paper.snapshot(last_bid)
     result.final_equity = float(snap["equity_usdt"])
     result.final_cash = float(snap["cash_usdt"])
     result.realized_pnl = float(snap["realized_pnl_usdt"])

@@ -41,11 +41,25 @@ class SymbolScore:
 class SymbolRouter:
     """Keeps latest scores per symbol and selects the best entry candidate."""
 
-    def __init__(self, *, min_score: float = 0.38, max_spoof: float = 0.60) -> None:
+    def __init__(
+        self, *, min_score: float = 0.38, max_spoof: float = 0.60,
+        max_age_seconds: float = 8.0,
+    ) -> None:
         self.min_score = min_score
         self.max_spoof = max_spoof
+        self.max_age_seconds = max(0.1, float(max_age_seconds))
         self._board: dict[str, SymbolScore] = {}
         self.active_symbol: str | None = None
+
+    def _is_fresh(self, row: SymbolScore, now: datetime) -> bool:
+        try:
+            updated = datetime.fromisoformat(row.updated_at)
+            if updated.tzinfo is None:
+                updated = updated.replace(tzinfo=timezone.utc)
+            age = (now - updated.astimezone(timezone.utc)).total_seconds()
+            return -5.0 <= age <= self.max_age_seconds
+        except (TypeError, ValueError):
+            return False
 
     def update(
         self,
@@ -85,11 +99,20 @@ class SymbolRouter:
         return row
 
     def leaderboard(self, *, limit: int = 8) -> list[dict[str, Any]]:
-        rows = sorted(self._board.values(), key=lambda r: r.score, reverse=True)
-        return [r.to_dict() for r in rows[:limit]]
+        now = datetime.now(timezone.utc)
+        rows = [
+            row for row in self._board.values()
+            if self._is_fresh(row, now)
+        ]
+        rows.sort(key=lambda row: row.score, reverse=True)
+        return [row.to_dict() for row in rows[:limit]]
 
     def select_best(self) -> SymbolScore | None:
-        tradeable = [r for r in self._board.values() if r.tradeable]
+        now = datetime.now(timezone.utc)
+        tradeable = [
+            row for row in self._board.values()
+            if row.tradeable and self._is_fresh(row, now)
+        ]
         if not tradeable:
             self.active_symbol = None
             return None

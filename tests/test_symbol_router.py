@@ -32,3 +32,18 @@ def test_vol_stress_multiplier_scales():
     sim.set_volatility_bps(50)
     hot = sim.effective_stress_multiplier()
     assert hot > calm
+
+def test_router_never_selects_stale_symbol_after_stream_stops():
+    from datetime import datetime, timedelta, timezone
+
+    r = SymbolRouter(min_score=0.5, max_age_seconds=1.0)
+    r.update("solusdt", score=0.99, regime="trend")
+    r.update("ethusdt", score=0.75, regime="trend")
+    r._board["solusdt"].updated_at = (
+        datetime.now(timezone.utc) - timedelta(seconds=5)
+    ).isoformat()
+
+    best = r.select_best()
+    assert best is not None
+    assert best.symbol == "ethusdt"
+    assert all(row["symbol"] != "solusdt" for row in r.leaderboard())

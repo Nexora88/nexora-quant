@@ -20,8 +20,7 @@ python -m pip install -U pip
 pip install -e .
 
 Copy-Item .env.example .env -Force
-# Optional: wipe paper ledger after major upgrades
-Remove-Item -Force data\paper.sqlite3, paper.sqlite3 -ErrorAction SilentlyContinue
+# Keep and back up data\paper.sqlite3; never delete it automatically.
 
 uvicorn app.api:app --host 0.0.0.0 --port 8000
 ```
@@ -31,7 +30,11 @@ uvicorn app.api:app --host 0.0.0.0 --port 8000
 | PC | http://127.0.0.1:8000 |
 | Phone (same Wi-Fi) | http://PC_LAN_IP:8000 |
 
-`git pull` sonrası **mutlaka** eski `paper.sqlite3` silinmezse önceki eksi bakiye / açık pozisyon kalabilir.
+Remote/LAN requests require `NEXORA_API_TOKEN` by default. For a trusted isolated home LAN only, you may explicitly set `NEXORA_ALLOW_LAN=true`; do not use that option on shared/public networks. Localhost remains available without a token.
+
+`git pull` sonrası paper ledger dosyasını **otomatik silme**. Önce yedek al ve pozisyonu/hesap durumunu doğrula; silmek bakiye ve işlem geçmişini geri döndürülemez biçimde kaybettirebilir. Paper hesap artık yeniden başlatmada kayıtlı nakit, maliyet, komisyon ve açık pozisyonu korur; açık pozisyonu atmak yerine `PAPER_RESUME_POSITION=false` ayarında başlangıcı reddeder.
+
+Live modda emir göndermeden önce Binance bakiyesi ve OCO emir geçmişi yeniden uzlaştırılır. Açık pozisyonun borsada koruyucu OCO emri yoksa bot yeni işlem döngüsüne başlamaz; önce korumayı kurmayı dener. Live modda otomatik coin değiştirme ve online learner güncellemesi kapalıdır; çoklu semboller yalnızca tarama içindir.
 
 ---
 
@@ -40,15 +43,15 @@ uvicorn app.api:app --host 0.0.0.0 --port 8000
 | Layer | Behavior |
 |-------|----------|
 | Market | Binance Spot **L2 depth** streams (multi-symbol when `UNIVERSE_AUTO=true`) |
-| Router | When **flat**, ranks majors and can switch primary symbol |
+| Router | Ranks majors; autonomous primary switching is paper-only (live executor remains bound to configured symbol) |
 | Analysis | OBI, micro-price, regime (trend / range / chop), order-flow pressure |
 | Edge gate | Round-trip fee + spread + impact; `min_net_edge_bps` — no edge → no trade |
 | Sizing | Kelly + vol target (`RISK_PER_TRADE_PCT`) + impact cap + portfolio budget |
 | Targets | ATR dynamic TP / SL / trail (`USE_ATR_TARGETS`); ceiling on SL |
 | Exit | TP, SL, **trailing** (peak ratcheted every tick), wick confirm, **`time_stop`** (`MAX_HOLD_SECONDS`) |
 | Anti-churn | `MIN_HOLD_SECONDS`, `MAX_TRADES_PER_HOUR`, `ENTRY_COOLDOWN_SECONDS`, `MAX_DAILY_FEE_USDT` |
-| Learning | `record_trade` on close; `observe_market` while flat; freeze / anomaly / step clamp |
-| Paper fills | Book walk + impact; stress on stop / time_stop sells |
+| Learning | Policy changes only from fee-complete closed trades; unlabeled ticks do not drift weights; frozen in live mode |
+| Paper fills | Depth-aware fills with configured slippage, latency, partial fills, fees, and stressed stop exits |
 | Dashboard | Equity, fills, blockers, session PnL, learner snapshot, universe board |
 
 ---
