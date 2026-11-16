@@ -86,10 +86,10 @@ def build_decision(
         elif analysis.mean_reversion_signal == "fade_bid":
             votes.append(_vote("ou_mean_reversion", "short", 0.3, analysis.ou_zscore, f"z={analysis.ou_zscore:.2f}"))
 
-    momentum_1m = analysis.momentum_1m_bps if analysis.momentum_1m_bps is not None else analysis.momentum_bps
-    if momentum_1m > 3:
+    momentum_1m = analysis.momentum_1m_bps
+    if momentum_1m is not None and momentum_1m > 3:
         votes.append(_vote("momentum_1m", "long", 0.15, momentum_1m, f"mom_1m={momentum_1m:.1f}bps"))
-    elif momentum_1m < -3:
+    elif momentum_1m is not None and momentum_1m < -3:
         votes.append(_vote("momentum_1m", "short", 0.15, momentum_1m, f"mom_1m={momentum_1m:.1f}bps"))
     if analysis.momentum_5m_bps is not None:
         if analysis.momentum_5m_bps > 2:
@@ -117,6 +117,8 @@ def build_decision(
     if analysis.regime == MarketRegime.STRESSED.value:
         blockers.append("regime_stressed")
     # These are hard directional constraints and must not be softened by autonomous mode.
+    if not in_position and (analysis.momentum_1m_bps is None or analysis.momentum_5m_bps is None):
+        blockers.append("momentum_history_warmup")
     if not in_position and analysis.momentum_1m_bps is not None and analysis.momentum_1m_bps <= 0:
         blockers.append("momentum_1m_not_positive")
     if not in_position and analysis.momentum_5m_bps is not None and analysis.momentum_5m_bps < -3.0:

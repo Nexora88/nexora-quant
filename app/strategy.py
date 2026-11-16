@@ -133,11 +133,10 @@ def analyze_market(
     spread_bps = ((ask - bid) / mid * 10_000) if mid > 0 else 0.0
     if mid > 0:
         price_window.push(mid)
-    short_mom = price_window.momentum_bps()
     mom_1m = price_window.momentum_over(60.0)
     mom_5m = price_window.momentum_over(300.0)
-    # Use a real elapsed-time horizon once warmed; event-count momentum is only startup fallback.
-    mom = mom_1m if mom_1m is not None else short_mom
+    # Do not relabel a burst of websocket events as a 1m return during warmup.
+    mom = mom_1m if mom_1m is not None else 0.0
     trend = "up" if mom > 3 else "down" if mom < -3 else "flat"
 
     snap = build_snapshot(
@@ -210,20 +209,15 @@ def analyze_market(
         elif snap.micro_premium_bps < -1.0:
             score -= 0.15
             reasons.append(f"micro_dn={snap.micro_premium_bps:.1f}bps")
-        if mom_1m is not None:
-            # A 1m impulse is tradable only when the 5m context is not materially opposed.
-            if mom_1m > 3 and (mom_5m is None or mom_5m > -3):
+        if mom_1m is not None and mom_5m is not None:
+            # A 1m impulse is tradable only with a complete 5m context window.
+            if mom_1m > 3 and mom_5m > -3:
                 score += 0.25
                 reasons.append(f"mom_1m_up={mom_1m:.1f}bps")
-            elif mom_1m < -3 and (mom_5m is None or mom_5m < 3):
+            elif mom_1m < -3 and mom_5m < 3:
                 score -= 0.25
                 reasons.append(f"mom_1m_dn={mom_1m:.1f}bps")
-        elif short_mom > 5:
-            score += 0.25
-            reasons.append(f"mom_tick_up={short_mom:.1f}bps")
-        elif short_mom < -5:
-            score -= 0.25
-            reasons.append(f"mom_tick_dn={short_mom:.1f}bps")
+        # Momentum score is deliberately absent until a complete 1m window exists.
 
     if wall_bias >= 0.25:
         score += 0.18

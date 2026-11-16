@@ -21,6 +21,8 @@ def _analysis(**kwargs):
         ou_zscore=None,
         mean_reversion_signal="none",
         regime="trend",
+        momentum_1m_bps=8.0,
+        momentum_5m_bps=8.0,
     )
     base.update(kwargs)
     return MarketAnalysis(**base)
