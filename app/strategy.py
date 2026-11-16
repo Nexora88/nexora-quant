@@ -325,7 +325,14 @@ def exit_reason(
             return "stop_loss"
     elif move <= -stop_loss_pct:
         return "stop_loss"
-    if trailing_stop_pct > 0 and peak_price > average_entry:
+    # Do not arm a trailing stop on a tiny favorable tick: fees and stressed
+    # paper-exit slippage can turn that apparent win into a net losing trade.
+    # Require a meaningful peak move before the trail can close the position.
+    trail_activation_pct = max(0.55, take_profit_pct - trailing_stop_pct)
+    if (
+        trailing_stop_pct > 0
+        and peak_price >= average_entry * (1.0 + trail_activation_pct / 100.0)
+    ):
         trail_floor = peak_price * (1.0 - trailing_stop_pct / 100.0)
         if bid <= trail_floor:
             return "trailing_stop"

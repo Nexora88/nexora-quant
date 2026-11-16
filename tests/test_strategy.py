@@ -36,6 +36,31 @@ def test_composite_entry_and_target():
     assert sig is not None and sig.action == "buy"
 
 
+def test_trailing_stop_does_not_arm_on_tiny_gross_profit():
+    # A tiny uptick cannot pay round-trip fees plus stressed exit slippage.
+    assert exit_reason(
+        bid=100.05,
+        average_entry=100.0,
+        take_profit_pct=0.65,
+        stop_loss_pct=0.22,
+        trailing_stop_pct=0.14,
+        peak_price=100.20,
+        target_price=None,
+    ) is None
+
+
+def test_trailing_stop_arms_only_after_cost_buffer():
+    assert exit_reason(
+        bid=100.45,
+        average_entry=100.0,
+        take_profit_pct=0.65,
+        stop_loss_pct=0.22,
+        trailing_stop_pct=0.14,
+        peak_price=100.60,
+        target_price=None,
+    ) == "trailing_stop"
+
+
 def test_exit_priority_stop_and_target():
     assert exit_reason(
         bid=99,
