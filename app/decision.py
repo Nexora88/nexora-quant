@@ -86,10 +86,16 @@ def build_decision(
         elif analysis.mean_reversion_signal == "fade_bid":
             votes.append(_vote("ou_mean_reversion", "short", 0.3, analysis.ou_zscore, f"z={analysis.ou_zscore:.2f}"))
 
-    if analysis.momentum_bps > 5:
-        votes.append(_vote("momentum", "long", 0.15, analysis.momentum_bps, f"mom={analysis.momentum_bps:.1f}bps"))
-    elif analysis.momentum_bps < -5:
-        votes.append(_vote("momentum", "short", 0.15, analysis.momentum_bps, f"mom={analysis.momentum_bps:.1f}bps"))
+    momentum_1m = analysis.momentum_1m_bps if analysis.momentum_1m_bps is not None else analysis.momentum_bps
+    if momentum_1m > 3:
+        votes.append(_vote("momentum_1m", "long", 0.15, momentum_1m, f"mom_1m={momentum_1m:.1f}bps"))
+    elif momentum_1m < -3:
+        votes.append(_vote("momentum_1m", "short", 0.15, momentum_1m, f"mom_1m={momentum_1m:.1f}bps"))
+    if analysis.momentum_5m_bps is not None:
+        if analysis.momentum_5m_bps > 2:
+            votes.append(_vote("momentum_5m", "long", 0.10, analysis.momentum_5m_bps, f"mom_5m={analysis.momentum_5m_bps:.1f}bps"))
+        elif analysis.momentum_5m_bps < -2:
+            votes.append(_vote("momentum_5m", "short", 0.10, analysis.momentum_5m_bps, f"mom_5m={analysis.momentum_5m_bps:.1f}bps"))
 
     for r in analysis.reasons:
         if "wall" in r:

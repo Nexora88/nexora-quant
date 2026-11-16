@@ -113,8 +113,9 @@ async def run() -> None:
                 raise RuntimeError("Live startup reconciliation failed; refusing to start") from exc
         risk.restore(saved.get("risk") or {})
         if mode == "paper" and risk.kill_switch:
-            log.warning("Clearing restored paper kill_switch: %s", risk.kill_switch_reason)
-            risk.clear_kill_switch()
+            # Paper mode must not silently resume entries after a loss-streak halt.
+            # Require an explicit operator reset after reviewing the paper ledger.
+            log.warning("Preserving restored paper kill_switch: %s", risk.kill_switch_reason)
         state.peak_price = float(saved.get("peak_price") or 0)
         restored_symbol = settings.symbol.lower()
         if mode == "paper" and float(getattr(es.executor, "base_quantity", 0) or 0) > 1e-12:

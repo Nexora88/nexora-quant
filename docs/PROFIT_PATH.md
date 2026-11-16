@@ -25,7 +25,8 @@
 | MAX_DAILY_LOSS_USDT | 2.0 | Daily stop for the 100 USDT example account |
 | MAX_DAILY_FEE_USDT | 0.75 | Fee churn ceiling |
 | MAX_TRADES_PER_HOUR | 8 | Prevent overtrading |
-| MIN_HOLD_SECONDS | 120 | Avoid instant round-trips; protective exits remain active |
+| MAX_HOLD_SECONDS | 900 | Keep the position horizon consistent with scalping |
+| MIN_HOLD_SECONDS | 20 | Avoid micro-churn; protective exits remain active |
 | COMPOUND_FRACTION | 0.50 | Conservative sizing allocation; not a promise to reinvest profit |
 | MAX_CONCURRENT_POSITIONS | 1 | Keep exposure and accounting simple |
 | PAPER_SOFT_GATES | false | Validate the actual strict entry policy |

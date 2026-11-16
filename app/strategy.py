@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
+import time
 from typing import Sequence
 
 from app.analytics.microstructure import (
@@ -54,28 +55,58 @@ class MarketAnalysis:
     ou_zscore: float | None = None
     mean_reversion_signal: str = "none"
     regime: str = "unknown"
+    momentum_1m_bps: float | None = None
+    momentum_5m_bps: float | None = None
 
 
 class PriceWindow:
-    def __init__(self, maxlen: int = 120) -> None:
-        self._mids: deque[float] = deque(maxlen=maxlen)
+    """Price samples with both event-count and elapsed-time momentum views."""
+    def __init__(self, maxlen: int = 1200, sample_interval_seconds: float = 0.5) -> None:
+        self._mids: deque[tuple[float, float]] = deque(maxlen=maxlen)
+        self.sample_interval_seconds = max(0.0, float(sample_interval_seconds))
 
-    def push(self, mid: float) -> None:
-        if mid > 0:
-            self._mids.append(mid)
+    def push(self, mid: float, timestamp: float | None = None) -> None:
+        if mid <= 0:
+            return
+        ts = time.monotonic() if timestamp is None else float(timestamp)
+        if self._mids and self.sample_interval_seconds > 0:
+            last_ts, _ = self._mids[-1]
+            if ts - last_ts < self.sample_interval_seconds:
+                # Keep the freshest quote without letting bursty websocket events
+                # distort the time-based return sample frequency.
+                self._mids[-1] = (last_ts, float(mid))
+                return
+        self._mids.append((ts, float(mid)))
 
     def momentum_bps(self, lookback: int = 20) -> float:
         if len(self._mids) < max(2, lookback // 2):
             return 0.0
         n = min(lookback, len(self._mids))
-        oldest = self._mids[-n]
-        newest = self._mids[-1]
+        oldest = self._mids[-n][1]
+        newest = self._mids[-1][1]
         if oldest <= 0:
             return 0.0
         return ((newest / oldest) - 1.0) * 10_000
 
+    def momentum_over(self, seconds: float) -> float | None:
+        """Return momentum only after at least half the requested time window exists."""
+        if seconds <= 0 or len(self._mids) < 2:
+            return None
+        now, newest = self._mids[-1]
+        cutoff = now - seconds
+        oldest_sample = next(
+            (sample for sample in reversed(self._mids) if sample[0] <= cutoff),
+            self._mids[0],
+        )
+        if now - oldest_sample[0] < seconds * 0.5:
+            return None
+        oldest = oldest_sample[1]
+        if oldest <= 0:
+            return None
+        return ((newest / oldest) - 1.0) * 10_000.0
+
     def last(self) -> float | None:
-        return self._mids[-1] if self._mids else None
+        return self._mids[-1][1] if self._mids else None
 
 
 def analyze_market(
@@ -97,7 +128,11 @@ def analyze_market(
     spread_bps = ((ask - bid) / mid * 10_000) if mid > 0 else 0.0
     if mid > 0:
         price_window.push(mid)
-    mom = price_window.momentum_bps()
+    short_mom = price_window.momentum_bps()
+    mom_1m = price_window.momentum_over(60.0)
+    mom_5m = price_window.momentum_over(300.0)
+    # Use a real elapsed-time horizon once warmed; event-count momentum is only startup fallback.
+    mom = mom_1m if mom_1m is not None else short_mom
     trend = "up" if mom > 3 else "down" if mom < -3 else "flat"
 
     snap = build_snapshot(
@@ -170,12 +205,20 @@ def analyze_market(
         elif snap.micro_premium_bps < -1.0:
             score -= 0.15
             reasons.append(f"micro_dn={snap.micro_premium_bps:.1f}bps")
-        if mom > 5:
+        if mom_1m is not None:
+            # A 1m impulse is tradable only when the 5m context is not materially opposed.
+            if mom_1m > 3 and (mom_5m is None or mom_5m > -3):
+                score += 0.25
+                reasons.append(f"mom_1m_up={mom_1m:.1f}bps")
+            elif mom_1m < -3 and (mom_5m is None or mom_5m < 3):
+                score -= 0.25
+                reasons.append(f"mom_1m_dn={mom_1m:.1f}bps")
+        elif short_mom > 5:
             score += 0.25
-            reasons.append(f"mom_up={mom:.1f}bps")
-        elif mom < -5:
+            reasons.append(f"mom_tick_up={short_mom:.1f}bps")
+        elif short_mom < -5:
             score -= 0.25
-            reasons.append(f"mom_dn={mom:.1f}bps")
+            reasons.append(f"mom_tick_dn={short_mom:.1f}bps")
 
     if wall_bias >= 0.25:
         score += 0.18
@@ -216,6 +259,8 @@ def analyze_market(
         ou_zscore=snap.ou_zscore,
         mean_reversion_signal=snap.mean_reversion_signal,
         regime=regime.value if isinstance(regime, MarketRegime) else str(regime),
+        momentum_1m_bps=mom_1m,
+        momentum_5m_bps=mom_5m,
     )
 
 
@@ -223,6 +268,11 @@ def entry_signal_from_analysis(
     analysis: MarketAnalysis, *, min_score: float = 0.55
 ) -> Signal | None:
     if analysis.regime == MarketRegime.STRESSED.value:
+        return None
+    # Spot is long-only here: do not buy against a confirmed 1m/5m down move.
+    if analysis.momentum_1m_bps is not None and analysis.momentum_1m_bps <= 0:
+        return None
+    if analysis.momentum_5m_bps is not None and analysis.momentum_5m_bps < -3.0:
         return None
     if any(r.startswith("regime_pause") for r in analysis.reasons):
         return None
@@ -250,11 +300,20 @@ def exit_reason(
     target_price: float | None,
     wick_confirmations: int = 0,
     wick_state: object | None = None,
+    momentum_1m_bps: float | None = None,
+    momentum_5m_bps: float | None = None,
 ) -> str | None:
     """Exit rules. Optional wick_confirmations avoids hard SL on a single flash wick."""
     if average_entry <= 0 or bid <= 0:
         return None
     move = (bid / average_entry - 1.0) * 100
+    # Cut a losing scalp when both timeframes confirm that the impulse has reversed.
+    if (
+        move <= -0.05
+        and momentum_1m_bps is not None and momentum_1m_bps <= -5.0
+        and momentum_5m_bps is not None and momentum_5m_bps < 0.0
+    ):
+        return "momentum_reversal"
     if wick_confirmations and wick_state is not None:
         from app.atr_stops import wick_aware_stop
 

@@ -68,7 +68,7 @@ simulator = ExecutionSimulator(
 )
 state.risk_manager = risk
 executor = None
-price_window = PriceWindow(maxlen=180)
+price_window = PriceWindow(maxlen=1200, sample_interval_seconds=0.5)
 ou_tracker = OrnsteinUhlenbeckTracker(maxlen=300, z_entry=2.0)
 regime_clf = RegimeClassifier()
 kelly = DynamicKellyGate(
