@@ -25,6 +25,8 @@ from app import engine_setup as es
 
 
 async def run() -> None:
+    if settings.trading_mode != "paper":
+        raise RuntimeError("Nexora Quant engine is restricted to paper mode")
     es.executor = es._build_executor()
     state.executor = es.executor
     store = PaperStore(settings.store_path)
