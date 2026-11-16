@@ -24,8 +24,22 @@ def test_price_window_tracks_real_elapsed_time_momentum():
 
 def test_price_window_does_not_fake_full_window_during_warmup():
     prices = PriceWindow(sample_interval_seconds=0)
-    for second in range(20):
+    for second in range(59):
         prices.push(100.0 + second * 0.01, timestamp=float(second))
+    assert prices.momentum_over(60) is None
+    assert prices.momentum_over(300) is None
+    prices.push(100.60, timestamp=60.0)
+    assert prices.momentum_over(60) is not None
+
+
+def test_price_window_reset_prevents_cross_asset_price_contamination():
+    prices = PriceWindow(sample_interval_seconds=0)
+    for second in range(301):
+        prices.push(65000.0 + second, timestamp=float(second))
+    assert prices.momentum_over(300) is not None
+    prices.reset()
+    prices.push(0.50, timestamp=302.0)
+    prices.push(0.51, timestamp=303.0)
     assert prices.momentum_over(60) is None
     assert prices.momentum_over(300) is None
 

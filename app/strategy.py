@@ -89,21 +89,26 @@ class PriceWindow:
         return ((newest / oldest) - 1.0) * 10_000
 
     def momentum_over(self, seconds: float) -> float | None:
-        """Return momentum only after at least half the requested time window exists."""
+        """Return a true elapsed-time return only after the full window is present."""
         if seconds <= 0 or len(self._mids) < 2:
             return None
         now, newest = self._mids[-1]
         cutoff = now - seconds
         oldest_sample = next(
             (sample for sample in reversed(self._mids) if sample[0] <= cutoff),
-            self._mids[0],
+            None,
         )
-        if now - oldest_sample[0] < seconds * 0.5:
+        # Never label a 20–30s startup move as a 1m/5m signal.
+        if oldest_sample is None:
             return None
         oldest = oldest_sample[1]
         if oldest <= 0:
             return None
         return ((newest / oldest) - 1.0) * 10_000.0
+
+    def reset(self) -> None:
+        """Drop history when the instrument changes; cross-asset returns are meaningless."""
+        self._mids.clear()
 
     def last(self) -> float | None:
         return self._mids[-1][1] if self._mids else None
