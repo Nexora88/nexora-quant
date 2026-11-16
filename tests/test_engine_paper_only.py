@@ -1,4 +1,5 @@
 import pytest
+from dataclasses import replace
 
 from app import engine_loop
 from app.engine_tick import handle_tick
@@ -6,7 +7,7 @@ from app.engine_tick import handle_tick
 
 @pytest.mark.asyncio
 async def test_engine_loop_rejects_non_paper_mode_before_executor_creation(monkeypatch):
-    monkeypatch.setattr(engine_loop.settings, "trading_mode", "live")
+    monkeypatch.setattr(engine_loop, "settings", replace(engine_loop.settings, trading_mode="live"))
 
     def forbidden_executor_creation():
         pytest.fail("executor must not be created outside paper mode")
