@@ -1,6 +1,8 @@
 """Expectancy helpers for asymmetric reward/risk sizing policy."""
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 # Pessimistic extra stop slippage (% of price) by symbol liquidity tier.
 _SYMBOL_SLIP_PCT: dict[str, float] = {
     "btcusdt": 0.05,
@@ -70,3 +72,34 @@ def asymmetric_expectancy(
     sl = effective_stop_loss_pct(stop_loss_pct=stop_loss_pct, extra_slippage_pct=extra_slippage_pct) / 100.0
     fee = 2.0 * fee_rate
     return p * (tp - fee) - (1.0 - p) * (sl + fee)
+
+
+@dataclass(frozen=True, slots=True)
+class ExpectancyProbePolicy:
+    """Reduced-risk recovery mode; negative expectancy must not deadlock learning."""
+
+    active: bool
+    size_scale: float
+    score_boost: float
+    note: str
+
+
+def expectancy_probe_policy(
+    stats: dict, *, min_trades: int = 12, reduced_size: float = 0.5, score_boost: float = 0.04
+) -> ExpectancyProbePolicy:
+    """Throttle after a losing sample while permitting cautious new evidence.
+
+    This is not a profitability override: kill switches, edge, spread, flow,
+    cooldown, and order-risk checks remain mandatory. It prevents a negative
+    rolling expectancy estimate from permanently blocking the trades needed
+    to establish whether the policy has recovered.
+    """
+    n = int(stats.get("n") or 0)
+    expectancy = stats.get("expectancy_usdt")
+    if n < max(1, int(min_trades)) or expectancy is None or float(expectancy) >= 0.0:
+        return ExpectancyProbePolicy(False, 1.0, 0.0, "expectancy_normal")
+    scale = max(0.1, min(1.0, float(reduced_size)))
+    boost = max(0.0, min(0.20, float(score_boost)))
+    return ExpectancyProbePolicy(
+        True, scale, boost, f"expectancy_probe: n={n} avg={float(expectancy):.4f}; size={scale:.2f}"
+    )

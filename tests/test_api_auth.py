@@ -60,3 +60,27 @@ def test_health_is_degraded_when_kill_switch_is_active(monkeypatch):
     result = api.health()
     assert result["status"] == "degraded"
     assert result["kill_switch"] is True
+
+
+def test_status_exposes_conservative_fee_schedule(monkeypatch):
+    import app.api as api
+
+    monkeypatch.setattr(api.state, "snapshot", lambda: {"connected": False})
+    result = api.status()
+    assert result["fee_schedule"]["taker_rate"] >= 0
+    assert result["fee_schedule"]["maker_rate"] >= 0
+    assert result["server_time"].endswith("+00:00")
+    assert "BNB" in result["fee_schedule"]["assumption"]
+
+
+def test_dashboard_uses_full_session_metrics_and_safe_dynamic_text():
+    from app.api import dashboard
+
+    html = dashboard()
+    assert "const esc=" in html
+    assert "s.session_expectancy" in html
+    assert "s.max_drawdown_pct" in html
+    assert "Veri birikiyor" in html
+    assert "createLinearGradient" in html
+    assert 'id="cash"' in html
+    assert 'id="ltp"' in html

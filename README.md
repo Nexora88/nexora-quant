@@ -51,6 +51,7 @@ Live modda emir göndermeden önce Binance bakiyesi ve OCO emir geçmişi yenide
 | Exit | TP, SL, **trailing** (peak ratcheted every tick), wick confirm, **`time_stop`** (`MAX_HOLD_SECONDS`) |
 | Anti-churn | `MIN_HOLD_SECONDS`, `MAX_TRADES_PER_HOUR`, `ENTRY_COOLDOWN_SECONDS`, `MAX_DAILY_FEE_USDT` |
 | Learning | Policy changes only from fee-complete closed trades; unlabeled ticks do not drift weights; frozen in live mode |
+| Recovery | Negative rolling expectancy activates a smaller-size, slightly higher-score probe; it does not permanently deadlock new evidence |
 | Paper fills | Depth-aware fills with configured slippage, latency, partial fills, fees, and stressed stop exits |
 | Dashboard | Equity, fills, blockers, session PnL, learner snapshot, universe board |
 
@@ -76,6 +77,8 @@ Live modda emir göndermeden önce Binance bakiyesi ve OCO emir geçmişi yenide
 | `UNIVERSE_AUTO` | true | Multi-coin screen |
 
 Full defaults: [`.env.example`](.env.example).
+
+Fee assumptions are conservative by default: VIP 0 taker fees are used and the BNB discount is **off** unless you explicitly enable it and your account has sufficient BNB and eligible fee payment enabled. Paper maker fills still use the configured fee rate conservatively; verify actual maker/taker commissions from Binance fills before any live use.
 
 ---
 

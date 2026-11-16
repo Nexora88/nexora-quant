@@ -74,6 +74,10 @@ th{color:var(--m);font-weight:600;font-size:10px;text-transform:uppercase}
   .row{grid-template-columns:1fr}
   .hero-pnl .amt{font-size:26px}
 }
+canvas{height:168px!important}
+.card{transition:border-color .18s ease,transform .18s ease}
+.card:hover{border-color:#2b5940;transform:translateY(-1px)}
+.stat .v{letter-spacing:-.02em}
 </style>
 </head>
 <body>
@@ -81,28 +85,28 @@ th{color:var(--m);font-weight:600;font-size:10px;text-transform:uppercase}
   <div class=\"top\">
     <div>
       <div class=\"brand\">NEXORA <span>QUANT</span></div>
-      <div class=\"sub\">Spot L2 desk ?? fee-aware edge ?? paper / live</div>
+      <div class=\"sub\">Spot L2 desk - fee-aware decision engine - paper / live</div>
       <div class=\"pills\" id=\"pills\"></div>
     </div>
     <div class=\"hero-pnl\">
       <div class=\"lbl\">Equity</div>
       <div class=\"amt\" id=\"eq\">???</div>
-      <div class=\"sub\" id=\"eqsub\">realized ?? fees</div>
+      <div class=\"sub\" id=\"eqsub\">realized / fees</div>
     </div>
   </div>
 
   <div class=\"stats\">
     <div class=\"stat\"><div class=\"l\">Sembol</div><div class=\"v\" id=\"sym\">???</div></div>
-    <div class=\"stat\"><div class=\"l\">Skor / E??ik</div><div class=\"v\" id=\"sc\">???</div></div>
+    <div class=\"stat\"><div class=\"l\">Skor / Esik</div><div class=\"v\" id=\"sc\">???</div></div>
     <div class=\"stat\"><div class=\"l\">Net PnL</div><div class=\"v\" id=\"net\">???</div></div>
-    <div class=\"stat\"><div class=\"l\">????lem</div><div class=\"v\" id=\"tc\">0</div></div>
-    <div class=\"stat\"><div class=\"l\">Win rate</div><div class=\"v\" id=\"wr\">???</div></div>
+    <div class=\"stat\"><div class=\"l\">Islem</div><div class=\"v\" id=\"tc\">0</div></div>
+    <div class=\"stat\"><div class=\"l\">Win rate (rolling)</div><div class=\"v\" id=\"wr\">???</div></div>
     <div class=\"stat\"><div class=\"l\">Drawdown</div><div class=\"v\" id=\"dd\">???</div></div>
   </div>
 
   <div class=\"row\">
     <div class=\"card\">
-      <h2>Sinyal skometresi</h2>
+      <h2>Sinyal skoru</h2>
       <div class=\"gauge-wrap\"><div class=\"gauge\" id=\"g\"><span id=\"gval\">0.00</span></div></div>
       <canvas class=\"spark\" id=\"spark\" width=\"400\" height=\"36\"></canvas>
       <div class=\"meta\">
@@ -113,44 +117,64 @@ th{color:var(--m);font-weight:600;font-size:10px;text-transform:uppercase}
       </div>
     </div>
     <div class=\"card\">
-      <h2>Neden i??lem var / yok</h2>
-      <div class=\"why\" id=\"why\"><div class=\"lbl\">bekleniyor???</div></div>
-      <h2 style=\"margin-top:12px\">Motor oylar??</h2>
+      <h2>Neden islem var / yok</h2>
+      <div class=\"why\" id=\"why\"><div class=\"lbl\">Veri bekleniyor</div></div>
+      <h2 style=\"margin-top:12px\">Motor oylari</h2>
       <div class=\"why\" id=\"votes\"></div>
     </div>
     <div class=\"card\">
       <h2>Fiyat (son tickler)</h2>
       <canvas id=\"pc\" width=\"420\" height=\"120\"></canvas>
-      <h2 style=\"margin-top:10px\">Equity e??risi</h2>
+      <h2 style=\"margin-top:10px\">Equity egrisi</h2>
       <canvas id=\"ec\" width=\"420\" height=\"120\"></canvas>
     </div>
   </div>
 
   <div class=\"row\" style=\"margin-top:10px;grid-template-columns:1.4fr 1fr\">
     <div class=\"card\">
-      <h2>Son i??lemler</h2>
+      <h2>Son islemler</h2>
       <div style=\"overflow:auto\">
         <table>
-          <thead><tr><th>Saat</th><th>Y??n</th><th>Miktar</th><th>Fiyat</th><th>PnL</th><th>Fee</th></tr></thead>
+          <thead><tr><th>Saat</th><th>Yon</th><th>Miktar</th><th>Fiyat</th><th>PnL</th><th>Fee</th></tr></thead>
           <tbody id=\"fills\"></tbody>
         </table>
       </div>
     </div>
     <div class=\"card\">
-      <h2>Canl?? log</h2>
+      <h2>Canli log</h2>
       <div class=\"log\" id=\"log\"></div>
-      <h2 style=\"margin-top:10px\">????renen</h2>
-      <div class=\"meta\">
-        <div><div class=\"l\">Mod</div><div class=\"v\" id=\"lm\">???</div></div>
-        <div><div class=\"l\">Not</div><div class=\"v\" id=\"ln\" style=\"font-size:11px\">???</div></div>
+    </div>
+  </div>
+  <div class="row" style="margin-top:10px;grid-template-columns:1.1fr 1fr">
+    <div class="card">
+      <h2>Portfoy ve risk detayi</h2>
+      <div class="meta">
+        <div><div class="l">Serbest nakit</div><div class="v" id="cash">---</div></div>
+        <div><div class="l">Acik pozisyon</div><div class="v" id="position">---</div></div>
+        <div><div class="l">Ortalama giris</div><div class="v" id="entry">---</div></div>
+        <div><div class="l">Acik PnL</div><div class="v" id="unreal">---</div></div>
+        <div><div class="l">Gunluk fee</div><div class="v" id="dailyfee">---</div></div>
+        <div><div class="l">Fee-net expectancy</div><div class="v" id="expect">---</div></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Ogrenme ve adaptasyon</h2>
+      <div class="meta">
+        <div><div class="l">Politika</div><div class="v" id="lm">---</div></div>
+        <div><div class="l">Omur boyu islem</div><div class="v" id="lt">---</div></div>
+        <div><div class="l">Entry esigi</div><div class="v" id="le">---</div></div>
+        <div><div class="l">Pozisyon carpan</div><div class="v" id="ls">---</div></div>
+        <div><div class="l">TP / compound</div><div class="v" id="ltp">---</div></div>
+        <div><div class="l">Ogrenme notu</div><div class="v" id="ln" style="font-size:11px">---</div></div>
       </div>
     </div>
   </div>
-  <div class=\"footer\">??l????len edge olmadan k??r yok ?? fee round-trip hesaba kat??l??r ?? yat??r??m tavsiyesi de??ildir</div>
+  <div class=\"footer\">Edge olmadan islem yok; round-trip komisyon ve kayma hesaba katilir. Yatirim tavsiyesi degildir.</div>
 </main>
 <script>
 const el=id=>document.getElementById(id);
-function num(x,d=2){const n=Number(x);return Number.isFinite(n)?n.toFixed(d):'???'}
+const esc=v=>String(v??'').replace(/[&<>"']/g,c=>c==='&'?'&amp;':c==='<'?'&lt;':c==='>'?'&gt;':c==='\"'?'&quot;':'&#39;');
+function num(x,d=2){if(x===null||x===undefined||x==='')return '---';const n=Number(x);return Number.isFinite(n)?n.toFixed(d):'---'}
 function setGauge(score,minScore){
   const s=Math.max(0,Math.min(1,Number(score)||0));
   const hot=s>=(Number(minScore)||0.28);
@@ -163,14 +187,22 @@ function setGauge(score,minScore){
 function drawLine(id,arr,key,color){
   const c=el(id);if(!c)return;const ctx=c.getContext('2d');
   const w=c.width,h=c.height;ctx.clearRect(0,0,w,h);
-  if(!arr||arr.length<2){ctx.fillStyle='#7f9a8c';ctx.fillText('veri yok',12,h/2);return}
-  const ys=arr.map(p=>Number(p[key])).filter(Number.isFinite);
-  if(ys.length<2)return;
-  let mn=Math.min(...ys),mx=Math.max(...ys);if(mx===mn){mx+=1e-9;mn-=1e-9}
-  ctx.strokeStyle=color;ctx.lineWidth=1.6;ctx.beginPath();
-  arr.forEach((p,i)=>{const y=Number(p[key]);if(!Number.isFinite(y))return;
-    const x=i/(arr.length-1)*(w-8)+4;const yy=h-8-((y-mn)/(mx-mn))*(h-16);
-    i?ctx.lineTo(x,yy):ctx.moveTo(x,yy)});ctx.stroke();
+  const pts=(arr||[]).map((p,i)=>({i,y:Number(p[key])})).filter(p=>Number.isFinite(p.y));
+  if(pts.length<2){ctx.fillStyle='#7f9a8c';ctx.font='11px Segoe UI';ctx.fillText('Veri birikiyor',12,h/2);return}
+  let mn=Math.min(...pts.map(p=>p.y)),mx=Math.max(...pts.map(p=>p.y));
+  if(mx===mn){const pad=Math.max(Math.abs(mx)*0.0005,0.000001);mx+=pad;mn-=pad}
+  const left=48,right=w-8,top=10,bottom=h-20;
+  const x=i=>left+(i/Math.max(1,arr.length-1))*(right-left);
+  const y=v=>bottom-((v-mn)/(mx-mn))*(bottom-top);
+  ctx.font='10px Segoe UI';ctx.lineWidth=1;ctx.strokeStyle='#1a2f24';ctx.fillStyle='#7f9a8c';
+  for(let k=0;k<=3;k++){const yy=top+(bottom-top)*k/3;ctx.beginPath();ctx.moveTo(left,yy);ctx.lineTo(right,yy);ctx.stroke();ctx.fillText((mx-(mx-mn)*k/3).toFixed(2),3,yy+3)}
+  const grad=ctx.createLinearGradient(0,top,0,bottom);grad.addColorStop(0,color+'44');grad.addColorStop(1,color+'00');
+  ctx.beginPath();pts.forEach((p,j)=>{const xx=x(p.i),yy=y(p.y);j?ctx.lineTo(xx,yy):ctx.moveTo(xx,yy)});
+  ctx.lineTo(x(pts[pts.length-1].i),bottom);ctx.lineTo(x(pts[0].i),bottom);ctx.closePath();ctx.fillStyle=grad;ctx.fill();
+  ctx.beginPath();pts.forEach((p,j)=>{const xx=x(p.i),yy=y(p.y);j?ctx.lineTo(xx,yy):ctx.moveTo(xx,yy)});
+  ctx.strokeStyle=color;ctx.lineWidth=2;ctx.lineJoin='round';ctx.lineCap='round';ctx.stroke();
+  const last=pts[pts.length-1];ctx.beginPath();ctx.arc(x(last.i),y(last.y),3,0,Math.PI*2);ctx.fillStyle=color;ctx.fill();
+  ctx.fillStyle='#cfe8d8';ctx.textAlign='right';ctx.fillText(last.y.toFixed(3),right,bottom-4);ctx.textAlign='left';
 }
 function drawSpark(arr){
   const c=el('spark');if(!c)return;const ctx=c.getContext('2d');
@@ -182,9 +214,13 @@ function drawSpark(arr){
   ys.forEach((y,i)=>{const x=i/(ys.length-1)*(w-4)+2;const yy=h-4-((y-mn)/(mx-mn))*(h-8);
     i?ctx.lineTo(x,yy):ctx.moveTo(x,yy)});ctx.stroke();
 }
+let updating=false;
 async function tick(){
+  if(updating)return;updating=true;
   try{
-    const s=await(await fetch('/status')).json();
+    const response=await fetch('/status',{cache:'no-store'});
+    if(!response.ok)throw new Error('status '+response.status);
+    const s=await response.json();
     const p=s.portfolio||{};
     const a=s.analysis||{};
     const d=s.last_decision||{};
@@ -192,57 +228,67 @@ async function tick(){
     const start=Number(p.starting_cash_usdt||100);
     const realized=Number(p.realized_pnl_usdt||0);
     const fees=Number(p.fees_paid_usdt||0);
-    const trades=Number(p.trade_count||0);
     el('eq').textContent=num(eq,2)+' USDT';
     el('eq').className='amt'+(eq<start?' neg':'');
-    el('eqsub').textContent='realized '+num(realized,3)+' ?? fees '+num(fees,3);
+    const feeSchedule=s.fee_schedule||{};
+    el('eqsub').textContent='realized '+num(realized,3)+' / fees '+num(fees,3)+' / taker '+num(Number(feeSchedule.taker_rate||0)*10000,2)+' bps';
     el('sym').textContent=String(s.symbol||'???').toUpperCase();
     const minSc=Number((s.risk_limits&&s.risk_limits.entry_min_score)||0.28);
     const score=Number(a.score!=null?a.score:0);
     el('sc').textContent=num(score,2)+' / '+num(minSc,2);
     el('net').textContent=num(realized,3);
     el('net').className='v'+(realized>=0?' pos':' neg');
-    el('tc').textContent=String(trades);
     const fills=s.recent_fills||[];
-    const closed=fills.filter(t=>t.pnl_usdt!=null);
-    const wins=closed.filter(t=>Number(t.pnl_usdt)>0).length;
-    el('wr').textContent=closed.length?(num(100*wins/closed.length,0)+'%'):'???';
-    const peak=Number(s.peak_equity||eq)||eq;
-    const dd=peak>0?((peak-eq)/peak*100):0;
-    el('dd').textContent=num(dd,2)+'%';
+    const expectancy=s.session_expectancy||{};
+    el('wr').textContent=expectancy.n?num(100*Number(expectancy.win_rate||0),0)+'%':'???';
+    el('tc').textContent=String(s.closed_trade_count??p.trade_count??0);
+    el('dd').textContent=num(s.max_drawdown_pct,2)+'%';
     const pills=[];
-    pills.push('<span class=\"pill \"'+(s.connected?'':'off')+'\">'+(s.connected?'LIVE L2':'L2 KOPUK')+'</span>');
-    pills.push('<span class=\"pill\">'+(s.mode||'paper').toUpperCase()+'</span>');
+    pills.push('<span class=\"pill '+(s.connected?'':'off')+'\">'+(s.connected?'L2 OK':'L2 KOPUK')+'</span>');
+    pills.push('<span class=\"pill\">'+esc((s.mode||'paper').toUpperCase())+'</span>');
     const engineStatus=String(s.engine_task_status||'unknown').toUpperCase();
-    pills.push('<span class=\"pill '+(engineStatus==='RUNNING'?'':'off')+'\">ENGINE '+engineStatus+'</span>');
+    pills.push('<span class=\"pill '+(engineStatus==='RUNNING'?'':'off')+'\">ENGINE '+esc(engineStatus)+'</span>');
     if(s.kill_switch)pills.push('<span class=\"pill off\">KILL</span>');
     if(s.emergency)pills.push('<span class=\"pill off\">EMERGENCY</span>');
-    pills.push('<span class=\"pill\">events '+(s.events_seen||0)+'</span>');
+    pills.push('<span class=\"pill\">data '+num(s.data_age_seconds,1)+'s</span>');
+    pills.push('<span class=\"pill\">reconnect '+Number(s.reconnect_count||0)+'</span>');
     el('pills').innerHTML=pills.join('');
     setGauge(score,minSc);
     drawSpark(s.score_history||[]);
-    el('reg').textContent=(a.regime||'???')+' ?? OBI '+num(a.weighted_obi,2);
+    el('reg').textContent=(a.regime||'???')+' / OBI '+num(a.weighted_obi,2);
     el('dec').textContent=(d.action||'???');
     const m=s.market||{};
     el('px').textContent=num((Number(m.bid)+Number(m.ask))/2,2);
     el('spr').textContent=num(a.spread_bps,3)+' bps';
     const blockers=d.blockers||[];
     const rat=d.rationale||[];
-    const why=[...blockers.map(x=>'??? '+x),...rat.map(x=>'?? '+x)];
-    el('why').innerHTML=why.length?why.slice(0,14).map(t=>'<div class=\"'+(String(t).includes('???')?'bad':'')+'\">'+String(t).replace(/[<>]/g,'')+'</div>').join(''):'<div class=\"ok\">Engelsiz ??? edge + flow bekleniyor olabilir</div>';
+    const why=[...blockers.map(x=>'BLOCK: '+x),...rat.map(x=>'INFO: '+x)];
+    el('why').innerHTML=why.length?why.slice(0,14).map(t=>'<div class=\"'+(String(t).startsWith('BLOCK')?'bad':'')+'\">'+esc(t)+'</div>').join(''):'<div class=\"ok\">No active blockers reported</div>';
     const votes=d.votes||[];
-    el('votes').innerHTML=votes.length?votes.map(v=>'<div><b>'+String(v.name||'')+'</b> '+(v.direction||'')+' ?? '+String(v.note||'')+'</div>').join(''):'<div class=\"lbl\">oy yok</div>';
+    el('votes').innerHTML=votes.length?votes.map(v=>'<div><b>'+String(esc(v.name||''))+'</b> '+(esc(v.direction||''))+' / '+String(esc(v.note||''))+'</div>').join(''):'<div class=\"lbl\">oy yok</div>';
     drawLine('pc',s.price_curve||[],'mid','#2eff9a');
     drawLine('ec',s.equity_curve||[],'equity','#ffc14d');
-    el('fills').innerHTML=fills.length?fills.slice(0,14).map(t=>{const pnl=Number(t.pnl_usdt);return '<tr><td>'+String(t.timestamp||'').slice(11,19)+'</td><td>'+String(t.side||'').toUpperCase()+'</td><td>'+num(t.quantity,5)+'</td><td>'+num(t.price,2)+'</td><td class=\"'+(pnl>=0?'pos':'neg')+'\">'+num(pnl,3)+'</td><td>'+num(t.fee_usdt,4)+'</td></tr>';}).join(''):'<tr><td colspan=\"6\" style=\"color:#7f9a8c\">Hen??z fill yok</td></tr>';
+    el('fills').innerHTML=fills.length?fills.slice(0,14).map(t=>{const pnl=Number(t.pnl_usdt);return '<tr><td>'+esc(String(t.timestamp||'').slice(11,19))+'</td><td>'+esc(String(t.side||'').toUpperCase())+'</td><td>'+num(t.quantity,5)+'</td><td>'+num(t.price,2)+'</td><td class=\"'+(pnl>=0?'pos':'neg')+'\">'+num(pnl,3)+'</td><td>'+num(t.fee_usdt,4)+'</td></tr>';}).join(''):'<tr><td colspan=\"6\" style=\"color:#7f9a8c\">Henuz fill yok</td></tr>';
     const logs=s.live_log||[];
-    el('log').innerHTML=logs.length?logs.slice(0,30).map(x=>'<div>'+String(x).replace(/[<>]/g,'')+'</div>').join(''):'<div>log bo??</div>';
+    el('log').innerHTML=logs.length?logs.slice(0,30).map(x=>'<div>'+esc(x)+'</div>').join(''):'<div>Log bos</div>';
     const L=s.learner_snapshot||{};
-    el('lm').textContent=L.growth_mode||'???';
-    el('ln').textContent=L.note||'???';
-  }catch(e){console.warn(e)}
+    const qty=Number(p.base_quantity||0);
+    el('cash').textContent=num(p.cash_usdt,2)+' USDT';
+    el('position').textContent=qty>0?num(qty,6)+' '+String(s.symbol||'').replace(/usdt$/i,'').toUpperCase():'FLAT';
+    el('entry').textContent=qty>0?num(p.average_entry_price,2):'--';
+    el('unreal').textContent=num(p.unrealized_pnl_usdt,3)+' USDT';
+    el('unreal').className='v'+(Number(p.unrealized_pnl_usdt||0)>=0?' pos':' neg');
+    el('dailyfee').textContent=num(s.session_fees_usdt,3)+' USDT';
+    el('expect').textContent=expectancy.n?num(expectancy.expectancy_usdt,4)+' / trade ('+expectancy.n+')':'sample < 12';
+    el('lm').textContent=(L.growth_mode||'rebuild')+(L.frozen?' / FROZEN':' / ADAPTIVE');
+    el('lt').textContent=String(L.lifetime_trades??L.trades??0);
+    el('le').textContent=num(L.entry_min_score,3);
+    el('ls').textContent=num(L.size_bias,2)+'x';
+    el('ltp').textContent=num(L.tp_scale,2)+' / '+num(L.compound_fraction,2);
+    el('ln').textContent=L.note||'No learner update yet';
+  }catch(e){console.warn(e);el('pills').innerHTML='<span class=\"pill off\">DASHBOARD DATA ERROR</span>'}finally{updating=false}
 }
-setInterval(tick,900);tick();
+setInterval(tick,1200);tick();
 </script>
 </body>
 </html>
@@ -368,8 +414,22 @@ def health() -> dict:
 
 @app.get("/status")
 def status() -> dict:
+    from datetime import datetime, timezone
+    from app.config import settings as _s
+    from app.fees import schedule_from_settings
+
     snapshot = state.snapshot()
     snapshot["engine_task_status"] = _engine_task_status()
+    snapshot["server_time"] = datetime.now(timezone.utc).isoformat()
+    snapshot["fee_schedule"] = schedule_from_settings(
+        fee_rate=_s.fee_rate,
+        vip_level=_s.fee_vip_level,
+        use_bnb_discount=_s.fee_use_bnb_discount,
+    ).to_dict()
+    snapshot["fee_schedule"]["assumption"] = (
+        "configured BNB discount; verify BNB balance and account eligibility"
+        if _s.fee_use_bnb_discount else "conservative configured fee; no BNB discount assumed"
+    )
     return snapshot
 
 
