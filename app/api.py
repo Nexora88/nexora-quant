@@ -52,7 +52,7 @@ tbody tr:hover{background:rgba(66,245,161,.035)}
 </style></head><body><main>
 <div class=\"top\">
   <div><div class=\"brand\">NEXORA <span>QUANT</span></div>
-  <div class=\"sub\">Fee-aware Spot L2 · paper / live · edge yoksa trade yok</div>
+  <div class=\"sub\">Spot L2 piyasa verisi · sinyal yoksa işlem yok</div>
   <div class=\"pills\" id=\"pills\"></div></div>
   <div><div class=\"sub\" style=\"text-align:right\">Equity</div><div class=\"eq\" id=\"eq\">—</div>
   <div class=\"sub\" id=\"eqsub\" style=\"text-align:right\">—</div></div>
@@ -60,20 +60,20 @@ tbody tr:hover{background:rgba(66,245,161,.035)}
 <div class=\"grid\">
   <div class=\"stat\"><div class=\"l\">Sembol</div><div class=\"v\" id=\"sym\">—</div></div>
   <div class=\"stat\"><div class=\"l\">Skor</div><div class=\"v\" id=\"sc\">—</div></div>
-  <div class=\"stat\"><div class=\"l\">Net PnL</div><div class=\"v\" id=\"net\">—</div></div>
+  <div class=\"stat\"><div class=\"l\">Net K/Z</div><div class=\"v\" id=\"net\">—</div></div>
   <div class=\"stat\"><div class=\"l\">İşlem</div><div class=\"v\" id=\"tc\">0</div></div>
-  <div class=\"stat\"><div class=\"l\">Session PnL</div><div class=\"v\" id=\"spnl\">—</div></div>
-  <div class=\"stat\"><div class=\"l\">Posture</div><div class=\"v\" id=\"posture\">—</div></div>
+  <div class=\"stat\"><div class=\"l\">Oturum K/Z</div><div class=\"v\" id=\"spnl\">—</div></div>
+  <div class=\"stat\"><div class=\"l\">Risk Görünümü</div><div class=\"v\" id=\"posture\">—</div></div>
 </div>
 <div class=\"row\">
-  <div class=\"card\"><h2>Neden / blockers</h2><div class=\"why\" id=\"why\"></div>
-    <h2 style=\"margin-top:10px\">Retail reality</h2><div class=\"why\" id=\"reality\"></div></div>
-  <div class=\"card\"><h2>Son filller</h2>
-    <table><thead><tr><th>Saat</th><th>Yön</th><th>Fiyat</th><th>PnL</th><th>Fee</th></tr></thead>
+  <div class=\"card\"><h2>Sinyal Engelleri</h2><div class=\"why\" id=\"why\"></div>
+    <h2 style=\"margin-top:10px\">Piyasa Gerçekleri</h2><div class=\"why\" id=\"reality\"></div></div>
+  <div class=\"card\"><h2>Son İşlemler</h2>
+    <table><thead><tr><th>Zaman</th><th>Yön</th><th>Fiyat</th><th>K/Z</th><th>Komisyon</th></tr></thead>
     <tbody id=\"fills\"></tbody></table>
     <h2 style=\"margin-top:10px\">Log</h2><div class=\"log\" id=\"log\"></div></div>
 </div>
-<div class=\"foot\">Garanti kâr yok · fee round-trip · investment advice değil</div>
+<div class=\"foot\">Kâr garantisi yok · ücretler sonucu etkiler · yatırım tavsiyesi değildir</div>
 </main>
 <script>
 const el=id=>document.getElementById(id);
@@ -87,7 +87,7 @@ async function tick(){
     const realized=Number(p.realized_pnl_usdt||0);
     el('eq').textContent=num(eq,2)+' USDT';
     el('eq').className='eq'+(eq<start?' neg':'');
-    el('eqsub').textContent='realized '+num(realized,3)+' · fees '+num(p.fees_paid_usdt,3);
+    el('eqsub').textContent='gerçekleşen '+num(realized,3)+' · komisyon '+num(p.fees_paid_usdt,3);
     el('sym').textContent=String(s.symbol||'—').toUpperCase();
     el('sc').textContent=num(a.score,2);
     el('net').textContent=num(realized,3);
@@ -111,7 +111,7 @@ async function tick(){
     const rr=s.retail_reality||{};
     el('posture').textContent=rr.posture||'—';
     const pills=[];
-    pills.push('<span class=\"pill \"'+(s.connected?'':'off')+'\">'+(s.connected?'LIVE L2':'L2 KOPUK')+'</span>');
+    pills.push('<span class=\"pill \"'+(s.connected?'':'off')+'\">'+(s.connected?'L2 BAĞLI':'L2 BAĞLANTISI YOK')+'</span>');
     pills.push('<span class=\"pill\">'+(s.mode||'paper').toUpperCase()+'</span>');
     if(s.kill_switch)pills.push('<span class=\"pill off\">KILL</span>');
     el('pills').innerHTML=pills.join('');
@@ -125,7 +125,7 @@ async function tick(){
     el('fills').innerHTML=fills.length?fills.slice(0,12).map(t=>{
       const pnl=Number(t.pnl_usdt);const side=String(t.side||'').toUpperCase();
       return '<tr><td>'+String(t.timestamp||'').slice(11,19)+'</td><td class=\"'+(side.includes('BUY')||side==='LONG'?'pos':'neg')+'\">'+side+'</td><td>'+num(t.price,2)+'</td><td class=\"'+(pnl>=0?'pos':'neg')+'\">'+num(pnl,3)+'</td><td>'+num(t.fee_usdt,4)+'</td></tr>';
-    }).join(''):'<tr><td colspan=\"5\" style=\"color:#7f9a8c\">Fill yok — edge + fee kapısı bekleniyor</td></tr>';
+    }).join(''):'<tr><td colspan=\"5\" style=\"color:#7f9a8c\">Henüz kayıtlı işlem yok</td></tr>';
     const logs=s.live_log||[];
     el('log').innerHTML=logs.length?logs.slice(0,20).map(x=>'<div>'+String(x).replace(/[<>]/g,'')+'</div>').join(''):'<div>log boş</div>';
   }catch(e){console.warn(e)}
