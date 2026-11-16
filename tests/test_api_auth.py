@@ -21,3 +21,14 @@ def test_local_api_remains_available_without_token(monkeypatch):
     monkeypatch.delenv("NEXORA_API_TOKEN", raising=False)
     client = TestClient(app)
     assert client.get("/health").status_code == 200
+
+
+def test_private_lan_client_also_requires_bearer_token(monkeypatch):
+    monkeypatch.setenv("NEXORA_API_TOKEN", "lan-secret-token")
+    client = TestClient(app, client=("192.168.1.25", 12345))
+
+    denied = client.get("/health")
+    assert denied.status_code == 403
+
+    allowed = client.get("/health", headers={"Authorization": "Bearer lan-secret-token"})
+    assert allowed.status_code == 200
