@@ -54,7 +54,7 @@ tbody tr:hover{background:rgba(66,245,161,.035)}
   <div><div class=\"brand\">NEXORA <span>QUANT</span></div>
   <div class=\"sub\">Spot L2 piyasa verisi · sinyal yoksa işlem yok</div>
   <div class=\"pills\" id=\"pills\"></div></div>
-  <div><div class=\"sub\" style=\"text-align:right\">Equity</div><div class=\"eq\" id=\"eq\">—</div>
+  <div><div class=\"sub\" style=\"text-align:right\">Portföy Değeri</div><div class=\"eq\" id=\"eq\">—</div>
   <div class=\"sub\" id=\"eqsub\" style=\"text-align:right\">—</div></div>
 </div>
 <div class=\"grid\">
@@ -71,7 +71,7 @@ tbody tr:hover{background:rgba(66,245,161,.035)}
   <div class=\"card\"><h2>Son İşlemler</h2>
     <table><thead><tr><th>Zaman</th><th>Yön</th><th>Fiyat</th><th>K/Z</th><th>Komisyon</th></tr></thead>
     <tbody id=\"fills\"></tbody></table>
-    <h2 style=\"margin-top:10px\">Log</h2><div class=\"log\" id=\"log\"></div></div>
+    <h2 style=\"margin-top:10px\">Sistem Günlüğü</h2><div class=\"log\" id=\"log\"></div></div>
 </div>
 <div class=\"foot\">Kâr garantisi yok · ücretler sonucu etkiler · yatırım tavsiyesi değildir</div>
 </main>
