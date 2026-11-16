@@ -11,7 +11,7 @@
   MIN_HOLD_SECONDS / MAX_HOLD_SECONDS / MAX_TRADES_PER_HOUR / MAX_DAILY_FEE — anti-churn + time stop
   PAPER_SOFT_GATES — paper-only edge ceiling relax (never on live)
   PREFER_MAKER — post-only LIMIT_MAKER entry when True (live+paper)
-  Scalp defaults: TP 0.55 / SL 0.18, BNB fee discount, wick stop confirmations
+  Paper defaults: conservative undiscounted fees; BNB discount is opt-in only
 """
 from dataclasses import dataclass
 import os
@@ -60,7 +60,7 @@ class Settings:
     order_size_usdt: float = _float("ORDER_SIZE_USDT", 15.0)
     fee_rate: float = _float("FEE_RATE", 0.001)
     fee_vip_level: int = int(os.getenv("FEE_VIP_LEVEL", "0"))
-    fee_use_bnb_discount: bool = _bool("FEE_USE_BNB_DISCOUNT", True)
+    fee_use_bnb_discount: bool = _bool("FEE_USE_BNB_DISCOUNT", False)
     stop_stress_multiplier: float = _float("STOP_STRESS_MULTIPLIER", 2.5)
     stop_tail_bps: float = _float("STOP_TAIL_BPS", 8.0)
     max_order_size_usdt: float = _float("MAX_ORDER_SIZE_USDT", 25.0)
