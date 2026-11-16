@@ -292,7 +292,15 @@ class RuntimeState:
             "emergency": self.emergency,
             "emergency_reason": self.emergency_reason,
             "io_queue_stats": dict(self.io_queue_stats) if self.io_queue_stats else {},
-            "learner_snapshot": dict(self.learner_snapshot) if self.learner_snapshot else {},
+            "learner_snapshot": (
+                asdict(self.learner_snapshot)
+                if hasattr(self.learner_snapshot, "__dataclass_fields__")
+                else dict(self.learner_snapshot)
+                if isinstance(self.learner_snapshot, dict)
+                else dict(self.learner_snapshot.to_dict())
+                if callable(getattr(self.learner_snapshot, "to_dict", None))
+                else {}
+            ),
             "memory_lessons": list(self.memory_lessons)[:10],
             "motor_report": self.motor_report,
             "risk_limits": {

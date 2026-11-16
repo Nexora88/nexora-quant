@@ -13,35 +13,44 @@ def make_book() -> DepthBook:
     return book
 
 
-def test_contiguous_update_requires_matching_previous_final_id():
+def test_spot_contiguous_update_uses_u_u_ranges_without_futures_pu():
     book = make_book()
     assert book.apply_diff(
-        first_update_id=100, final_update_id=102, previous_final_update_id=100,
+        first_update_id=100, final_update_id=102,
         bids=[(100, 1)], asks=[],
     )
     assert book.last_update_id == 102
     assert book.best_bid == (100.0, 1.0)
 
 
-def test_overlapping_update_range_with_wrong_previous_id_invalidates_book():
+def test_spot_overlapping_update_range_is_valid():
     book = make_book()
-    # U is not beyond lastUpdateId + 1, so the old U/u-only check accepted this.
-    assert not book.apply_diff(
-        first_update_id=101, final_update_id=103, previous_final_update_id=99,
+    assert book.apply_diff(
+        first_update_id=101, final_update_id=103,
         bids=[(100, 1)], asks=[],
     )
-    assert not book.synchronized
-    assert book.last_update_id == 100
-    assert book.best_bid == (99.0, 2.0)
+    assert book.synchronized
+    assert book.last_update_id == 103
 
 
 def test_update_gap_invalidates_book():
     book = make_book()
     assert not book.apply_diff(
-        first_update_id=102, final_update_id=103, previous_final_update_id=100,
+        first_update_id=102, final_update_id=103,
         bids=[], asks=[],
     )
     assert not book.synchronized
+
+
+def test_stale_duplicate_update_is_ignored():
+    book = make_book()
+    assert not book.apply_diff(
+        first_update_id=90, final_update_id=100,
+        bids=[(100, 1)], asks=[],
+    )
+    assert book.synchronized
+    assert book.last_update_id == 100
+    assert book.best_bid == (99.0, 2.0)
 
 
 def test_malformed_ask_does_not_partially_apply_bid():

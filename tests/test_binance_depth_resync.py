@@ -72,3 +72,36 @@ def test_depth_stream_takes_new_snapshot_after_sequence_gap(monkeypatch):
         await stream.aclose()
 
     asyncio.run(scenario())
+
+
+def test_spot_depth_stream_accepts_sequential_events_without_futures_pu(monkeypatch):
+    snapshot_calls = []
+
+    def fake_snapshot(symbol):
+        snapshot_calls.append(symbol)
+        return {"lastUpdateId": 100, "bids": [["99", "2"]], "asks": [["101", "2"]]}
+
+    events = [
+        {"e": "depthUpdate", "U": 100, "u": 102, "b": [["100", "1"]], "a": []},
+        {"e": "depthUpdate", "U": 102, "u": 104, "b": [["100", "2"]], "a": []},
+    ]
+    socket = FakeSocket(events)
+    monkeypatch.setattr(binance_depth, "_snapshot", fake_snapshot)
+    monkeypatch.setattr(binance_depth.websockets, "connect", lambda *a, **k: FakeConnection(socket))
+
+    async def scenario():
+        stream = binance_depth.stream_synchronized_depth("btcusdt")
+        initial = await anext(stream)
+        initial_id = initial.last_update_id
+        first = await anext(stream)
+        first_id = first.last_update_id
+        second = await anext(stream)
+        second_id = second.last_update_id
+        assert initial_id == 100
+        assert first_id == 102
+        assert second_id == 104
+        assert second.best_bid == (100.0, 2.0)
+        assert snapshot_calls == ["btcusdt"]
+        await stream.aclose()
+
+    asyncio.run(scenario())

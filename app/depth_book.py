@@ -43,7 +43,6 @@ class DepthBook:
     def apply_diff(
         self, *, first_update_id: int, final_update_id: int,
         bids: Iterable[tuple[float, float]], asks: Iterable[tuple[float, float]],
-        previous_final_update_id: int | None = None,
     ) -> bool:
         """Apply a Binance diff event; return True if accepted, False on gap/stale."""
         if not self.synchronized or self.last_update_id is None:
@@ -54,12 +53,9 @@ class DepthBook:
         if final_update_id <= self.last_update_id:
             return False  # stale or duplicate event
 
-        # Binance Spot continuity: after the initial snapshot bridge, each event's
-        # pu must equal the previous event's final update ID. U/u range checks alone
-        # can accept a broken chain when update ranges overlap.
-        if previous_final_update_id is not None and previous_final_update_id != self.last_update_id:
-            self.synchronized = False
-            return False
+        # Binance Spot diff-depth events use U/u ranges; the pu field belongs
+        # to USD-M Futures streams and is not present in Spot payloads. For Spot,
+        # overlapping ranges are valid; only a forward gap is fatal.
         if first_update_id > self.last_update_id + 1:
             self.synchronized = False
             return False
