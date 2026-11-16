@@ -31,9 +31,7 @@ from app.circuit_breaker import DrawdownCircuitBreaker
 from app.atr_stops import AtrTracker
 from app.portfolio_risk import PortfolioRiskGate
 from app.strategy import PriceWindow
-from app.live_hardening import harden_live_executor
 
-harden_live_executor()
 
 log = logging.getLogger(__name__)
 state = RuntimeState()
@@ -121,31 +119,9 @@ sustained = SustainedSignalGate(
 
 
 def _build_executor():
-    if settings.trading_mode == "live":
-        from app.binance_rest import BinanceRestClient
-        from app.live import LiveExecutor
-        from app.live_maker import install_buy_limit
-
-        # Prefer-maker path requires buy_limit; fail closed if install breaks.
-        try:
-            install_buy_limit(LiveExecutor)
-        except Exception as exc:
-            log.exception("install_buy_limit failed")
-            if bool(getattr(settings, "prefer_maker", False)):
-                raise RuntimeError(
-                    "PREFER_MAKER=true but buy_limit could not be installed on LiveExecutor"
-                ) from exc
-        if bool(getattr(settings, "prefer_maker", False)) and not hasattr(LiveExecutor, "buy_limit"):
-            raise RuntimeError(
-                "PREFER_MAKER=true but LiveExecutor.buy_limit is missing after install"
-            )
-
-        client = BinanceRestClient(
-            api_key=settings.binance_api_key,
-            api_secret=settings.binance_api_secret,
-            testnet=settings.binance_testnet,
-        )
-        return LiveExecutor(client, settings.symbol, fee_rate=settings.effective_fee_rate())
+    """Create the paper executor only; live execution is intentionally disabled."""
+    if settings.trading_mode != "paper":
+        raise RuntimeError("Nexora Quant engine is restricted to paper mode")
     return PaperExecutor(settings.starting_cash_usdt, settings.effective_fee_rate())
 
 
