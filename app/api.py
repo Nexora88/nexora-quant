@@ -78,57 +78,40 @@ tbody tr:hover{background:rgba(66,245,161,.035)}
 <script>
 const el=id=>document.getElementById(id);
 const num=(x,d=2)=>{const n=Number(x);return Number.isFinite(n)?n.toFixed(d):'—'};
-async function tick(){
-  try{
-    const s=await(await fetch('/status')).json();
+function setText(id,value){el(id).textContent=String(value??'—')}
+function addRows(target,items,mapper,emptyText){
+  const node=el(target); node.replaceChildren();
+  if(!items.length){const row=document.createElement(target==='fills'?'tr':'div');
+    if(target==='fills'){const cell=document.createElement('td');cell.colSpan=5;cell.textContent=emptyText;row.append(cell)}
+    else row.textContent=emptyText; node.append(row); return;
+  }
+  for(const item of items){node.append(mapper(item))}
+}
+function textCell(row,value,className){const cell=document.createElement('td');cell.textContent=String(value??'—');if(className)cell.className=className;row.append(cell)}
+function tick(){
+  fetch('/status').then(r=>{if(!r.ok)throw new Error('status '+r.status);return r.json()}).then(s=>{
     const p=s.portfolio||{},a=s.analysis||{},d=s.last_decision||{};
-    const eq=Number(p.equity_usdt||p.cash_usdt||0);
-    const start=Number(p.starting_cash_usdt||100);
-    const realized=Number(p.realized_pnl_usdt||0);
-    el('eq').textContent=num(eq,2)+' USDT';
-    el('eq').className='eq'+(eq<start?' neg':'');
-    el('eqsub').textContent='gerçekleşen '+num(realized,3)+' · komisyon '+num(p.fees_paid_usdt,3);
-    el('sym').textContent=String(s.symbol||'—').toUpperCase();
-    el('sc').textContent=num(a.score,2);
-    el('net').textContent=num(realized,3);
-    el('net').className='v '+(realized>=0?'pos':'neg');
-    el('tc').textContent=String(p.trade_count||0);
-    const sp=Number(s.session_realized_pnl_usdt||0);
-    el('spnl').textContent=num(sp,3);
-    el('spnl').className='v '+(sp>=0?'pos':'neg');
-    const exp=s.session_expectancy||{};
-    const ms=s.maker_stats||{};
-    const expN=Number(exp.n||0);
-    let extra='';
-    if(expN>0){
-      extra+=' · exp '+num(exp.expectancy_usdt,3)+' ('+expN+'x, wr '+num((exp.win_rate||0)*100,0)+'%)';
-    }
-    if(ms.attempts){
-      extra+=' · maker '+(ms.fills||0)+'/'+ms.attempts+(ms.timeout_rate!=null?' to '+num(ms.timeout_rate*100,0)+'%':'');
-      if(ms.weak_maker_path) extra+=' ⚠';
-    }
-    el('eqsub').textContent='realized '+num(realized,3)+' · fees '+num(p.fees_paid_usdt,3)+extra;
-    const rr=s.retail_reality||{};
-    el('posture').textContent=rr.posture||'—';
-    const pills=[];
-    pills.push('<span class=\"pill \"'+(s.connected?'':'off')+'\">'+(s.connected?'L2 BAĞLI':'L2 BAĞLANTISI YOK')+'</span>');
-    pills.push('<span class=\"pill\">'+(s.mode||'paper').toUpperCase()+'</span>');
-    if(s.kill_switch)pills.push('<span class=\"pill off\">KILL</span>');
-    el('pills').innerHTML=pills.join('');
-    const blockers=d.blockers||s.blockers_live||[];
-    const rat=d.rationale||[];
-    const why=[...blockers.map(x=>'⛔ '+x),...rat.slice(0,6).map(x=>'· '+x)];
-    el('why').innerHTML=why.length?why.slice(0,12).map(t=>'<div>'+String(t).replace(/[<>]/g,'')+'</div>').join(''):'<div class=\"pos\">Engelsiz — edge bekleniyor olabilir</div>';
-    const rec=rr.recommendations||[];
-    el('reality').innerHTML='<div>'+String(rr.summary||'—').replace(/[<>]/g,'')+'</div>'+rec.slice(0,5).map(x=>'<div>· '+String(x).replace(/[<>]/g,'')+'</div>').join('');
-    const fills=s.recent_fills||[];
-    el('fills').innerHTML=fills.length?fills.slice(0,12).map(t=>{
-      const pnl=Number(t.pnl_usdt);const side=String(t.side||'').toUpperCase();
-      return '<tr><td>'+String(t.timestamp||'').slice(11,19)+'</td><td class=\"'+(side.includes('BUY')||side==='LONG'?'pos':'neg')+'\">'+side+'</td><td>'+num(t.price,2)+'</td><td class=\"'+(pnl>=0?'pos':'neg')+'\">'+num(pnl,3)+'</td><td>'+num(t.fee_usdt,4)+'</td></tr>';
-    }).join(''):'<tr><td colspan=\"5\" style=\"color:#7f9a8c\">Henüz kayıtlı işlem yok</td></tr>';
-    const logs=s.live_log||[];
-    el('log').innerHTML=logs.length?logs.slice(0,20).map(x=>'<div>'+String(x).replace(/[<>]/g,'')+'</div>').join(''):'<div>log boş</div>';
-  }catch(e){console.warn(e)}
+    const eq=Number(p.equity_usdt||p.cash_usdt||0),start=Number(p.starting_cash_usdt||100),realized=Number(p.realized_pnl_usdt||0);
+    setText('eq',num(eq,2)+' USDT');el('eq').className='eq'+(eq<start?' neg':'');
+    const exp=s.session_expectancy||{},ms=s.maker_stats||{};let extra='';
+    if(Number(exp.n||0)>0)extra+=' · exp '+num(exp.expectancy_usdt,3)+' ('+exp.n+'x, wr '+num((exp.win_rate||0)*100,0)+'%)';
+    if(ms.attempts)extra+=' · maker '+(ms.fills||0)+'/'+ms.attempts+(ms.timeout_rate!=null?' to '+num(ms.timeout_rate*100,0)+'%':'');
+    setText('eqsub','gerçekleşen '+num(realized,3)+' · komisyon '+num(p.fees_paid_usdt,3)+extra);
+    setText('sym',String(s.symbol||'—').toUpperCase());setText('sc',num(a.score,2));
+    setText('net',num(realized,3));el('net').className='v '+(realized>=0?'pos':'neg');
+    setText('tc',p.trade_count||0);const sp=Number(s.session_realized_pnl_usdt||0);
+    setText('spnl',num(sp,3));el('spnl').className='v '+(sp>=0?'pos':'neg');setText('posture',(s.retail_reality||{}).posture||'—');
+    const pills=el('pills');pills.replaceChildren();
+    const addPill=(label,off)=>{const span=document.createElement('span');span.className='pill'+(off?' off':'');span.textContent=label;pills.append(span)};
+    addPill(s.connected?'L2 BAĞLI':'L2 BAĞLANTISI YOK',!s.connected);addPill(String(s.mode||'paper').toUpperCase(),false);if(s.kill_switch)addPill('KILL',true);
+    const blockers=d.blockers||s.blockers_live||[],rat=d.rationale||[];
+    addRows('why',[...blockers.map(x=>'⛔ '+x),...rat.slice(0,6).map(x=>'· '+x)].slice(0,12),x=>{const div=document.createElement('div');div.textContent=String(x);return div},'Engel yok — edge bekleniyor olabilir');
+    const rr=s.retail_reality||{};addRows('reality',[rr.summary||'—',...(rr.recommendations||[]).slice(0,5)],x=>{const div=document.createElement('div');div.textContent=String(x);return div},'—');
+    addRows('fills',(s.recent_fills||[]).slice(0,12),t=>{const row=document.createElement('tr'),side=String(t.side||'').toUpperCase(),pnl=Number(t.pnl_usdt);
+      textCell(row,String(t.timestamp||'').slice(11,19));textCell(row,side,side.includes('BUY')||side==='LONG'?'pos':'neg');textCell(row,num(t.price,2));
+      textCell(row,num(pnl,3),pnl>=0?'pos':'neg');textCell(row,num(t.fee_usdt,4));return row},'Henüz kayıtlı işlem yok');
+    addRows('log',(s.live_log||[]).slice(0,20),x=>{const div=document.createElement('div');div.textContent=String(x);return div},'log boş');
+  }).catch(e=>console.warn(e));
 }
 setInterval(tick,1000);tick();
 </script></body></html>
@@ -185,8 +168,6 @@ def _is_private_lan(host: str) -> bool:
 async def restrict_remote_access(request: Request, call_next):
     client_host = request.client.host if request.client else ""
     if client_host in {"127.0.0.1", "::1", "localhost", "testclient"}:
-        return await call_next(request)
-    if _is_private_lan(client_host):
         return await call_next(request)
     expected = os.getenv("NEXORA_API_TOKEN", "")
     supplied = request.headers.get("authorization", "")
