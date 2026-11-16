@@ -1,47 +1,41 @@
-# Profit path (honest) — 100 → 140–150
+# Profit path (honest) — validation before compounding
 
-**No guarantee.** This document is an operating protocol, not a promise.
+**No guarantee.** This is an operating protocol, not a promise of returns.
 
 ## Reality check
 
-- Spot VIP0 round-trip is ~15–20 bps (BNB) to ~20 bps (no BNB) before spread/impact.
-- Scalp TP 0.40–0.90% leaves a thin net band after fees.
-- 100 USDT desk: few trades → high variance. 40–50% equity gain needs **repeated fee-net positive expectancy**, not one lucky session.
+- Spot VIP0 taker fees are approximately 10 bps per side before any account-specific discount; spread, impact and slippage are additional.
+- A small take-profit target can be consumed by transaction friction. A signal is not a forecast.
+- A 100 USDT account has high variance; growth requires repeated positive net expectancy after all costs, not a lucky session.
 
 ## Protocol (paper first)
 
-1. Wipe ledger: delete `data/paper.sqlite3`.
-2. Run **strict paper** for 48–72h with `PAPER_SOFT_GATES=false` once you have ≥20 closed trades under soft gates.
-3. Dashboard must show:
-   - `session_expectancy.expectancy_usdt > 0`
-   - `maker_stats.timeout_rate < 0.30` (if `PREFER_MAKER=true`)
-   - max drawdown within `MAX_DAILY_LOSS_USDT`
-4. If expectancy < 0 after `EXPECTANCY_MIN_TRADES` (default 12), the engine **halts new entries** until fee-net recovers (adaptive gate).
-5. Only then: testnet E2E → `scripts/go_live_gate.py` → mini mainnet (50–100 USDT).
+1. Preserve the existing paper ledger. If a clean experiment is needed, back it up and use a separate paper database; never delete an open position or its accounting history.
+2. Run strict paper for at least 48 hours with PAPER_SOFT_GATES=false and at least 20 fee-complete closed trades. If no valid signals occur, extend the observation period rather than weakening gates.
+3. Require positive realized net expectancy after actual fees, controlled drawdown, complete commission accounting, and acceptable maker timeout/fill statistics.
+4. If rolling fee-net expectancy is negative, halt new entries or run a separately labeled reduced-risk research cohort; do not disguise losses with soft gates.
+5. Then run Spot Testnet E2E, review the fresh GO_LIVE gate, and obtain explicit operator approval before any mainnet experiment.
 
-## Settings that improve survival (not magic)
+## Conservative 100 USDT research settings
 
-| Knob | Prefer | Why |
-|------|--------|-----|
-| `PREFER_MAKER` | true | Cuts entry fee; largest single lever |
-| `FEE_USE_BNB_DISCOUNT` | true | Lower taker/maker |
-| `TAKE_PROFIT_PCT` | 0.60–0.80 | More room after fees |
-| `STOP_LOSS_PCT` | 0.20–0.25 | Still keep R ≥ 2 |
-| `MAX_TRADES_PER_HOUR` | 6–8 | Less fee churn |
-| `MIN_HOLD_SECONDS` | 120+ | Avoid instant round-trips |
-| `COMPOUND_FRACTION` | 0.7–0.85 | Redeploy wins slowly |
-| `TARGET_EQUITY_USDT` | 140 | Soft halt when goal hit |
+| Knob | Initial setting | Purpose |
+|------|-----------------|---------|
+| MIN_EDGE_OVER_FEES | 2.0 | Estimated gross move must cover at least 2x all-in round-trip friction |
+| RISK_PER_TRADE_PCT | 0.35 | Initial risk budget per trade, before stress slippage |
+| MAX_DAILY_LOSS_USDT | 2.0 | Daily stop for the 100 USDT example account |
+| MAX_DAILY_FEE_USDT | 0.75 | Fee churn ceiling |
+| MAX_TRADES_PER_HOUR | 8 | Prevent overtrading |
+| MIN_HOLD_SECONDS | 120 | Avoid instant round-trips; protective exits remain active |
+| COMPOUND_FRACTION | 0.50 | Conservative sizing allocation; not a promise to reinvest profit |
+| MAX_CONCURRENT_POSITIONS | 1 | Keep exposure and accounting simple |
+| PAPER_SOFT_GATES | false | Validate the actual strict entry policy |
 
-## What will **not** get you to 150
+Use BNB discounts only if the Binance account is eligible and actually pays fees in BNB. Maker orders can fail to fill and may suffer adverse selection; never assume every fill is maker.
 
-- More aggressive entry score alone
-- Soft paper gates treated as live proof
-- Learning from <25 closed trades
-- Ignoring maker timeout rate
+## Futures
 
-## Success definition for this desk
+Futures are not enabled by the current Spot executor. They require a separate adapter, margin and funding-cost model, mark-price/liquidation controls, reduce-only exits and independent testnet validation. Do not route Futures orders through the Spot client.
 
-First milestone: **fee-net equity 105–110 with controlled DD** over multi-day paper.  
-Second: same on testnet.  
-Third: mini mainnet.  
-140–150 is **compound + time + edge**, not a single code push.
+## Success definition
+
+First milestone: durable positive fee-net expectancy with controlled drawdown in Spot paper. Second: repeat the evidence on Spot Testnet. Only after that should a tiny mainnet pilot even be considered. Faster compounding does not create an edge; it magnifies both gains and losses.

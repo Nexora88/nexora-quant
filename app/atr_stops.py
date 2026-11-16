@@ -75,7 +75,7 @@ def compute_dynamic_targets(
         raw_tp *= 0.90
     sl = max(floor_sl, min(ceiling_sl, raw_sl if raw_sl > 0 else floor_sl))
     tp = max(floor_tp, min(ceiling_tp, raw_tp if raw_tp > 0 else floor_tp))
-    fee_floor = max(0.0, float(fee_round_trip_pct)) * 1.6
+    fee_floor = max(0.0, float(fee_round_trip_pct)) * 2.0
     if tp < fee_floor:
         tp = min(ceiling_tp, max(tp, fee_floor, floor_tp))
     if tp < sl * 1.8:

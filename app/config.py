@@ -69,9 +69,9 @@ class Settings:
     stop_stress_multiplier: float = _float("STOP_STRESS_MULTIPLIER", 2.5)
     stop_tail_bps: float = _float("STOP_TAIL_BPS", 8.0)
     max_order_size_usdt: float = _float("MAX_ORDER_SIZE_USDT", 25.0)
-    max_daily_loss_usdt: float = _float("MAX_DAILY_LOSS_USDT", 12.0)
-    max_consecutive_losses: int = int(os.getenv("MAX_CONSECUTIVE_LOSSES", "5"))
-    max_spread_bps: float = _float("MAX_SPREAD_BPS", 25.0)
+    max_daily_loss_usdt: float = _float("MAX_DAILY_LOSS_USDT", 2.0)
+    max_consecutive_losses: int = int(os.getenv("MAX_CONSECUTIVE_LOSSES", "4"))
+    max_spread_bps: float = _float("MAX_SPREAD_BPS", 22.0)
     max_data_age_seconds: float = _float("MAX_DATA_AGE_SECONDS", 8.0)
     imbalance_threshold: float = _float("IMBALANCE_THRESHOLD", 0.55)
     take_profit_pct: float = _float("TAKE_PROFIT_PCT", 0.55)
@@ -95,20 +95,20 @@ class Settings:
     live_confirm: str = os.getenv("LIVE_CONFIRM", "")
     autonomous_mode: bool = _bool("AUTONOMOUS_MODE", True)
     autonomous_symbol: bool = _bool("AUTONOMOUS_SYMBOL", True)
-    compound_fraction: float = _float("COMPOUND_FRACTION", 0.85)
+    compound_fraction: float = _float("COMPOUND_FRACTION", 0.50)
     use_atr_targets: bool = _bool("USE_ATR_TARGETS", True)
     wick_stop_confirmations: int = int(os.getenv("WICK_STOP_CONFIRMATIONS", "2"))
-    min_edge_over_fees: float = _float("MIN_EDGE_OVER_FEES", 1.2)
-    min_hold_seconds: float = _float("MIN_HOLD_SECONDS", 90.0)
-    max_trades_per_hour: int = int(os.getenv("MAX_TRADES_PER_HOUR", "12"))
-    max_daily_fee_usdt: float = _float("MAX_DAILY_FEE_USDT", 4.0)
-    entry_cooldown_seconds: float = _float("ENTRY_COOLDOWN_SECONDS", 30.0)
+    min_edge_over_fees: float = _float("MIN_EDGE_OVER_FEES", 2.0)
+    min_hold_seconds: float = _float("MIN_HOLD_SECONDS", 120.0)
+    max_trades_per_hour: int = int(os.getenv("MAX_TRADES_PER_HOUR", "8"))
+    max_daily_fee_usdt: float = _float("MAX_DAILY_FEE_USDT", 0.75)
+    entry_cooldown_seconds: float = _float("ENTRY_COOLDOWN_SECONDS", 45.0)
     max_hold_seconds: float = _float("MAX_HOLD_SECONDS", 2700.0)
-    risk_per_trade_pct: float = _float("RISK_PER_TRADE_PCT", 0.40)
+    risk_per_trade_pct: float = _float("RISK_PER_TRADE_PCT", 0.35)
     max_concurrent_positions: int = int(os.getenv("MAX_CONCURRENT_POSITIONS", "1"))
     vol_target_enabled: bool = _bool("VOL_TARGET_ENABLED", True)
     min_order_usdt: float = _float("MIN_ORDER_USDT", 6.0)
-    paper_soft_gates: bool = _bool("PAPER_SOFT_GATES", True)
+    paper_soft_gates: bool = _bool("PAPER_SOFT_GATES", False)
     prefer_maker: bool = _bool("PREFER_MAKER", False)
     maker_wait_seconds: float = float(os.getenv("MAKER_WAIT_SECONDS", "8") or 8)
     impact_coefficient: float = _float("IMPACT_COEFFICIENT", 0.1)
@@ -169,8 +169,8 @@ class Settings:
             raise ValueError("MAX_CONCURRENT_POSITIONS must be >= 1.")
         if self.wick_stop_confirmations < 0:
             raise ValueError("WICK_STOP_CONFIRMATIONS cannot be negative.")
-        if self.min_edge_over_fees < 1.0:
-            raise ValueError("MIN_EDGE_OVER_FEES must be >= 1.0.")
+        if self.min_edge_over_fees < 2.0:
+            raise ValueError("MIN_EDGE_OVER_FEES must be >= 2.0.")
         if self.min_hold_seconds < 0:
             raise ValueError("MIN_HOLD_SECONDS cannot be negative.")
         if self.max_trades_per_hour < 1:
@@ -199,8 +199,8 @@ class Settings:
                 raise ValueError("Live MAX_ORDER_SIZE_USDT cannot exceed 25% of starting cash.")
             if self.max_daily_loss_usdt > self.starting_cash_usdt * 0.10:
                 raise ValueError("Live MAX_DAILY_LOSS_USDT cannot exceed 10% of starting cash.")
-            if self.min_edge_over_fees < 1.25:
-                raise ValueError("Live mode requires MIN_EDGE_OVER_FEES >= 1.25.")
+            if self.min_edge_over_fees < 2.0:
+                raise ValueError("Live mode requires MIN_EDGE_OVER_FEES >= 2.0.")
             if not self.binance_api_key or not self.binance_api_secret:
                 raise ValueError("Live mode requires BINANCE_API_KEY and BINANCE_API_SECRET.")
             if not self.binance_testnet:
