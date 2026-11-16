@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from app.atr_stops import compute_dynamic_targets
+from app.decision import build_decision
 from app.strategy import MarketAnalysis, PriceWindow, entry_signal_from_analysis, exit_reason
 
 
@@ -14,7 +15,7 @@ def _analysis(m1=None, m5=None):
 
 
 def test_price_window_tracks_real_elapsed_time_momentum():
-    prices = PriceWindow(maxlen=1000)
+    prices = PriceWindow(maxlen=1000, sample_interval_seconds=0)
     for second in range(301):
         prices.push(100.0 + second * 0.01, timestamp=float(second))
     assert prices.momentum_over(60) > 0
@@ -22,7 +23,7 @@ def test_price_window_tracks_real_elapsed_time_momentum():
 
 
 def test_price_window_does_not_fake_full_window_during_warmup():
-    prices = PriceWindow()
+    prices = PriceWindow(sample_interval_seconds=0)
     for second in range(20):
         prices.push(100.0 + second * 0.01, timestamp=float(second))
     assert prices.momentum_over(60) is None
@@ -31,6 +32,17 @@ def test_price_window_does_not_fake_full_window_during_warmup():
 
 def test_spot_entry_rejects_confirmed_down_momentum():
     assert entry_signal_from_analysis(_analysis(m1=-4.0, m5=-8.0), min_score=0.2) is None
+
+
+def test_autonomous_decision_cannot_bypass_negative_momentum_block():
+    decision = build_decision(
+        analysis=_analysis(m1=-4.0, m5=-8.0),
+        autonomous_mode=True,
+        entry_min_score=0.2,
+    )
+    assert decision.action == "block"
+    assert "momentum_1m_not_positive" in decision.blockers
+    assert "momentum_5m_opposed" in decision.blockers
 
 
 def test_exit_cuts_losing_position_on_multitimeframe_reversal():

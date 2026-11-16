@@ -116,6 +116,11 @@ def build_decision(
         blockers.append(kill_reason or "kill_switch")
     if analysis.regime == MarketRegime.STRESSED.value:
         blockers.append("regime_stressed")
+    # These are hard directional constraints and must not be softened by autonomous mode.
+    if not in_position and analysis.momentum_1m_bps is not None and analysis.momentum_1m_bps <= 0:
+        blockers.append("momentum_1m_not_positive")
+    if not in_position and analysis.momentum_5m_bps is not None and analysis.momentum_5m_bps < -3.0:
+        blockers.append("momentum_5m_opposed")
     if analysis.spread_bps > 20:
         blockers.append(f"wide_spread_{analysis.spread_bps:.1f}bps")
     if sustained is not None and not sustained.ready and not in_position:
