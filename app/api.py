@@ -16,30 +16,39 @@ DASHBOARD = """<!doctype html>
 <meta charset=\"utf-8\"/><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"/>
 <title>Nexora Quant Desk</title>
 <style>
-:root{--bg:#050a08;--card:#0e1a14;--line:#1a2f24;--g:#2eff9a;--r:#ff4d6a;--a:#ffc14d;--m:#7f9a8c;--t:#e7f7ee}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--t);font:13px/1.45 system-ui,sans-serif}
-main{max-width:1100px;margin:0 auto;padding:14px 12px 40px}
-.top{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px}
-.brand{font-size:18px;font-weight:800;letter-spacing:.04em}.brand span{color:var(--g)}
-.sub{color:var(--m);font-size:11px;margin-top:2px}
-.eq{font-size:28px;font-weight:800;color:var(--g);text-align:right}.eq.neg{color:var(--r)}
-.pills{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
-.pill{border:1px solid var(--line);padding:3px 9px;border-radius:999px;font-size:10px;font-weight:700;color:var(--g)}
-.pill.off{color:var(--r);border-color:#4a2030}.pill.warn{color:var(--a)}
-.grid{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:10px}
-.stat{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px}
-.stat .l{color:var(--m);font-size:10px;text-transform:uppercase}.stat .v{font-size:16px;font-weight:700;margin-top:3px}
-.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;margin-bottom:10px}
-h2{margin:0 0 8px;font-size:11px;color:#cfe8d8;text-transform:uppercase;letter-spacing:.05em}
-.pos{color:var(--g)}.neg{color:var(--r)}
-table{width:100%;border-collapse:collapse;font-size:12px}
-th,td{padding:5px 4px;border-bottom:1px solid #152018;text-align:left}
-th{color:var(--m);font-size:10px}
-.why div{padding:3px 0;border-bottom:1px solid #152018;font-size:12px}
-.log{font-family:ui-monospace,monospace;font-size:11px;max-height:140px;overflow:auto;background:#070e0b;border:1px solid var(--line);border-radius:10px;padding:8px;color:#9bbfad}
-.foot{text-align:center;color:var(--m);font-size:11px;margin-top:14px}
-@media(max-width:800px){.grid{grid-template-columns:repeat(3,1fr)}.row{grid-template-columns:1fr}}
+:root{color-scheme:dark;--bg:#070b0a;--surface:#0d1512;--surface-2:#111d18;--line:#20372b;--line-soft:#17271f;--green:#42f5a1;--green-soft:#a3f5c9;--red:#ff647c;--amber:#f5c46b;--muted:#8ba596;--text:#e9f5ee;--shadow:0 18px 48px rgba(0,0,0,.24)}
+*{box-sizing:border-box}
+html{min-height:100%;background:var(--bg);-webkit-text-size-adjust:100%;text-size-adjust:100%}
+body{margin:0;min-height:100vh;background:radial-gradient(ellipse at 14% -8%,rgba(48,135,91,.15),transparent 34%),radial-gradient(ellipse at 100% 0,rgba(41,93,71,.10),transparent 28%),var(--bg);color:var(--text);font:13px/1.55 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Arial,sans-serif;letter-spacing:.005em}
+main{width:min(1180px,100%);margin:0 auto;padding:24px 20px 42px}
+.top{display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap;padding:18px 20px;margin-bottom:14px;border:1px solid var(--line);border-radius:18px;background:linear-gradient(120deg,rgba(17,32,24,.96),rgba(10,19,15,.96));box-shadow:var(--shadow)}
+.brand{font-size:19px;font-weight:850;letter-spacing:.12em}.brand span{color:var(--green)}
+.sub{color:var(--muted);font-size:11px;margin-top:4px;letter-spacing:.025em}
+.eq{font-size:clamp(25px,4vw,34px);font-weight:800;line-height:1.15;color:var(--green);text-align:right;font-variant-numeric:tabular-nums}
+.eq.neg{color:var(--red)}
+.pills{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}
+.pill{display:inline-flex;align-items:center;gap:6px;border:1px solid rgba(66,245,161,.24);background:rgba(66,245,161,.07);padding:4px 10px;border-radius:999px;font-size:10px;font-weight:750;letter-spacing:.06em;color:var(--green-soft)}
+.pill.off{color:var(--red);border-color:rgba(255,100,124,.28);background:rgba(255,100,124,.07)}.pill.warn{color:var(--amber);border-color:rgba(245,196,107,.25)}
+.grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;margin-bottom:12px}
+.stat{position:relative;overflow:hidden;min-width:0;background:linear-gradient(145deg,var(--surface-2),var(--surface));border:1px solid var(--line);border-radius:14px;padding:13px 14px;box-shadow:0 8px 22px rgba(0,0,0,.12)}
+.stat:after{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:rgba(66,245,161,.36)}
+.stat .l{color:var(--muted);font-size:9px;text-transform:uppercase;letter-spacing:.11em;font-weight:750}
+.stat .v{overflow-wrap:anywhere;font-size:clamp(15px,2vw,19px);font-weight:760;margin-top:7px;font-variant-numeric:tabular-nums}
+.row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}
+.card{min-width:0;background:linear-gradient(155deg,rgba(15,26,20,.98),rgba(10,17,14,.98));border:1px solid var(--line);border-radius:16px;padding:16px;margin-bottom:12px;box-shadow:var(--shadow)}
+h2{display:flex;align-items:center;gap:8px;margin:0 0 12px;font-size:10px;color:#cce9d8;text-transform:uppercase;letter-spacing:.12em;font-weight:800}
+h2:before{content:"";width:6px;height:6px;border-radius:2px;background:var(--green);box-shadow:0 0 12px rgba(66,245,161,.35)}
+.pos{color:var(--green)}.neg{color:var(--red)}
+table{width:100%;border-collapse:collapse;font-size:11px;font-variant-numeric:tabular-nums}
+th,td{padding:9px 7px;border-bottom:1px solid var(--line-soft);text-align:left;white-space:nowrap}
+th{color:var(--muted);font-size:9px;letter-spacing:.09em;text-transform:uppercase;font-weight:750}
+tbody tr:hover{background:rgba(66,245,161,.035)}
+.why div{padding:7px 8px;margin:3px 0;border:1px solid var(--line-soft);border-radius:8px;background:rgba(255,255,255,.012);font-size:11px;overflow-wrap:anywhere}
+.log{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px;line-height:1.6;max-height:170px;overflow:auto;background:#070e0b;border:1px solid var(--line);border-radius:10px;padding:10px;color:#a8c6b5;overflow-wrap:anywhere}
+.foot{text-align:center;color:var(--muted);font-size:10px;margin-top:18px;padding:12px;border-top:1px solid var(--line-soft);letter-spacing:.04em}
+@media(max-width:900px){main{padding:16px 14px 30px}.grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:620px){main{padding:10px 10px 24px}.top{padding:15px;border-radius:14px;gap:14px}.top>div:last-child{width:100%;display:flex;align-items:baseline;justify-content:space-between;gap:8px}.top>div:last-child .sub{text-align:left!important}.eq{text-align:right;font-size:25px}.grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.stat{padding:11px 12px}.row{grid-template-columns:minmax(0,1fr);gap:0}.card{padding:13px;border-radius:13px}th,td{padding:8px 5px;font-size:10px}.foot{font-size:9px}}
+@media(prefers-reduced-motion:no-preference){.stat,.card,.pill{transition:border-color .18s ease,transform .18s ease}.stat:hover{border-color:rgba(66,245,161,.38);transform:translateY(-1px)}}
 </style></head><body><main>
 <div class=\"top\">
   <div><div class=\"brand\">NEXORA <span>QUANT</span></div>
@@ -191,8 +200,12 @@ async def restrict_remote_access(request: Request, call_next):
 
 
 @app.get("/", response_class=HTMLResponse)
-def dashboard() -> str:
-    return DASHBOARD
+def dashboard() -> HTMLResponse:
+    # Explicit UTF-8 response header keeps Turkish glyphs stable across browsers/proxies.
+    return HTMLResponse(
+        content=DASHBOARD,
+        headers={"Content-Type": "text/html; charset=utf-8"},
+    )
 
 
 @app.get("/health")
