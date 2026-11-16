@@ -1,6 +1,11 @@
 """Unit tests for offline OCO fill recovery; no network or real orders."""
+import pytest
+
 from app.binance_rest import OrderResult
 from app.live import LiveExecutor
+from app.live_hardening import harden_live_executor
+
+harden_live_executor()
 
 
 class FakeClient:
@@ -85,3 +90,65 @@ def test_active_oco_is_not_misbooked_as_a_fill():
     assert executor.base_quantity == 1.0
     assert executor.trades == []
     assert executor.protective_order_list_id == 9
+
+
+def test_live_snapshot_persists_oco_client_id_for_restart_reconciliation():
+    executor = make_executor(FakeClient())
+    executor.protective_order_client_id = "nqoco-order-123"
+    restored = make_executor(FakeClient())
+    restored.restore(executor.snapshot())
+    assert restored.protective_order_client_id == "nqoco-order-123"
+
+
+def test_terminal_cancelled_oco_rotates_id_and_reprotects_remaining_quantity():
+    class RotatingClient:
+        testnet = True
+
+        def __init__(self):
+            self.placed = None
+
+        def get_order_list_by_client_id(self, symbol, client_order_id):
+            return {"orderListId": 12, "symbol": symbol, "listStatusType": "ALL_DONE"}
+
+        def get_order_list(self, list_id):
+            return {
+                "symbol": "BTCUSDT", "orderListId": list_id,
+                "listStatusType": "ALL_DONE",
+                "orderReports": [{"orderId": 101}, {"orderId": 102}],
+            }
+
+        def get_order(self, symbol, order_id):
+            return OrderResult(
+                order_id=order_id, client_order_id="old-child", symbol=symbol,
+                side="SELL", status="CANCELED", price=0, orig_qty=0.5,
+                executed_qty=0, cummulative_quote_qty=0, fills=[], raw={},
+            )
+
+        def order_list_trades(self, symbol, order_id):
+            return []
+
+        def free_balance(self, asset):
+            return 0.5
+
+        def exchange_info_symbol(self, symbol):
+            return {"filters": [
+                {"filterType": "LOT_SIZE", "stepSize": "0.00001"},
+                {"filterType": "PRICE_FILTER", "tickSize": "0.01"},
+            ]}
+
+        def place_oco_order(self, **kwargs):
+            self.placed = kwargs
+            return {"orderListId": 13, "listStatusType": "EXEC_STARTED"}
+
+    client = RotatingClient()
+    executor = LiveExecutor(client, symbol="BTCUSDT", fee_rate=0.001)
+    executor.base_quantity = 0.5
+    executor.average_entry_price = 100
+    executor.protective_order_client_id = "nqoco-old-position"
+    assert executor.ensure_protective_oco(
+        current_price=100, take_profit_pct=1.0, stop_loss_pct=0.5,
+        retries=1, retry_delay_s=0,
+    ) is True
+    assert executor.protective_order_list_id == 13
+    assert client.placed["client_order_id"] != "nqoco-old-position"
+    assert client.placed["quantity"] == pytest.approx(0.5)

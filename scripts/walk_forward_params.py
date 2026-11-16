@@ -83,9 +83,25 @@ def evaluate_train_then_test(
         metrics = summarize_l2_result(run_l2_backtest(train_path, config))
         training.append({"params": dict(candidate), "metrics": metrics})
 
-    # Return percentage is based on equity, not an absent/legacy pnl_usdt field.
-    winner = max(training, key=lambda row: float(row["metrics"].get("return_pct") or 0.0))
-    selected = winner["params"]
+    # Rank only on training data and penalize drawdown. If every candidate has
+    # non-positive risk-adjusted score, choose a no-entry policy for the holdout.
+    for row in training:
+        metrics = row["metrics"]
+        metrics["selection_score"] = (
+            float(metrics.get("return_pct") or 0.0)
+            - 0.5 * float(metrics.get("max_drawdown_pct") or 0.0)
+        )
+    winner = max(training, key=lambda row: float(row["metrics"]["selection_score"]))
+    no_trade_fallback = float(winner["metrics"]["selection_score"]) <= 0.0
+    selected = (
+        {"entry_min_score": 1.01, "take_profit_pct": 0.55, "stop_loss_pct": 0.18}
+        if no_trade_fallback else winner["params"]
+    )
+    selected_training_metrics = (
+        {"return_pct": 0.0, "max_drawdown_pct": 0.0, "selection_score": 0.0,
+         "policy": "no_trade_fallback"}
+        if no_trade_fallback else winner["metrics"]
+    )
     test_config = L2BacktestConfig(
         starting_cash_usdt=cash,
         order_size_usdt=order_size,
@@ -98,8 +114,9 @@ def evaluate_train_then_test(
     test_metrics = summarize_l2_result(run_l2_backtest(test_path, test_config))
     return {
         "selected_params": selected,
-        "selected_training_metrics": winner["metrics"],
+        "selected_training_metrics": selected_training_metrics,
         "unseen_test_metrics": test_metrics,
+        "no_trade_fallback": no_trade_fallback,
         "candidate_training_metrics": training,
         "fee_rate": fee_rate,
         "warning": (

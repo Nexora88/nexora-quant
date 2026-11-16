@@ -49,6 +49,8 @@ class L2BacktestResult:
     signals: int = 0
     entries: int = 0
     exits: int = 0
+    closed_positions: int = 0
+    final_open_quantity: float = 0.0
     notes: str = (
         "L2 replay uses recorded visible book only; cancelled liquidity and true "
         "queue position are not recoverable from public depth diffs."
@@ -127,6 +129,11 @@ def run_l2_backtest(path: str | Path, cfg: L2BacktestConfig | None = None) -> L2
         last_bid = bid
         if bid <= 0 or ask < bid:
             continue
+        if not result.equity_curve:
+            result.equity_curve.append({
+                "timestamp_ns": ts, "equity": cfg.starting_cash_usdt,
+                "mid": (bid + ask) / 2, "score": 0.0, "phase": "initial",
+            })
         bids = payload.get("bids") if isinstance(payload.get("bids"), list) else [[bid, bid_qty]]
         asks = payload.get("asks") if isinstance(payload.get("asks"), list) else [[ask, ask_qty]]
         analysis = analyze_market(
@@ -163,7 +170,14 @@ def run_l2_backtest(path: str | Path, cfg: L2BacktestConfig | None = None) -> L2
                     if trade:
                         result.trades.append({**trade, "timestamp_ns": ts})
                         result.exits += 1
+                        if paper.base_quantity <= 1e-12:
+                            result.closed_positions += 1
                         peak = 0.0
+            snap = paper.snapshot(bid)
+            result.equity_curve.append({
+                "timestamp_ns": ts, "equity": snap["equity_usdt"],
+                "mid": (bid + ask) / 2, "score": analysis.score,
+            })
             continue
 
         signal = entry_signal_from_analysis(analysis, min_score=cfg.entry_min_score)
@@ -207,6 +221,7 @@ def run_l2_backtest(path: str | Path, cfg: L2BacktestConfig | None = None) -> L2
     result.final_equity = float(snap["equity_usdt"])
     result.final_cash = float(snap["cash_usdt"])
     result.realized_pnl = float(snap["realized_pnl_usdt"])
+    result.final_open_quantity = float(paper.base_quantity)
     result.trade_count = len(result.trades)
     return result
 
@@ -214,12 +229,39 @@ def run_l2_backtest(path: str | Path, cfg: L2BacktestConfig | None = None) -> L2
 def summarize_l2_result(result: L2BacktestResult) -> dict[str, Any]:
     start = result.equity_curve[0]["equity"] if result.equity_curve else result.final_equity
     ret = (result.final_equity / start - 1.0) if start else 0.0
+    peak = start
+    max_drawdown = 0.0
+    for point in result.equity_curve:
+        equity = float(point["equity"])
+        peak = max(peak, equity)
+        if peak > 0:
+            max_drawdown = max(max_drawdown, (peak - equity) / peak)
+    closed = [
+        t for t in result.trades
+        if str(t.get("side", "")).lower() == "sell"
+        and t.get("accounting_complete", True) is True
+        and t.get("pnl_usdt") is not None
+    ]
+    pnls = [float(t["pnl_usdt"]) for t in closed]
+    wins = [x for x in pnls if x > 0]
+    losses = [x for x in pnls if x < 0]
+    gross_profit = sum(wins)
+    gross_loss = -sum(losses)
+    fees = sum(float(t.get("fee_usdt") or 0) for t in result.trades)
     return {
         "events_seen": result.events_seen,
         "signals": result.signals,
         "entries": result.entries,
         "exits": result.exits,
         "trade_count": result.trade_count,
+        "closed_position_count": result.closed_positions,
+        "exit_fill_count": len(closed),
+        "final_open_quantity": result.final_open_quantity,
+        "win_rate_pct_per_exit_fill": (len(wins) / len(pnls) * 100) if pnls else 0.0,
+        "expectancy_usdt_per_exit_fill": (sum(pnls) / len(pnls)) if pnls else 0.0,
+        "profit_factor_per_exit_fill": (gross_profit / gross_loss) if gross_loss > 0 else None,
+        "fees_paid_usdt": fees,
+        "max_drawdown_pct": max_drawdown * 100,
         "final_equity": result.final_equity,
         "realized_pnl": result.realized_pnl,
         "return_pct": ret * 100,

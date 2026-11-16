@@ -33,6 +33,8 @@ def main() -> int:
     parser.add_argument("--fee-rate", type=float, default=0.001)
     parser.add_argument("--slippage-bps", type=float, default=5.0)
     parser.add_argument("--latency-bars", type=int, default=1)
+    parser.add_argument("--annualization-periods", type=int, default=365,
+                        help="bars per year (365 daily, 8760 hourly, 525600 one-minute)")
     args = parser.parse_args()
 
     files = sorted(args.data_dir.glob("*.csv"))
@@ -42,15 +44,16 @@ def main() -> int:
         parser.error("use at least 100 training bars and 20 test bars per window")
 
     datasets = {path.stem.upper(): load_ohlcv_csv(path) for path in files}
-    required = args.train_bars + args.test_bars
+    required = args.train_bars + args.test_bars * 3
     short = {symbol: len(rows) for symbol, rows in datasets.items() if len(rows) < required}
     if short:
-        parser.error(f"insufficient candles; need at least {required} per asset: {short}")
+        parser.error(f"need at least three non-overlapping OOS windows ({required} candles per asset): {short}")
 
     config = BacktestConfig(
         fee_rate=args.fee_rate,
         slippage_bps=args.slippage_bps,
         latency_bars=args.latency_bars,
+        annualization_periods=args.annualization_periods,
         min_train_bars=min(100, args.train_bars),
     ).validate()
     report = validate_multiple_assets(
@@ -67,8 +70,10 @@ def main() -> int:
             "fee_rate_per_side": args.fee_rate,
             "slippage_bps": args.slippage_bps,
             "latency_bars": args.latency_bars,
+            "annualization_periods": args.annualization_periods,
         },
-        "method": "rolling chronological walk-forward; no concatenation across assets",
+        "method": "rolling chronological walk-forward; no concatenation across assets; training selection penalizes drawdown",
+        "minimum_oos_windows_per_asset": 3,
         "report": report,
         "interpretation": (
             "Historical results only. Positive windows do not establish future profitability. "

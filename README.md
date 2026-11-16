@@ -78,6 +78,21 @@ Live modda emir göndermeden önce Binance bakiyesi ve OCO emir geçmişi yenide
 
 Full defaults: [`.env.example`](.env.example).
 
+### Multi-regime research validation
+
+Place at least two separate chronological OHLCV CSV files in a directory (one asset per file; columns `timestamp,open,high,low,close,volume`) and run:
+
+```powershell
+python scripts/evaluate_profitability.py --data-dir data/ohlcv --train-bars 500 --test-bars 100 --fee-rate 0.001 --slippage-bps 5 --latency-bars 1 --annualization-periods 365 --output data/research-report.json
+```
+
+The runner selects parameters only on each training window, evaluates the next unseen window, and reports cross-asset worst windows and per-regime outcomes. Set `--annualization-periods` to match the candle interval (365 daily, 8760 hourly, 525600 one-minute). Results are historical diagnostics, not a forecast.
+
+### Spot Testnet integration
+
+The normal test suite deliberately skips real network orders. For the isolated, bounded Spot Testnet lifecycle test, add dedicated Testnet-only GitHub Actions secrets and manually run `.github/workflows/spot-testnet-e2e.yml`. The test caps the test order at 25 USDT and will refuse a competing cleanup sell unless the OCO is confirmed terminal. Do not use mainnet keys.
+
+
 Fee assumptions are conservative by default: VIP 0 taker fees are used and the BNB discount is **off** unless you explicitly enable it and your account has sufficient BNB and eligible fee payment enabled. Paper maker fills still use the configured fee rate conservatively; verify actual maker/taker commissions from Binance fills before any live use.
 
 ---

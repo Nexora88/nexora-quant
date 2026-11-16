@@ -63,3 +63,32 @@ def test_metrics_validate_parameters():
         depth_imbalance(book, levels=0)
     with pytest.raises(ValueError):
         liquidity_walls(book, multiple=1)
+
+
+def test_replay_supports_plain_jsonl_and_gzip_jsonl(tmp_path):
+    import gzip
+    import json
+    from app.market_history import replay_market_history
+
+    rows = [
+        {"timestamp_ns": 1, "event_type": "depth", "payload": {"best_bid": [100, 1]}},
+        {"timestamp_ns": 2, "event_type": "depth", "payload": {"best_bid": [101, 1]}},
+    ]
+    plain = tmp_path / "events.jsonl"
+    plain.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    zipped = tmp_path / "events.jsonl.gz"
+    with gzip.open(zipped, "wt", encoding="utf-8") as stream:
+        for row in rows:
+            stream.write(json.dumps(row) + "\n")
+    assert list(replay_market_history(plain)) == rows
+    assert list(replay_market_history(zipped)) == rows
+
+
+def test_market_history_writer_respects_jsonl_extension(tmp_path):
+    from app.market_history import MarketHistoryWriter, replay_market_history
+
+    path = tmp_path / "plain.jsonl"
+    writer = MarketHistoryWriter(path)
+    writer.append(timestamp_ns=1, event_type="depth", payload={"mid": 100})
+    writer.close()
+    assert list(replay_market_history(path))[0]["payload"]["mid"] == 100

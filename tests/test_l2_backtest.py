@@ -45,6 +45,14 @@ def test_l2_backtest_runs_on_history_fixture(tmp_path):
     assert result.events_seen == 40
     assert summary["events_seen"] == 40
     assert result.signals >= 1
+    # Every valid depth event marks the account, including time spent holding risk.
+    assert len(result.equity_curve) == result.events_seen + 1
+    assert result.equity_curve[0]["phase"] == "initial"
+    assert result.equity_curve[0]["equity"] == 1000.0
+    assert "max_drawdown_pct" in summary
+    assert "fees_paid_usdt" in summary
+    assert summary["exit_fill_count"] == result.exits
+    assert summary["closed_position_count"] <= summary["exit_fill_count"]
 
 
 def test_market_impact_grows_with_participation():

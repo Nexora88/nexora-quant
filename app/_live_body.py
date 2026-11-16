@@ -10,6 +10,7 @@ import math
 import threading
 import time
 from datetime import datetime, timezone
+from decimal import Decimal, ROUND_DOWN
 from typing import Any
 
 from app.binance_rest import BinanceRestClient, OrderResult
@@ -53,6 +54,7 @@ class LiveExecutor:
         self.open_orders_snapshot: list[dict[str, Any]] = []
         self.open_order_lists_snapshot: list[dict[str, Any]] = []
         self.protective_order_list_id: int | None = None
+        self.protective_order_client_id: str | None = None
         self.order_lists_reconciled = False
         # Exchange trade IDs are durable idempotency keys for offline OCO recovery.
         self.processed_exchange_trade_ids: set[str] = set()
@@ -163,6 +165,7 @@ class LiveExecutor:
         self.processed_oco_list_ids = {
             int(item) for item in snapshot.get("processed_oco_list_ids", [])
         }
+        self.protective_order_client_id = snapshot.get("protective_order_client_id")
 
     def _load_filters(self) -> dict[str, Any]:
         if self._filters is not None:
@@ -179,8 +182,11 @@ class LiveExecutor:
         if step <= 0:
             return quantity
         precision = max(0, len(f"{step:.12f}".rstrip("0").split(".")[-1]) if "." in f"{step:.12f}" else 0)
-        steps = int(quantity / step)
-        return round(steps * step, precision)
+        steps = (Decimal(str(quantity)) / Decimal(str(step))).to_integral_value(
+            rounding=ROUND_DOWN,
+        )
+        rounded = float(steps * Decimal(str(step)))
+        return round(rounded, precision)
 
     def _round_price(self, price: float, *, round_up: bool) -> float:
         filters = self._load_filters()
@@ -253,10 +259,12 @@ class LiveExecutor:
             if str(order_list.get("symbol", "")).upper() != self.symbol:
                 raise RuntimeError("OCO history symbol mismatch")
             status = str(order_list.get("listStatusType", ""))
-            if status not in {"ALL_DONE", "REJECT", "EXPIRED"}:
+            if status in {"EXEC_STARTED", "EXECUTING"}:
                 # Active lists are still protecting the position; do not account them as fills.
                 self.order_lists_reconciled = True
                 return True
+            if status not in {"ALL_DONE", "REJECT", "EXPIRED"}:
+                raise RuntimeError(f"Unknown OCO list status: {status or 'missing'}")
             reports = order_list.get("orderReports")
             if not isinstance(reports, list) or len(reports) != 2:
                 raise RuntimeError("OCO history must contain both child order reports")
@@ -353,7 +361,9 @@ class LiveExecutor:
             return self.protective_order_list_id is None
         self.protective_order_list_id = None
         self.sync_balances()
-        return True
+        # A successful DELETE response is not enough: verify the exchange no
+        # longer reports an active protective list before any competing exit.
+        return self.protective_order_list_id is None
 
     def _min_notional(self) -> float:
         filters = self._load_filters()
@@ -568,6 +578,8 @@ class LiveExecutor:
             "execution_latency_measured": getattr(self, "_last_order_latency_measured", False),
         }
         if side == "buy":
+            # Stable exchange-derived ID makes OCO retries idempotent after a lost HTTP response.
+            self.protective_order_client_id = f"nqoco{int(result.order_id):x}"[:36]
             net_base = max(0.0, executed_qty - base_fee)
             old_cost = self.base_quantity * self.average_entry_price
             self.base_quantity += net_base
@@ -633,6 +645,7 @@ class LiveExecutor:
             "open_orders_count": len(self.open_orders_snapshot),
             "open_order_lists_count": len(self.open_order_lists_snapshot),
             "protective_order_list_id": self.protective_order_list_id,
+            "protective_order_client_id": self.protective_order_client_id,
             "order_lists_reconciled": self.order_lists_reconciled,
             "mode": "live",
             "testnet": self.client.testnet,

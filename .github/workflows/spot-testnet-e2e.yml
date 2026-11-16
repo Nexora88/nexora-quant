@@ -35,8 +35,8 @@ jobs:
       NEXORA_TESTNET_SYMBOL: ${{ inputs.symbol }}
       NEXORA_TESTNET_ORDER_QUOTE_USDT: ${{ inputs.quote_amount_usdt }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
@@ -55,10 +55,11 @@ jobs:
           python - <<'PY'
           import os
           amount = float(os.environ["NEXORA_TESTNET_ORDER_QUOTE_USDT"])
-          if amount < 10:
-              raise SystemExit("quote_amount_usdt must be at least 10")
-          if not os.environ["NEXORA_TESTNET_SYMBOL"].isalnum():
-              raise SystemExit("symbol must be alphanumeric")
+          if not 10 <= amount <= 25:
+              raise SystemExit("quote_amount_usdt must be between 10 and 25 USDT")
+          symbol = os.environ["NEXORA_TESTNET_SYMBOL"].upper()
+          if not (5 <= len(symbol) <= 20 and symbol.isalnum()):
+              raise SystemExit("symbol must be a valid plain alphanumeric Binance symbol")
           PY
       - name: Install test dependencies
         run: python -m pip install -e ".[dev]"
@@ -67,7 +68,7 @@ jobs:
           pytest -q tests/test_spot_testnet_e2e.py --junitxml=testnet-e2e-results.xml
       - name: Upload sanitized test result
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: spot-testnet-e2e-results
           path: testnet-e2e-results.xml

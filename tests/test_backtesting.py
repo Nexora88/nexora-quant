@@ -109,3 +109,18 @@ def test_regime_adaptive_and_multiple_asset_validation():
     assert report["asset_count"] == 2
     assert "worst_asset_window_return_pct" in report
     assert "worst_asset_max_drawdown_pct" in report
+
+
+def test_training_selection_prefers_risk_adjusted_return_not_peak_return():
+    rows = candles_from_closes([100 + i * 0.1 + math.sin(i / 3) for i in range(300)])
+    candidates = [
+        {"strategy": "buy_and_hold", "params": {}},
+        {"strategy": "momentum", "params": {"lookback": 4}},
+    ]
+    report = rolling_walk_forward(
+        rows, candidates, train_bars=120, test_bars=30,
+        config=BacktestConfig(min_train_bars=50, fee_rate=0.001, slippage_bps=3),
+    )
+    assert report["window_count"] >= 3
+    assert "regime_oos_summary" in report
+    assert "selection_score" in report["windows"][0]["test_result"]

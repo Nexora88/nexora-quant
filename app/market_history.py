@@ -25,6 +25,7 @@ class MarketHistoryWriter:
     ) -> None:
         self.enabled = bool(enabled)
         self.path = Path(path)
+        self._compressed = self.path.suffix.lower() == ".gz"
         if self.enabled:
             self.path.parent.mkdir(parents=True, exist_ok=True)
         self._last_timestamp_ns = -1
@@ -74,7 +75,8 @@ class MarketHistoryWriter:
         self._pending.append(encoded)
 
     def _write_line(self, encoded: str) -> None:
-        with gzip.open(self.path, "at", encoding="utf-8") as stream:
+        open_fn = gzip.open if self._compressed else open
+        with open_fn(self.path, "at", encoding="utf-8") as stream:
             stream.write(encoded + "\n")
         self._written += 1
 
@@ -83,7 +85,8 @@ class MarketHistoryWriter:
             return
         batch = list(self._pending)
         self._pending.clear()
-        with gzip.open(self.path, "at", encoding="utf-8") as stream:
+        open_fn = gzip.open if self._compressed else open
+        with open_fn(self.path, "at", encoding="utf-8") as stream:
             for encoded in batch:
                 stream.write(encoded + "\n")
                 self._written += 1
@@ -93,9 +96,11 @@ class MarketHistoryWriter:
 
 
 def replay_market_history(path: str | Path) -> Iterator[dict[str, Any]]:
-    """Yield validated records in file order; malformed rows fail closed."""
+    """Yield validated plain or gzip JSONL records in file order; fail closed on malformed rows."""
     last_timestamp_ns = -1
-    with gzip.open(path, "rt", encoding="utf-8") as stream:
+    source = Path(path)
+    open_fn = gzip.open if source.suffix.lower() == ".gz" else open
+    with open_fn(source, "rt", encoding="utf-8") as stream:
         for line_number, line in enumerate(stream, start=1):
             if not line.strip():
                 continue

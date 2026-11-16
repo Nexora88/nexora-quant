@@ -172,6 +172,8 @@ def _metrics(equity: Sequence[float], returns: Sequence[float], trades: int,
         "final_equity": equity[-1],
         "net_return_pct": (equity[-1] / equity[0] - 1) * 100,
         "max_drawdown_pct": max_drawdown * 100,
+        # Training selection penalizes fragile high-return/high-drawdown candidates.
+        "selection_score": (equity[-1] / equity[0] - 1) * 100 - 0.5 * max_drawdown * 100,
         "sharpe_annualized": (avg / vol * math.sqrt(annualization_periods)) if vol > 0 else 0.0,
         "trade_count": trades,
         "fees_and_slippage_paid": fees_paid,
@@ -243,7 +245,7 @@ def compare_strategies(candles: Sequence[Candle], candidates: Iterable[dict],
         backtest(candles, item["strategy"], item.get("params", {}), config)
         for item in candidates
     ]
-    return sorted(results, key=lambda row: row["net_return_pct"], reverse=True)
+    return sorted(results, key=lambda row: row["selection_score"], reverse=True)
 
 
 def walk_forward(candles: Sequence[Candle], candidates: Iterable[dict],
@@ -329,6 +331,19 @@ def rolling_walk_forward(
         raise ValueError("no complete rolling windows available")
     test_returns = [w["test_result"]["net_return_pct"] for w in windows]
     drawdowns = [w["test_result"]["max_drawdown_pct"] for w in windows]
+    regime_samples: dict[str, list[float]] = {}
+    for window in windows:
+        for regime, metrics in window["test_result"].get("regime_returns_pct", {}).items():
+            regime_samples.setdefault(regime, []).append(float(metrics.get("return_pct", 0.0)))
+    regime_summary = {
+        regime: {
+            "windows_observed": len(values),
+            "mean_return_pct": mean(values),
+            "worst_return_pct": min(values),
+            "positive_window_fraction": sum(value > 0 for value in values) / len(values),
+        }
+        for regime, values in regime_samples.items()
+    }
     return {
         "windows": windows,
         "window_count": len(windows),
@@ -337,6 +352,8 @@ def rolling_walk_forward(
         "positive_test_window_fraction": sum(r > 0 for r in test_returns) / len(test_returns),
         "worst_test_return_pct": min(test_returns),
         "worst_max_drawdown_pct": max(drawdowns),
+        "regime_oos_summary": regime_summary,
+        "regimes_observed": sorted(regime_summary),
         "warning": (
             "Rolling windows are historical diagnostics, not a guarantee. "
             "Test-window indicator warm-up is local, and bar-based costs/latency "

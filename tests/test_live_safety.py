@@ -2,7 +2,10 @@ import pytest
 
 from app.binance_rest import OrderResult
 from app.live import LiveExecutor
+from app.live_hardening import harden_live_executor
 from app.risk import RiskManager
+
+harden_live_executor()
 
 
 class FakeClient:
@@ -46,6 +49,9 @@ class FakeClient:
 
     def free_balance(self, asset):
         return 0.1
+
+    def get_order_list_by_client_id(self, symbol, client_order_id):
+        raise RuntimeError("Binance API error 400: -2013 Order does not exist.")
 
     def place_oco_order(self, **kwargs):
         self.oco = kwargs
@@ -99,6 +105,7 @@ def test_exchange_hosted_oco_is_created_with_rounded_prices():
     assert client.oco["take_profit_price"] == 101.0
     assert client.oco["stop_price"] == 99.5
     assert client.oco["stop_limit_price"] < client.oco["stop_price"]
+    assert client.oco["stop_loss_market"] is True
     assert executor.protective_order_list_id == 77
 
 
@@ -225,3 +232,9 @@ def test_bnb_commission_is_converted_to_quote_and_included_in_live_pnl():
     assert trade["fee_usdt"] == pytest.approx(0.06)
     assert trade["pnl_usdt"] == pytest.approx(0.94)
     assert executor.realized_pnl_usdt == pytest.approx(0.94)
+
+
+def test_quantity_step_rounding_uses_decimal_without_losing_valid_step():
+    executor = LiveExecutor(FakeClient(), symbol="BTCUSDT", fee_rate=0.001)
+    assert executor._round_step(0.5) == pytest.approx(0.5)
+    assert executor._round_step(0.500009) == pytest.approx(0.5)

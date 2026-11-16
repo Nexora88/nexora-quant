@@ -112,6 +112,8 @@ class BinanceRestClient:
         except urllib.error.HTTPError as exc:
             err_body = exc.read().decode("utf-8", errors="replace")
             log.error("Binance HTTP %s %s: %s", exc.code, path, err_body[:500])
+            # Preserve the structured exchange error for safe idempotency/reconciliation.
+            setattr(exc, "binance_body", err_body)
             raise
 
     def exchange_info(self, symbol: str | None = None) -> dict[str, Any]:
@@ -236,6 +238,7 @@ class BinanceRestClient:
         stop_price: float,
         stop_limit_price: float,
         client_order_id: str | None = None,
+        stop_loss_market: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "symbol": symbol.upper(),
@@ -243,11 +246,12 @@ class BinanceRestClient:
             "quantity": _fmt_qty(quantity),
             "aboveType": "LIMIT_MAKER",
             "abovePrice": _fmt_qty(take_profit_price),
-            "belowType": "STOP_LOSS_LIMIT",
+            "belowType": "STOP_LOSS" if stop_loss_market else "STOP_LOSS_LIMIT",
             "belowStopPrice": _fmt_qty(stop_price),
-            "belowPrice": _fmt_qty(stop_limit_price),
-            "belowTimeInForce": "GTC",
         }
+        if not stop_loss_market:
+            params["belowPrice"] = _fmt_qty(stop_limit_price)
+            params["belowTimeInForce"] = "GTC"
         if client_order_id:
             params["listClientOrderId"] = client_order_id
         return self._request("POST", "/api/v3/orderList/oco", params, signed=True)
@@ -283,6 +287,17 @@ class BinanceRestClient:
         )
         if not isinstance(raw, dict) or not raw.get("orderListId"):
             raise RuntimeError("Unexpected orderList response")
+        return raw
+
+    def get_order_list_by_client_id(self, symbol: str, client_order_id: str) -> dict[str, Any]:
+        """Resolve an OCO submission whose HTTP response was lost."""
+        raw = self._request(
+            "GET", "/api/v3/orderList",
+            {"symbol": symbol.upper(), "origClientOrderId": client_order_id},
+            signed=True,
+        )
+        if not isinstance(raw, dict) or not raw.get("orderListId"):
+            raise RuntimeError("Unexpected orderList-by-client-id response")
         return raw
 
     def order_trades(self, symbol: str, order_id: int) -> list[dict[str, Any]]:

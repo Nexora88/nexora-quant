@@ -84,3 +84,13 @@ PYTHONPATH=. python scripts/walk_forward_params.py path/to/market-history.jsonl.
 ```
 
 The script selects parameters on the training segment and evaluates only the selected candidate on the later unseen segment. Repeat on rolling windows, multiple symbols, and distinct market regimes; one split is not proof of robustness.
+
+
+## Mandatory integration evidence
+
+- [ ] Run `.github/workflows/spot-testnet-e2e.yml` manually with dedicated Spot Testnet credentials and a 10?25 USDT test amount. Confirm the uploaded artifact is green and the testnet account has no residual test position or open OCO list.
+- [ ] Verify the exchange's `listClientOrderId` lookup path after simulating a lost OCO HTTP response; unit coverage is not a substitute for a testnet run.
+- [ ] Confirm OCO cancellation is visible in `openOrderLists` before any emergency market exit.
+- [ ] Run rolling multi-asset research with separate chronological CSVs covering trend, range, choppy and stressed periods; inspect worst-window drawdown and net results.
+- [ ] Reconcile a live account's free/locked balances, order lists, actual fills, commission assets and local ledger before any strategy order.
+- [ ] Keep the strategy learner frozen in mainnet. Do not promote weights from paper without a separate, reproducible out-of-sample approval process.

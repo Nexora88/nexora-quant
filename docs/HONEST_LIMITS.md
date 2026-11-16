@@ -23,8 +23,9 @@ erase the wall.
 
 - **Entry** with `PREFER_MAKER=true` uses post-only LIMIT_MAKER (live) or bid-side paper fill.
   Fee edge improves; timeout/cancel is intentional (no market fallback that tick).
-- **Exit** on TP uses exchange OCO limit when installed. Trail / time_stop / emergency
-  flatten remain **taker** (`sell_quantity` market). Commission budget must assume
+- **Exit** on TP uses the exchange OCO limit-maker leg; the OCO stop leg is a
+  market `STOP_LOSS` to avoid a stop-limit remaining unfilled after a gap. Trail /
+  time_stop / emergency flatten remain **taker** (`sell_quantity` market). Commission budget must assume
   maker-in + often-taker-out, not pure maker-maker round-trip.
 - Paper maker fill walks `depth_bids` as liquidity; may slightly overstate slippage vs
   true passive fill. Direction is conservative (worse), not optimistic.
