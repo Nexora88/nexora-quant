@@ -5,22 +5,29 @@ import logging
 import random
 from collections.abc import AsyncIterator
 import websockets
-from app.events import BookTicker, TradeTick, utc_now
+from app.events import BookTicker, TradeTick, KlineTick, utc_now
 
 log = logging.getLogger(__name__)
 BASE_URL = "wss://stream.binance.com:9443/stream?streams="
 
-def parse_message(message: str) -> BookTicker | TradeTick:
+def parse_message(message: str) -> BookTicker | TradeTick | KlineTick:
     envelope = json.loads(message)
     data = envelope.get("data", envelope)
     if data.get("e") == "bookTicker" or {"b", "B", "a", "A"} <= data.keys():
         return BookTicker(data.get("s", "").lower(), float(data["b"]), float(data["B"]), float(data["a"]), float(data["A"]), utc_now())
     if data.get("e") == "trade" or {"p", "q", "m"} <= data.keys():
         return TradeTick(data.get("s", "").lower(), float(data["p"]), float(data["q"]), bool(data["m"]), utc_now())
+    if data.get("e") == "kline" and isinstance(data.get("k"), dict):
+        k = data["k"]
+        return KlineTick(
+            data.get("s", "").lower(), str(k["i"]), int(k["t"]),
+            float(k["o"]), float(k["h"]), float(k["l"]),
+            float(k["c"]), float(k["v"]), bool(k["x"]), utc_now(),
+        )
     raise ValueError("Unsupported Binance stream event")
 
-async def stream_events(symbol: str) -> AsyncIterator[BookTicker | TradeTick]:
-    streams = f"{symbol.lower()}@bookTicker/{symbol.lower()}@trade"
+async def stream_events(symbol: str) -> AsyncIterator[BookTicker | TradeTick | KlineTick]:
+    streams = f"{symbol.lower()}@bookTicker/{symbol.lower()}@trade/{symbol.lower()}@kline_1m/{symbol.lower()}@kline_5m"
     url = BASE_URL + streams
     backoff = 1.0
     while True:

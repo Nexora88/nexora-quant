@@ -23,6 +23,19 @@ class TradeTick:
     received_at: datetime
 
 @dataclass(frozen=True, slots=True)
+class KlineTick:
+    symbol: str
+    interval: str
+    open_time: int
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+    closed: bool
+    received_at: datetime
+
+@dataclass(frozen=True, slots=True)
 class Signal:
     action: str
     reason: str

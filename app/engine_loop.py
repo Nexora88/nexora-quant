@@ -15,6 +15,10 @@ from app.io_queue import AsyncIoQueue
 from app.market_history import MarketHistoryWriter
 from app.ts_store import FeatureTimeSeriesStore
 from app.binance_depth import stream_synchronized_depth
+from app.binance_ws import stream_events
+from app.events import TradeTick, KlineTick
+from app.trade_flow import TradeFlowTracker
+from app.market_indicators import Candle, MarketIndicatorTracker, fetch_recent_candles
 from app.multi_stream import stream_multi_depth, watch_list
 from app.universe import screen_universe, depth_watch_from_screen, default_universe
 try:
@@ -286,6 +290,57 @@ async def run() -> None:
         if mode == "paper" and float(getattr(es.executor, "base_quantity", 0) or 0) > 1e-12
         else settings.symbol.lower()
     )
+    trade_tasks: list[asyncio.Task] = []
+
+    async def _trade_pump(symbol: str) -> None:
+        tracker = TradeFlowTracker(window_seconds=10.0, min_trades=20, max_age_seconds=2.5)
+        indicators = MarketIndicatorTracker()
+        trackers = getattr(state, "trade_flow_trackers", None)
+        if trackers is None:
+            trackers = {}
+            state.trade_flow_trackers = trackers
+        indicator_trackers = getattr(state, "market_indicator_trackers", None)
+        if indicator_trackers is None:
+            indicator_trackers = {}
+            state.market_indicator_trackers = indicator_trackers
+        trackers[symbol] = tracker
+        indicator_trackers[symbol] = indicators
+        # Seed EMA200/RSI/MACD and 5m context from closed public candles.
+        try:
+            one_minute, five_minute = await asyncio.gather(
+                asyncio.to_thread(fetch_recent_candles, symbol, "1m", limit=250),
+                asyncio.to_thread(fetch_recent_candles, symbol, "5m", limit=100),
+            )
+            indicators.seed(one_minute + five_minute)
+            log.info(
+                "Indicator warm-up symbol=%s 1m=%s 5m=%s",
+                symbol.upper(), len(one_minute), len(five_minute),
+            )
+        except Exception as exc:
+            log.warning("Indicator history unavailable symbol=%s: %s; entries remain gated", symbol.upper(), exc)
+        while True:
+            try:
+                async for event in stream_events(symbol):
+                    if isinstance(event, TradeTick):
+                        tracker.update(event)
+                    elif isinstance(event, KlineTick) and event.closed:
+                        indicators.update(Candle(
+                            symbol=event.symbol, interval=event.interval,
+                            open_time=event.open_time, open=event.open, high=event.high,
+                            low=event.low, close=event.close, volume=event.volume,
+                            closed=True, received_at=event.received_at.timestamp(),
+                        ))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                state.last_error = f"trade_stream:{symbol}:{type(exc).__name__}"
+                log.exception("Trade stream failed symbol=%s", symbol)
+                await asyncio.sleep(1.0)
+
+    trade_watch = list(dict.fromkeys([*watched, "btcusdt", "ethusdt"]))
+    for trade_symbol in trade_watch:
+        trade_tasks.append(asyncio.create_task(_trade_pump(trade_symbol), name=f"trades-{trade_symbol}"))
+
     try:
         use_multi = len(watched) > 1 and bool(getattr(settings, "universe_auto", False))
 
@@ -379,6 +434,10 @@ async def run() -> None:
                 )
                 await asyncio.sleep(2.0)
     finally:
+        for task in trade_tasks:
+            task.cancel()
+        if trade_tasks:
+            await asyncio.gather(*trade_tasks, return_exceptions=True)
         rollover_task.cancel()
         try:
             await rollover_task
