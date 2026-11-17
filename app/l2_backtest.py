@@ -108,7 +108,8 @@ def run_l2_backtest(path: str | Path, cfg: L2BacktestConfig | None = None) -> L2
         seed=cfg.seed,
         impact_coefficient=cfg.impact_coefficient,
     )
-    pw = PriceWindow(maxlen=180)
+    # Replay timestamps are event-time; retain 10 minutes at the 0.5s sample cadence.
+    pw = PriceWindow(maxlen=1200)
     result = L2BacktestResult()
     confirmations = 0
     peak = 0.0
@@ -192,6 +193,7 @@ def run_l2_backtest(path: str | Path, cfg: L2BacktestConfig | None = None) -> L2
             bid=bid, ask=ask, bid_qty=bid_qty, ask_qty=ask_qty,
             price_window=pw, imbalance_threshold=cfg.imbalance_threshold,
             target_price=cfg.target_price, bids=bids, asks=asks,
+            timestamp=event_time,
         )
 
         if paper.base_quantity > 0 and paper.average_entry_price > 0:

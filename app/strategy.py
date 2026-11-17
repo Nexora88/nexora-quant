@@ -128,11 +128,12 @@ def analyze_market(
     ou: OrnsteinUhlenbeckTracker | None = None,
     regime_classifier: RegimeClassifier | None = None,
     wall_bias: float = 0.0,
+    timestamp: float | None = None,
 ) -> MarketAnalysis:
     mid = (bid + ask) / 2 if bid > 0 and ask >= bid else 0.0
     spread_bps = ((ask - bid) / mid * 10_000) if mid > 0 else 0.0
     if mid > 0:
-        price_window.push(mid)
+        price_window.push(mid, timestamp=timestamp)
     mom_1m = price_window.momentum_over(60.0)
     mom_5m = price_window.momentum_over(300.0)
     # Do not relabel a burst of websocket events as a 1m return during warmup.
