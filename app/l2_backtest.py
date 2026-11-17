@@ -6,10 +6,15 @@ Almgren-style impact — usable for imbalance / wall research that OHLCV cannot 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.events import TradeTick
 from app.market_history import replay_market_history
+from app.market_indicators import Candle, MarketIndicatorTracker
+from app.profit_lock import net_profit_lock_reason
+from app.trade_flow import TradeFlowTracker
 from app.paper import PaperExecutor
 from app.portfolio import size_from_free_cash
 from app.simulation import ExecutionSimulator
@@ -51,9 +56,14 @@ class L2BacktestResult:
     exits: int = 0
     closed_positions: int = 0
     final_open_quantity: float = 0.0
+    trade_events: int = 0
+    kline_events: int = 0
+    profit_lock_exits: int = 0
     notes: str = (
         "L2 replay uses recorded visible book only; cancelled liquidity and true "
-        "queue position are not recoverable from public depth diffs."
+        "queue position are not recoverable from public depth diffs. Entry scoring "
+        "uses the recorded depth stream; full engine-side entry gates are not yet "
+        "reconstructed. Fee-aware profit-lock exits use recorded trades and klines."
     )
 
 
@@ -103,11 +113,53 @@ def run_l2_backtest(path: str | Path, cfg: L2BacktestConfig | None = None) -> L2
     confirmations = 0
     peak = 0.0
     last_bid: float | None = None
+    indicator_tracker = MarketIndicatorTracker()
+    trade_tracker = TradeFlowTracker(window_seconds=10.0, min_trades=20, max_age_seconds=2.5)
 
     for event in replay_market_history(path):
         result.events_seen += 1
         payload = event.get("payload") or event
         ts = int(event.get("timestamp_ns") or payload.get("timestamp_ns") or 0)
+        event_time = ts / 1_000_000_000.0
+        event_type = str(event.get("event_type") or "")
+
+        if event_type == "trade":
+            try:
+                trade_tracker.update(TradeTick(
+                    symbol=str(payload.get("symbol") or "").lower(),
+                    price=float(payload["price"]),
+                    quantity=float(payload["quantity"]),
+                    buyer_is_maker=bool(payload["buyer_is_maker"]),
+                    received_at=datetime.fromtimestamp(event_time, timezone.utc),
+                ), now=event_time)
+                result.trade_events += 1
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
+            continue
+
+        if event_type == "kline":
+            try:
+                if payload.get("closed") is True:
+                    indicator_tracker.update(Candle(
+                        symbol=str(payload.get("symbol") or "").lower(),
+                        interval=str(payload["interval"]),
+                        open_time=int(payload["open_time"]),
+                        open=float(payload["open"]),
+                        high=float(payload["high"]),
+                        low=float(payload["low"]),
+                        close=float(payload["close"]),
+                        volume=float(payload.get("volume") or 0.0),
+                        closed=True,
+                        received_at=event_time,
+                    ))
+                    result.kline_events += 1
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
+            continue
+
+        if event_type != "depth":
+            continue
+
         bb = payload.get("best_bid") or payload.get("bids") or []
         ba = payload.get("best_ask") or payload.get("asks") or []
         if isinstance(bb, list) and bb and isinstance(bb[0], (list, tuple)):
@@ -153,6 +205,29 @@ def run_l2_backtest(path: str | Path, cfg: L2BacktestConfig | None = None) -> L2
                 trailing_stop_pct=cfg.trailing_stop_pct, peak_price=peak,
                 target_price=cfg.target_price,
             )
+            profit_lock_reason = None
+            if reason is None:
+                flow = trade_tracker.snapshot(now=event_time)
+                profit_lock_reason = net_profit_lock_reason(
+                    bid=bid,
+                    average_entry=paper.average_entry_price,
+                    peak_price=peak,
+                    fee_rate=cfg.fee_rate,
+                    slippage_bps_per_side=cfg.slippage_bps,
+                    momentum_1m_bps=indicator_tracker.return_bps(interval="1m", bars=1),
+                    momentum_5m_bps=indicator_tracker.return_bps(interval="5m", bars=1),
+                    trade_flow={
+                        "ready": flow.ready,
+                        "age_seconds": flow.age_seconds,
+                        "delta_ratio": flow.delta_ratio,
+                    },
+                    # L2 replay currently has no event-time wall persistence model;
+                    # do not fabricate a book-flow confirmation from one snapshot.
+                    book_flow=None,
+                )
+                if profit_lock_reason:
+                    reason = profit_lock_reason
+                    result.profit_lock_exits += 1
             if reason:
                 qty = paper.base_quantity
                 stressed_exit = reason in {"stop_loss", "trailing_stop", "time_stop"}
@@ -250,6 +325,9 @@ def summarize_l2_result(result: L2BacktestResult) -> dict[str, Any]:
     fees = sum(float(t.get("fee_usdt") or 0) for t in result.trades)
     return {
         "events_seen": result.events_seen,
+        "trade_events": result.trade_events,
+        "kline_events": result.kline_events,
+        "profit_lock_exits": result.profit_lock_exits,
         "signals": result.signals,
         "entries": result.entries,
         "exits": result.exits,
