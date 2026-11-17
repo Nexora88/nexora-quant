@@ -129,7 +129,7 @@ async def _one(symbol: str, path: str) -> None:
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    symbols = list(settings.watch_symbols())
+    symbols = list(dict.fromkeys([*settings.watch_symbols(), "btcusdt", "ethusdt"]))
     if not symbols:
         symbols = [settings.symbol]
     tasks = []

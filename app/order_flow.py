@@ -45,8 +45,11 @@ class OrderFlowAccumulator:
     def reset(self) -> None:
         self._buf.clear()
 
-    def update(self, *, imbalance: float, micro_premium_bps: float = 0.0) -> FlowPressure:
-        now = time.time()
+    def update(
+        self, *, imbalance: float, micro_premium_bps: float = 0.0,
+        timestamp: float | None = None,
+    ) -> FlowPressure:
+        now = time.time() if timestamp is None else float(timestamp)
         obi = (float(imbalance) - 0.5) * 2.0
         micro = max(-1.0, min(1.0, float(micro_premium_bps) / 8.0))
         signed = 0.72 * obi + 0.28 * micro

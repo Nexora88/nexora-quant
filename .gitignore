@@ -22,3 +22,4 @@ data/
 *.db
 *.bak
 
+reports/multi_symbol_replay_latest.json
