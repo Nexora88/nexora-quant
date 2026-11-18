@@ -342,7 +342,10 @@ async def run() -> None:
         trade_tasks.append(asyncio.create_task(_trade_pump(trade_symbol), name=f"trades-{trade_symbol}"))
 
     try:
-        use_multi = len(watched) > 1 and bool(getattr(settings, "universe_auto", False))
+        # A fixed SYMBOLS list must also start every configured depth stream.
+        # UNIVERSE_AUTO controls dynamic discovery, not manual watchlist subscriptions.
+        # Otherwise a 9-symbol paper profile silently scans only its primary symbol.
+        use_multi = len(watched) > 1
 
         async def _consume(depth, *, symbol: str | None = None) -> None:
             nonlocal confirmations, ticks, primary
