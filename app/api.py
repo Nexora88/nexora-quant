@@ -169,7 +169,16 @@ canvas{height:168px!important}
       </div>
     </div>
   </div>
-  <div class=\"footer\">Edge olmadan islem yok; round-trip komisyon ve kayma hesaba katilir. Yatirim tavsiyesi degildir.</div>
+  <div class="card" style="margin-top:10px">
+    <h2>Dokuz sembol derinlik taramasi</h2>
+    <div style="overflow:auto">
+      <table>
+        <thead><tr><th>Sembol</th><th>Durum</th><th>Bid</th><th>Ask</th><th>Spread</th><th>Veri yasi</th></tr></thead>
+        <tbody id="scan"><tr><td colspan="6">Veri bekleniyor</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+  <div class=\\\"footer\\\">Edge olmadan islem yok; round-trip komisyon ve kayma hesaba katilir. Yatirim tavsiyesi degildir.</div>
 </main>
 <script>
 const el=id=>document.getElementById(id);
@@ -269,6 +278,12 @@ async function tick(){
     drawLine('pc',s.price_curve||[],'mid','#2eff9a');
     drawLine('ec',s.equity_curve||[],'equity','#ffc14d');
     el('fills').innerHTML=fills.length?fills.slice(0,14).map(t=>{const pnl=Number(t.pnl_usdt);return '<tr><td>'+esc(String(t.timestamp||'').slice(11,19))+'</td><td>'+esc(String(t.side||'').toUpperCase())+'</td><td>'+num(t.quantity,5)+'</td><td>'+num(t.price,2)+'</td><td class=\"'+(pnl>=0?'pos':'neg')+'\">'+num(pnl,3)+'</td><td>'+num(t.fee_usdt,4)+'</td></tr>';}).join(''):'<tr><td colspan=\"6\" style=\"color:#7f9a8c\">Henuz fill yok</td></tr>';
+    const scan=s.scan_board||[];
+    el('scan').innerHTML=scan.length?scan.map(x=>{
+      const ok=x.status==='synchronized';
+      const status=String(x.status||'awaiting').toUpperCase();
+      return '<tr><td>'+esc(String(x.symbol||'').toUpperCase())+'</td><td class="'+(ok?'pos':'neg')+'">'+status+'</td><td>'+num(x.bid,6)+'</td><td>'+num(x.ask,6)+'</td><td>'+num(x.spread_bps,2)+' bps</td><td>'+num(x.data_age_seconds,2)+'s</td></tr>';
+    }).join(''):'<tr><td colspan="6">Watchlist bos</td></tr>';
     const logs=s.live_log||[];
     el('log').innerHTML=logs.length?logs.slice(0,30).map(x=>'<div>'+esc(x)+'</div>').join(''):'<div>Log bos</div>';
     const L=s.learner_snapshot||{};
