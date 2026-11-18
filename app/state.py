@@ -2,6 +2,7 @@
 from collections import deque
 from dataclasses import asdict
 from datetime import datetime, timezone
+import time
 from typing import Any
 
 from app.events import BookTicker, TradeTick
@@ -256,6 +257,48 @@ class RuntimeState:
                 "ask_qty": b.ask_qty,
                 "received_at": str(getattr(b, "received_at", "")),
             }
+        now_ts = time.time()
+        scan_board: list[dict[str, Any]] = []
+        primary_symbol = (
+            str(getattr(self.latest_book, "symbol", "") or self.trade_symbol or settings.symbol)
+            .lower()
+        )
+        for symbol in self.depth_watch:
+            sym = str(symbol).lower()
+            if self.latest_book is not None and sym == primary_symbol:
+                bid = float(self.latest_book.bid or 0)
+                ask = float(self.latest_book.ask or 0)
+                age = self.data_age_seconds()
+                bid_qty = float(getattr(self.latest_book, "bid_qty", 0) or 0)
+                ask_qty = float(getattr(self.latest_book, "ask_qty", 0) or 0)
+                source = "primary"
+            else:
+                book = self.side_books.get(sym) or {}
+                bid = float(book.get("bid") or 0)
+                ask = float(book.get("ask") or 0)
+                updated_at = book.get("updated_at")
+                age = max(0.0, now_ts - float(updated_at)) if updated_at else None
+                bid_qty = float(book.get("bid_qty") or 0)
+                ask_qty = float(book.get("ask_qty") or 0)
+                source = "side_depth"
+            mid = (bid + ask) / 2.0 if bid > 0 and ask > 0 else 0.0
+            spread = ((ask - bid) / mid * 10_000.0) if mid > 0 else None
+            synchronized = bool(
+                age is not None and age <= settings.max_data_age_seconds
+                and bid > 0 and ask > bid
+            )
+            scan_board.append({
+                "symbol": sym,
+                "status": "synchronized" if synchronized else ("stale" if age is not None else "awaiting"),
+                "source": source,
+                "bid": bid or None,
+                "ask": ask or None,
+                "mid": mid or None,
+                "spread_bps": round(spread, 3) if spread is not None else None,
+                "data_age_seconds": round(age, 3) if age is not None else None,
+                "bid_qty": bid_qty,
+                "ask_qty": ask_qty,
+            })
         return {
             "mode": settings.trading_mode,
             "symbol": (self.trade_symbol or settings.symbol),
@@ -313,7 +356,9 @@ class RuntimeState:
             },
             "score_history": list(self.score_history)[-120:],
             "universe_board": list(self.universe_board)[:12],
-            "depth_watch": list(self.depth_watch)[:8],
+            "depth_watch": list(self.depth_watch)[:12],
+            "scan_board": scan_board,
+            "router_board": list(self.router_board)[:12],
             "paused": bool(self.paused),
             "peak_equity": self.peak_equity,
             "max_drawdown_pct": round(dd_pct, 3),
