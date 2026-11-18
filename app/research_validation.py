@@ -120,44 +120,42 @@ def portfolio_metrics(
 def walk_forward_splits(
     timestamps_ns: Iterable[int],
     *,
-    train_fraction: float = 0.60,
-    validation_fraction: float = 0.20,
-    test_fraction: float = 0.20,
-    step_fraction: float = 0.20,
+    train_fraction: float = 0.50,
+    validation_fraction: float = 0.10,
+    test_fraction: float = 0.10,
+    step_fraction: float = 0.10,
 ) -> list[dict[str, int]]:
-    """Generate chronological expanding train / validation / test windows.
+    """Generate expanding-train, forward-only validation/test windows.
 
-    Returned boundaries are indices into the sorted timestamp sequence. No
-    random shuffle is performed. Fractions describe each initial window.
+    Fractions set the initial train size and fixed validation/test horizons;
+    they need not sum to one because later windows consume later observations.
+    Indices are half-open and refer to the sorted timestamp sequence.
     """
-    fractions = (train_fraction, validation_fraction, test_fraction)
-    if any(not 0 < x < 1 for x in fractions) or abs(sum(fractions) - 1.0) > 1e-9:
-        raise ValueError("train, validation and test fractions must sum to one")
-    if not 0 < step_fraction < 1:
-        raise ValueError("step_fraction must be in (0, 1)")
+    fractions = (train_fraction, validation_fraction, test_fraction, step_fraction)
+    if any(not 0 < x < 1 for x in fractions):
+        raise ValueError("all fractions must be in (0, 1)")
     ts = sorted(int(x) for x in timestamps_ns)
     n = len(ts)
     train_n = int(n * train_fraction)
-    val_n = int(n * validation_fraction)
-    test_n = n - train_n - val_n
-    if min(train_n, val_n, test_n) < 1:
-        raise ValueError("not enough timestamps for three non-empty windows")
+    val_n = max(1, int(n * validation_fraction))
+    test_n = max(1, int(n * test_fraction))
     step = max(1, int(n * step_fraction))
+    if train_n < 1 or train_n + val_n + test_n > n:
+        raise ValueError("not enough timestamps for train, validation and test windows")
     splits = []
-    start = 0
-    while start + train_n + val_n + test_n <= n:
-        train_end = start + train_n
+    train_end = train_n
+    while train_end + val_n + test_n <= n:
         val_end = train_end + val_n
         test_end = val_end + test_n
         splits.append({
-            "train_start": start, "train_end": train_end,
+            "train_start": 0, "train_end": train_end,
             "validation_start": train_end, "validation_end": val_end,
             "test_start": val_end, "test_end": test_end,
-            "train_start_ns": ts[start], "train_end_ns": ts[train_end - 1],
+            "train_start_ns": ts[0], "train_end_ns": ts[train_end - 1],
             "validation_start_ns": ts[train_end], "validation_end_ns": ts[val_end - 1],
             "test_start_ns": ts[val_end], "test_end_ns": ts[test_end - 1],
         })
-        start += step
+        train_end += step
     return splits
 
 
