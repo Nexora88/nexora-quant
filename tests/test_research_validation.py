@@ -40,8 +40,8 @@ def test_walk_forward_windows_are_chronological_and_disjoint():
     first = splits[0]
     assert first["train_end"] == first["validation_start"]
     assert first["validation_end"] == first["test_start"]
-    assert first["test_end"] == 100
-    assert len(splits) == 6
+    assert first["test_end"] == 140
+    assert len(splits) == 4
     assert splits[1]["train_start"] == 0
     assert splits[1]["train_end"] > first["train_end"]
     assert all(a["test_end"] <= b["train_start"] + 100 for a, b in zip(splits, splits[1:]))
@@ -49,7 +49,7 @@ def test_walk_forward_windows_are_chronological_and_disjoint():
 
 def test_walk_forward_rejects_too_little_data():
     with pytest.raises(ValueError):
-        walk_forward_splits(range(3))
+        walk_forward_splits(range(2))
 
 
 def test_queue_fill_only_credits_volume_after_queue_is_cleared():
