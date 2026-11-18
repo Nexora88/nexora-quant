@@ -178,7 +178,7 @@ canvas{height:168px!important}
       </table>
     </div>
   </div>
-  <div class=\\\"footer\\\">Edge olmadan islem yok; round-trip komisyon ve kayma hesaba katilir. Yatirim tavsiyesi degildir.</div>
+  <div class=\"footer\">Edge olmadan islem yok; round-trip komisyon ve kayma hesaba katilir. Yatirim tavsiyesi degildir.</div>
 </main>
 <script>
 const el=id=>document.getElementById(id);
