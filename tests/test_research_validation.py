@@ -35,7 +35,7 @@ def test_metrics_report_net_return_drawdown_and_expectancy():
 
 
 def test_walk_forward_windows_are_chronological_and_disjoint():
-    splits = walk_forward_splits(range(200), step_fraction=0.2)
+    splits = walk_forward_splits(range(200), step_fraction=0.1)
     assert splits
     first = splits[0]
     assert first["train_end"] == first["validation_start"]
