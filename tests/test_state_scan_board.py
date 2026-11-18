@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import time
 
 from app.events import BookTicker
 from app.state import RuntimeState
@@ -21,7 +22,7 @@ def test_snapshot_reports_all_watched_symbols_and_depth_freshness():
             "ask": 2001.0,
             "bid_qty": 4.0,
             "ask_qty": 3.0,
-            "updated_at": __import__("time").time(),
+            "updated_at": time.time(),
         }
     }
     state.router_board = [{"symbol": "ethusdt", "score": 0.7}]
