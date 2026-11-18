@@ -39,6 +39,8 @@ class L2BacktestConfig:
     partial_fill_probability: float = 0.0
     seed: int = 0
     min_order_usdt: float = 5.0
+    stop_stress_multiplier: float = 2.5
+    stop_tail_bps: float = 8.0
 
 
 @dataclass
@@ -118,6 +120,9 @@ def run_l2_backtest(
         partial_fill_probability=cfg.partial_fill_probability,
         seed=cfg.seed,
         impact_coefficient=cfg.impact_coefficient,
+        stop_stress_multiplier=cfg.stop_stress_multiplier,
+        stop_tail_bps=cfg.stop_tail_bps,
+        symbol=primary_symbol,
     )
     # Match the live 0.5s sample cadence, but use replay event timestamps.
     pw = PriceWindow(maxlen=1200, sample_interval_seconds=0.5)
