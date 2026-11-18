@@ -93,6 +93,8 @@ def main() -> int:
         partial_fill_probability=settings.simulated_partial_fill_probability,
         seed=settings.simulation_seed,
         min_order_usdt=settings.min_order_usdt,
+        stop_stress_multiplier=settings.stop_stress_multiplier,
+        stop_tail_bps=settings.stop_tail_bps,
     )
 
     report = {
