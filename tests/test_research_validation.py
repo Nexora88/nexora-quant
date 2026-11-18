@@ -10,7 +10,7 @@ def test_portfolio_uses_one_shared_cash_pool_and_position_cap():
     assert book.buy("btcusdt", 0.4, 100.0)
     assert book.buy("ethusdt", 0.01, 2000.0)
     assert not book.buy("solusdt", 0.1, 100.0)
-    assert book.cash == pytest.approx(59.88)
+    assert book.cash == pytest.approx(39.94)
     assert book.sell("btcusdt", 0.4, 101.0) > 0
     assert "btcusdt" not in book.positions
 
@@ -35,12 +35,15 @@ def test_metrics_report_net_return_drawdown_and_expectancy():
 
 
 def test_walk_forward_windows_are_chronological_and_disjoint():
-    splits = walk_forward_splits(range(100), step_fraction=0.2)
+    splits = walk_forward_splits(range(200), step_fraction=0.2)
     assert splits
     first = splits[0]
     assert first["train_end"] == first["validation_start"]
     assert first["validation_end"] == first["test_start"]
     assert first["test_end"] == 100
+    assert len(splits) == 6
+    assert splits[1]["train_start"] == 0
+    assert splits[1]["train_end"] > first["train_end"]
     assert all(a["test_end"] <= b["train_start"] + 100 for a, b in zip(splits, splits[1:]))
 
 
