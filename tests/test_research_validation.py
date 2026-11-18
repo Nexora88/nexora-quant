@@ -44,7 +44,8 @@ def test_walk_forward_windows_are_chronological_and_disjoint():
     assert len(splits) == 4
     assert splits[1]["train_start"] == 0
     assert splits[1]["train_end"] > first["train_end"]
-    assert all(a["test_end"] <= b["train_start"] + 100 for a, b in zip(splits, splits[1:]))
+    assert all(a["test_end"] < b["test_end"] for a, b in zip(splits, splits[1:]))
+    assert all(s["train_end"] <= s["validation_start"] < s["validation_end"] <= s["test_start"] < s["test_end"] for s in splits)
 
 
 def test_walk_forward_rejects_too_little_data():
