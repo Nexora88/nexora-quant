@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from app.market_history import replay_market_history
+from app.opportunity_audit import audit_blocked_candidates
 from app.profit_lock import net_profit_lock_reason
 from app.replay_context import ReplayMarketContext
 from app.paper import PaperExecutor
@@ -60,6 +61,7 @@ class L2BacktestResult:
     profit_lock_exits: int = 0
     blocked_candidates: int = 0
     blocker_counts: dict[str, int] = field(default_factory=dict)
+    opportunity_audit: dict[str, Any] = field(default_factory=dict)
     notes: str = (
         "Multi-symbol event-time replay reconstructs persistent L2 pressure, "
         "spoof persistence, aggressor trade flow, closed-candle indicators and "
@@ -125,6 +127,8 @@ def run_l2_backtest(
     last_bid: float | None = None
     last_bid_levels: list | None = None
     market_context = ReplayMarketContext([primary_symbol] if primary_symbol else [])
+    blocked_candidate_samples: list[dict[str, Any]] = []
+    quote_samples: list[dict[str, Any]] = []
     sources = [path, *(context_paths or {}).values()]
     events = merge(
         *(replay_market_history(source) for source in sources),
@@ -192,6 +196,7 @@ def run_l2_backtest(
         last_bid = bid
         if bid <= 0 or ask < bid:
             continue
+        quote_samples.append({"timestamp_ns": ts, "bid": bid, "ask": ask})
         if not result.equity_curve:
             result.equity_curve.append({
                 "timestamp_ns": ts, "equity": cfg.starting_cash_usdt,
@@ -296,6 +301,11 @@ def run_l2_backtest(
                 result.blocked_candidates += 1
                 for blocker in blockers:
                     result.blocker_counts[blocker] = result.blocker_counts.get(blocker, 0) + 1
+                blocked_candidate_samples.append({
+                    "timestamp_ns": ts,
+                    "entry_ask": ask,
+                    "blockers": list(blockers),
+                })
                 signal = None
         if signal:
             confirmations += 1
@@ -365,6 +375,12 @@ def run_l2_backtest(
             "mid": last_bid, "score": 0.0,
             "phase": "end_of_sample_liquidation",
         })
+    result.opportunity_audit = audit_blocked_candidates(
+        blocked_candidate_samples,
+        quote_samples,
+        fee_rate=cfg.fee_rate,
+        slippage_bps_per_side=cfg.slippage_bps,
+    )
     result.final_equity = float(snap["equity_usdt"])
     result.final_cash = float(snap["cash_usdt"])
     result.realized_pnl = float(snap["realized_pnl_usdt"])
@@ -403,6 +419,7 @@ def summarize_l2_result(result: L2BacktestResult) -> dict[str, Any]:
         "profit_lock_exits": result.profit_lock_exits,
         "blocked_candidates": result.blocked_candidates,
         "blocker_counts": dict(sorted(result.blocker_counts.items())),
+        "blocked_opportunity_audit": result.opportunity_audit,
         "signals": result.signals,
         "entries": result.entries,
         "exits": result.exits,
