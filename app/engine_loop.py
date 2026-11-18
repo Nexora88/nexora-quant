@@ -365,6 +365,7 @@ async def run() -> None:
                             "ask_qty": aq,
                             "spread_bps": spread_bps,
                             "mid": mid,
+                            "updated_at": time.time(),
                         }
                         state.side_books = board
                         imb = (bq / (bq + aq)) if (bq + aq) > 0 else 0.5
