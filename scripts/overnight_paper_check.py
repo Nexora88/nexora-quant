@@ -34,9 +34,9 @@ def _parse_time(value: str) -> datetime:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", type=Path, default=Path(os.getenv("PAPER_DB_PATH", "data/paper.sqlite3")))
-    parser.add_argument("--min-hours", type=float, default=48.0)
+    parser.add_argument("--min-hours", type=float, default=168.0)
     parser.add_argument("--min-ticks", type=int, default=1000)
-    parser.add_argument("--min-closed-trades", type=int, default=20)
+    parser.add_argument("--min-closed-trades", type=int, default=50)
     parser.add_argument("--max-stale-minutes", type=float, default=120.0)
     args = parser.parse_args()
 
