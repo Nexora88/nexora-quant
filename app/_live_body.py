@@ -44,7 +44,6 @@ class LiveExecutor:
         self.realized_pnl_usdt = 0.0
         self.fees_paid_usdt = 0.0
         self.trades: list[dict[str, Any]] = []
-        self.on_fill = None
         self._filters: dict[str, Any] | None = None
         self._order_lock = threading.RLock()
         self._order_sequence = 0
@@ -606,8 +605,6 @@ class LiveExecutor:
                 self.base_quantity = 0.0
                 self.average_entry_price = 0.0
         self.trades.append(trade)
-        if callable(self.on_fill):
-            self.on_fill(trade)
         log.info(
             "LIVE %s filled qty=%.8f price=%.4f notional=%.4f fee=%.6f "
             "orderId=%s status=%s testnet=%s accounting_complete=%s",
