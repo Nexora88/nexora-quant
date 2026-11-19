@@ -99,6 +99,7 @@ canvas{height:168px!important}
     <div class=\"stat\"><div class=\"l\">Sembol</div><div class=\"v\" id=\"sym\">???</div></div>
     <div class=\"stat\"><div class=\"l\">Skor / Esik</div><div class=\"v\" id=\"sc\">???</div></div>
     <div class=\"stat\"><div class=\"l\">Net PnL</div><div class=\"v\" id=\"net\">???</div></div>
+    <div class=\"stat\"><div class=\"l\">Session PnL</div><div class=\"v\" id=\"sessionpnl\">???</div></div>
     <div class=\"stat\"><div class=\"l\">Islem</div><div class=\"v\" id=\"tc\">0</div></div>
     <div class=\"stat\"><div class=\"l\">Win rate (rolling)</div><div class=\"v\" id=\"wr\">???</div></div>
     <div class=\"stat\"><div class=\"l\">Drawdown</div><div class=\"v\" id=\"dd\">???</div></div>
@@ -155,6 +156,11 @@ canvas{height:168px!important}
         <div><div class="l">Acik PnL</div><div class="v" id="unreal">---</div></div>
         <div><div class="l">Gunluk fee</div><div class="v" id="dailyfee">---</div></div>
         <div><div class="l">Fee-net expectancy</div><div class="v" id="expect">---</div></div>
+        <div><div class="l">Maker fill</div><div class="v" id="makerfill">---</div></div>
+        <div><div class="l">Maker timeout</div><div class="v" id="makertimeout">---</div></div>
+        <div><div class="l">Trades / hour</div><div class="v" id="tradeshour">---</div></div>
+        <div><div class="l">Max DD</div><div class="v" id="maxdd">---</div></div>
+        <div><div class="l">Events</div><div class="v" id="events">---</div></div>
       </div>
     </div>
     <div class="card">
