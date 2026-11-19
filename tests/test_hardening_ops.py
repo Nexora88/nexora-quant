@@ -28,18 +28,17 @@ def test_paper_store_wal():
         store.close()
 
 
-def test_history_drop_oldest_backpressure(tmp_path: Path):
+def test_history_backpressure_flushes_batches_without_dropping(tmp_path: Path):
     path = tmp_path / "h.jsonl.gz"
     w = MarketHistoryWriter(path, max_pending=5)
     for i in range(20):
         w.append(timestamp_ns=i, event_type="depth", payload={"i": i})
-    w.flush()
     st = w.stats()
-    assert st["dropped"] >= 10
+    assert st["dropped"] == 0
+    assert st["written"] == 20
     assert st["pending"] == 0
     rows = list(replay_market_history(path))
-    assert len(rows) >= 1
-    assert rows[0]["timestamp_ns"] <= rows[-1]["timestamp_ns"]
+    assert [row["timestamp_ns"] for row in rows] == list(range(20))
 
 
 def test_history_write_through_no_drop(tmp_path: Path):
