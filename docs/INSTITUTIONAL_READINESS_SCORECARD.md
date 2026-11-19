@@ -5,7 +5,7 @@ This scorecard is a hard release checklist, not a marketing grade. Any red item 
 | Gate | Required evidence | Current repository assessment |
 |---|---|---|
 | CI baseline | Full pytest, Ruff, compile, dependency/version consistency | CI workflow exists; exact branch must pass before merge |
-| Live order lifecycle | Explicit state transitions, idempotent client IDs, timeout recovery, lost-response tests | Stable client IDs and uncertainty boolean exist; explicit state machine/property/chaos coverage remains incomplete |
+| Live order lifecycle | Explicit state transitions, idempotent client IDs, timeout recovery, lost-response tests | Explicit PENDING/OPEN/PARTIALLY_FILLED/FILLED/CANCELLED/REJECTED/UNKNOWN state machine now tracks latest intent; timeout/chaos integration and exchange reconciliation still require CI + Testnet evidence |
 | Exchange reconciliation | Free/locked balances, open orders/OCO, recent fills and commission assets vs ledger | Startup balance/OCO recovery exists; complete recurring account-vs-ledger reconciliation is not proven |
 | Health/dead-man | Fresh depth, heartbeat, uncertain-order and risk gates; external watchdog | Health/alerts need end-to-end verification; external watchdog not evidenced |
 | Risk | Daily/weekly loss, fees, portfolio heat, single-position live | Daily loss/fee and single-position constraints exist; weekly loss/portfolio heat not fully evidenced |
@@ -18,9 +18,9 @@ This scorecard is a hard release checklist, not a marketing grade. Any red item 
 ## 20 USDT operational envelope (candidate, not approval)
 
 config/live-20usdt.env.example is a conservative Testnet-first template:
-- One configured symbol and one position only.
+- One configured execution symbol and one live position only; the scanner can watch multiple symbols but live multi-position routing remains disabled.
 - 5 USDT target/max notional, leaving the rest uncommitted.
-- 0.25% risk-per-trade sizing input, 1 USDT daily loss ceiling, 0.15 USDT daily fee ceiling.
+- 0.25 risk-per-trade sizing input (configuration is expressed in percentage points), 1 USDT daily loss ceiling, 0.15 USDT daily fee ceiling.
 - VIP0 fee assumption; BNB discount off.
 - No multi-position, automatic live symbol rotation, or learner promotion.
 
@@ -37,3 +37,10 @@ The exchange's current LOT_SIZE, MARKET_LOT_SIZE, MIN_NOTIONAL/NOTIONAL, and ass
 7. Start with strategy orders disabled; operator explicitly enables the approved mainnet profile.
 
 No scorecard can establish that the strategy will make money or prevent losses. The objective is controlled, measured exposure and fail-closed operation.
+
+
+## Multi-symbol scanning versus live routing
+
+The engine already discovers a USDT-major universe, starts synchronized depth streams for the watch list, maintains side-book snapshots, and ranks candidates. The current live executor is still bound to one configured symbol and one position. The paper engine also maintains one active position; its per-symbol research replays are independent bankroll runs, not a shared-cash multi-position portfolio. Do not interpret scan breadth as multi-position execution readiness.
+
+A 20 USDT account may ultimately support two or three concurrent positions only if current exchange filters permit the minimum order sizes and the shared-wallet allocator reserves fees and cash. The candidate operational ceiling is three positions, not unlimited orders. Live remains hard-limited to one until per-symbol OCO, per-symbol ledgers, shared balance reservation, periodic account reconciliation, and restart recovery are covered by tests and Spot Testnet evidence.
