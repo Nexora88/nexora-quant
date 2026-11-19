@@ -28,6 +28,7 @@ def test_dashboard_and_status_endpoints_smoke():
         assert 'id="markout1"' in dashboard.text
         assert 'id="markout5"' in dashboard.text
         assert 'id="markout30"' in dashboard.text
+        assert 'id="dailyloss"' in dashboard.text
         assert client.get("/health").status_code == 200
         status = client.get("/status")
         assert status.status_code == 200
