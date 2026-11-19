@@ -156,6 +156,7 @@ canvas{height:168px!important}
         <div><div class="l">Acik PnL</div><div class="v" id="unreal">---</div></div>
         <div><div class="l">Gunluk fee</div><div class="v" id="dailyfee">---</div></div>
         <div><div class="l">Fee-net expectancy</div><div class="v" id="expect">---</div></div>
+        <div><div class="l">Last exit reasons</div><div class="v" id="exitreasons">---</div></div>
         <div><div class="l">Maker fill</div><div class="v" id="makerfill">---</div></div>
         <div><div class="l">Maker timeout</div><div class="v" id="makertimeout">---</div></div>
         <div><div class="l">Trades / hour</div><div class="v" id="tradeshour">---</div></div>
@@ -302,14 +303,16 @@ async function tick(){
     el('entry').textContent=qty>0?num(p.average_entry_price,2):'--';
     el('unreal').textContent=num(p.unrealized_pnl_usdt,3)+' USDT';
     el('unreal').className='v'+(Number(p.unrealized_pnl_usdt||0)>=0?' pos':' neg');
-    el('dailyfee').textContent=num(s.session_fees_usdt,3)+' USDT';
+    el('dailyfee').textContent=num(s.session_fees_usdt,3)+' / '+num(s.daily_fee_budget_usdt,2)+' USDT'+(s.daily_fee_budget_exceeded?' LIMIT':'');
     el('expect').textContent=expectancy.n?num(expectancy.expectancy_usdt,4)+' / trade ('+expectancy.n+')':'sample < 50';
     const maker=s.maker_stats||{};
-    el('makerfill').textContent=maker.fill_rate==null?'N/A':num(100*maker.fill_rate,1)+'%';
+    el('makerfill').textContent=maker.fills+'/'+maker.attempts+' ('+(maker.fill_rate==null?'N/A':num(100*maker.fill_rate,1)+'%')+')';
     el('makertimeout').textContent=maker.timeout_rate==null?'N/A':num(100*maker.timeout_rate,1)+'%';
     el('tradeshour').textContent=String(s.trades_per_hour??0);
     el('maxdd').textContent=num(s.max_drawdown_pct_observed,2)+'%';
     el('events').textContent=String(s.events_seen??0);
+    const exitReasons=s.session_exit_reasons||{};
+    el('exitreasons').textContent=Object.keys(exitReasons).length?Object.entries(exitReasons).map(([k,v])=>k+': '+v).join(', '):'N/A';
     el('lm').textContent=(L.growth_mode||'rebuild')+(L.frozen?' / FROZEN':' / ADAPTIVE');
     el('lt').textContent=String(L.lifetime_trades??L.trades??0);
     el('le').textContent=num(L.entry_min_score,3);
