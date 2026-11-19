@@ -14,3 +14,16 @@ def test_fastapi_application_import_smoke():
     assert app is not None
     assert any(getattr(route, "path", None) == "/health" for route in app.routes)
     assert any(getattr(route, "path", None) == "/status" for route in app.routes)
+
+def test_dashboard_and_status_endpoints_smoke():
+    from fastapi.testclient import TestClient
+    from app.api import app
+
+    with TestClient(app) as client:
+        assert client.get("/").status_code == 200
+        assert client.get("/health").status_code == 200
+        status = client.get("/status")
+        assert status.status_code == 200
+        payload = status.json()
+        assert "session_expectancy" in payload
+        assert "maker_stats" in payload
