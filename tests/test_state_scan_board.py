@@ -36,3 +36,23 @@ def test_snapshot_reports_all_watched_symbols_and_depth_freshness():
     assert rows["solusdt"]["status"] == "awaiting"
     assert snapshot["router_board"][0]["symbol"] == "ethusdt"
     assert snapshot["depth_watch"] == state.depth_watch
+
+
+def test_snapshot_exposes_consolidated_risk_book():
+    from app.risk import RiskManager
+    from app.state import RuntimeState
+
+    state = RuntimeState()
+    state.risk_manager = RiskManager(
+        max_order_size_usdt=25, max_daily_loss_usdt=2,
+        max_consecutive_losses=4, max_spread_bps=22,
+        max_data_age_seconds=8, max_daily_fee_usdt=0.75,
+    )
+    state.risk_manager.record_fee(0.20)
+    state.session_realized_pnl_usdt = -0.15
+    state.peak_equity = 100.0
+    risk_book = state.snapshot()["risk_book"]
+    assert risk_book["daily_fee_usdt"] == 0.20
+    assert risk_book["daily_fee_remaining_usdt"] == 0.55
+    assert risk_book["session_pnl_usdt"] == -0.15
+    assert risk_book["daily_fee_halt"] is False
