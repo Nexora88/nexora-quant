@@ -59,6 +59,10 @@ class RuntimeState:
         self.session_fees_usdt: float = 0.0
         self.session_fee_day: str | None = None
         self.hourly_trade_ts: list[float] = []
+        self.session_closed_trade_pnls: list[float] = []
+        self.session_exit_reasons: dict[str, int] = {}
+        self.max_drawdown_usdt: float = 0.0
+        self.max_drawdown_pct_observed: float = 0.0
         self.blockers_live: list[str] = []
         self.closed_trade_count: int = 0
         self.session_realized_pnl_usdt: float = 0.0
@@ -69,15 +73,9 @@ class RuntimeState:
         self.maker_entry_timeouts: int = 0
 
     def session_expectancy(self) -> dict[str, Any]:
-        """Fee-net expectancy from closed sells in recent_fills (session window)."""
-        sells = [
-            f
-            for f in list(self.recent_fills)
-            if str(f.get("side") or "").lower() in {"sell", "short"}
-            and f.get("accounting_complete", True) is True
-            and f.get("pnl_usdt") is not None
-        ]
-        if not sells:
+        """Fee-net expectancy across every fully closed trade in this process session."""
+        pnls = list(self.session_closed_trade_pnls)
+        if not pnls:
             return {
                 "n": 0,
                 "expectancy_usdt": None,
@@ -86,7 +84,6 @@ class RuntimeState:
                 "avg_win_usdt": None,
                 "avg_loss_usdt": None,
             }
-        pnls = [float(f.get("pnl_usdt") or 0.0) for f in sells]
         wins = [p for p in pnls if p > 0]
         losses = [p for p in pnls if p <= 0]
         n = len(pnls)
@@ -209,9 +206,10 @@ class RuntimeState:
                     self.session_realized_pnl_usdt = float(
                         getattr(self, "session_realized_pnl_usdt", 0.0) or 0.0
                     ) + pnl
-                    reason = str(row.get("reason") or "")
-                    if reason:
-                        self.last_exit_reason = reason.split(";")[0][:64]
+                    self.session_closed_trade_pnls.append(pnl)
+                    reason = str(row.get("reason") or "unknown").split(";")[0][:64]
+                    self.last_exit_reason = reason
+                    self.session_exit_reasons[reason] = self.session_exit_reasons.get(reason, 0) + 1
                 except (TypeError, ValueError):
                     self.last_exit_reason = "accounting_incomplete"
             else:
@@ -227,6 +225,13 @@ class RuntimeState:
             self.equity_curve.append({"ts": datetime.now(timezone.utc).isoformat(), "equity": eq})
             if eq > self.peak_equity:
                 self.peak_equity = eq
+            if self.peak_equity > 0:
+                drawdown = max(0.0, self.peak_equity - eq)
+                drawdown_pct = drawdown / self.peak_equity * 100.0
+                self.max_drawdown_usdt = max(self.max_drawdown_usdt, drawdown)
+                self.max_drawdown_pct_observed = max(
+                    self.max_drawdown_pct_observed, drawdown_pct
+                )
         except Exception:
             pass
 
@@ -327,6 +332,14 @@ class RuntimeState:
             "last_exit_reason": getattr(self, "last_exit_reason", None),
             "session_expectancy": self.session_expectancy(),
             "maker_stats": self.maker_stats(),
+            "trades_per_hour": len([
+                ts for ts in self.hourly_trade_ts if ts >= time.time() - 3600.0
+            ]),
+            "session_exit_reasons": dict(self.session_exit_reasons),
+            "max_drawdown_usdt": round(self.max_drawdown_usdt, 4),
+            "max_drawdown_pct_observed": round(self.max_drawdown_pct_observed, 3),
+            "daily_fee_budget_usdt": settings.max_daily_fee_usdt,
+            "daily_fee_budget_exceeded": self.session_fees_usdt >= settings.max_daily_fee_usdt,
             "position_opened_at": self.position_opened_at,
             "blockers_live": list(self.blockers_live)[:12],
             "shadow_leaderboard": list(self.shadow_leaderboard)[:5],
