@@ -185,7 +185,6 @@ class RuntimeState:
     def _advance_markouts(self, mid: float, observed_at: float) -> None:
         remaining = []
         for pending in self.markout_pending:
-            targets = pending.get("targets") or {}
             completed = pending.setdefault("completed", [])
             for horizon in (1, 5, 30):
                 key = str(horizon)
