@@ -427,7 +427,29 @@ class RuntimeState:
                 "bid_qty": bid_qty,
                 "ask_qty": ask_qty,
             })
+        risk = self.risk_manager
+        equity = float(portfolio.get("equity_usdt", portfolio.get("cash_usdt", 0.0)) or 0.0)
+        fees_today = float(getattr(risk, "fees_paid_today", self.session_fees_usdt) or 0.0)
+        goal = dict(getattr(self, "goal_status", None) or {})
+        risk_book = {
+            "equity_usdt": equity,
+            "peak_equity_usdt": float(self.peak_equity),
+            "drawdown_pct": round(dd_pct, 4),
+            "session_pnl_usdt": round(float(self.session_realized_pnl_usdt), 4),
+            "daily_realized_pnl_usdt": float(getattr(risk, "realized_pnl_today", 0.0) or 0.0),
+            "daily_fee_usdt": round(fees_today, 4),
+            "daily_fee_limit_usdt": float(settings.max_daily_fee_usdt),
+            "daily_fee_remaining_usdt": round(max(0.0, settings.max_daily_fee_usdt - fees_today), 4),
+            "daily_fee_halt": fees_today >= settings.max_daily_fee_usdt,
+            "daily_loss_limit_usdt": float(settings.max_daily_loss_usdt),
+            "consecutive_losses": int(getattr(risk, "consecutive_losses", 0) or 0),
+            "max_consecutive_losses": int(settings.max_consecutive_losses),
+            "kill": bool(getattr(risk, "kill_switch", False)),
+            "emergency": bool(self.emergency),
+            "goal_halt": bool(goal.get("halt_entries", False)),
+        }
         return {
+            "risk_book": risk_book,
             "mode": settings.trading_mode,
             "symbol": (self.trade_symbol or settings.symbol),
             "target_price": settings.target_price,
