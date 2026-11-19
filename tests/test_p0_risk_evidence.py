@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from app.events import BookTicker
 from app.risk import RiskManager
@@ -77,10 +77,26 @@ def test_fill_markouts_are_recorded_at_one_five_and_thirty_seconds():
         state.update_book(BookTicker(
             symbol="btcusdt", bid=mid - 0.01, bid_qty=1,
             ask=mid + 0.01, ask_qty=1,
-            received_at=fill_ts.replace(microsecond=0) + __import__("datetime").timedelta(seconds=seconds),
+            received_at=fill_ts.replace(microsecond=0) + timedelta(seconds=seconds),
         ))
 
     rows = list(state.markout_history)
     assert [row["horizon_seconds"] for row in rows] == [1, 5, 30]
     assert rows[0]["markout_bps"] > 0
     assert rows[2]["markout_bps"] < 0
+
+def test_paper_executor_emits_actual_fills_to_evidence_callback():
+    from app.paper import PaperExecutor
+
+    state = RuntimeState()
+    state.risk_manager = make_risk()
+    paper = PaperExecutor(100, 0.001)
+    paper.on_fill = state.record_fill
+    paper.buy(notional_usdt=10, price=100, reason="entry")
+    paper.sell_all(price=101, reason="exit")
+
+    assert state.maker_stats()["attempts"] == 0
+    assert state.session_fees_usdt > 0
+    assert state.risk_manager.fees_paid_today == state.session_fees_usdt
+    assert state.closed_trade_count == 1
+    assert state.session_expectancy()["n"] == 1
