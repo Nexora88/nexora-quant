@@ -34,6 +34,7 @@ from app import engine_setup as es
 async def run() -> None:
     es.executor = es._build_executor()
     state.executor = es.executor
+    es.executor.on_fill = state.record_fill
     store = PaperStore(settings.store_path)
     io_q = AsyncIoQueue(store)
     io_q.start()
