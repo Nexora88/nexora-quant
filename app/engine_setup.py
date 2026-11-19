@@ -55,6 +55,7 @@ risk = RiskManager(
     max_consecutive_losses=settings.max_consecutive_losses,
     max_spread_bps=settings.max_spread_bps,
     max_data_age_seconds=settings.max_data_age_seconds,
+    max_daily_fee_usdt=settings.max_daily_fee_usdt,
 )
 simulator = ExecutionSimulator(
     slippage_bps=settings.simulated_slippage_bps,
