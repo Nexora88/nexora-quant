@@ -9,6 +9,7 @@ No exchange orders are created.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 import logging
 import shutil
 import tempfile
@@ -93,6 +94,8 @@ def main() -> int:
         partial_fill_probability=settings.simulated_partial_fill_probability,
         seed=settings.simulation_seed,
         min_order_usdt=settings.min_order_usdt,
+        stop_stress_multiplier=settings.stop_stress_multiplier,
+        stop_tail_bps=settings.stop_tail_bps,
     )
 
     report = {
@@ -105,6 +108,8 @@ def main() -> int:
         "snapshot_created_at_utc": datetime.now(timezone.utc).isoformat(),
         "symbols_found": sorted(paths),
         "history_ranges": {},
+        "configured_entry_min_score": cfg.entry_min_score,
+        "threshold_sweep": [],
         "results": {},
     }
 
@@ -121,31 +126,35 @@ def main() -> int:
                 symbol.upper(), stats["bytes"], stats["event_counts"],
             )
 
-        for symbol, primary_path in sorted(snapshot_paths.items()):
-            # Only BTC and ETH are live macro references; unrelated altcoin books
-            # are replayed as their own primary runs, not mixed into this symbol's gates.
-            contexts = {
-                s: p for s, p in snapshot_paths.items()
-                if s in {"btcusdt", "ethusdt"} and s != symbol
-            }
-            result = run_l2_backtest(
-                primary_path,
-                cfg,
-                context_paths=contexts,
-                primary_symbol=symbol,
-            )
-            summary = summarize_l2_result(result)
-            summary["source_files"] = {
-                "primary": str(paths[symbol].relative_to(root)),
-                "context": {s: str(paths[s].relative_to(root)) for s in contexts},
-            }
-            report["results"][symbol] = summary
-            logging.info(
-                "%s entries=%s exits=%s net_realized=%.4f return=%.3f%% max_dd=%.3f%% blockers=%s",
-                symbol.upper(), summary["entries"], summary["exits"],
-                summary["realized_pnl"], summary["return_pct"],
-                summary["max_drawdown_pct"], summary["blocker_counts"],
-            )
+        # Same snapshots and execution assumptions at four thresholds.
+        # Per-symbol runs are independent, not a shared-cash portfolio.
+        for threshold in (0.40, 0.45, 0.50, 0.55):
+            threshold_cfg = replace(cfg, entry_min_score=threshold)
+            threshold_results: dict[str, dict] = {}
+            for symbol, primary_path in sorted(snapshot_paths.items()):
+                contexts = {
+                    s: p for s, p in snapshot_paths.items()
+                    if s in {"btcusdt", "ethusdt"} and s != symbol
+                }
+                result = run_l2_backtest(
+                    primary_path, threshold_cfg, context_paths=contexts, primary_symbol=symbol,
+                )
+                summary = summarize_l2_result(result)
+                summary["source_files"] = {
+                    "primary": str(paths[symbol].relative_to(root)),
+                    "context": {s: str(paths[s].relative_to(root)) for s in contexts},
+                }
+                threshold_results[symbol] = summary
+                logging.info(
+                    "threshold=%.2f %s entries=%s exits=%s net_realized=%.4f return=%.3f%% max_dd=%.3f%%",
+                    threshold, symbol.upper(), summary["entries"], summary["exits"],
+                    summary["realized_pnl"], summary["return_pct"], summary["max_drawdown_pct"],
+                )
+            report["threshold_sweep"].append({
+                "entry_min_score": threshold, "results": threshold_results,
+            })
+            if abs(threshold - cfg.entry_min_score) < 1e-9:
+                report["results"] = threshold_results
 
     report_dir = root / "reports"
     report_dir.mkdir(parents=True, exist_ok=True)

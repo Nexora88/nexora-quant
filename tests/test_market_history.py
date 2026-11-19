@@ -92,3 +92,18 @@ def test_market_history_writer_respects_jsonl_extension(tmp_path):
     writer.append(timestamp_ns=1, event_type="depth", payload={"mid": 100})
     writer.close()
     assert list(replay_market_history(path))[0]["payload"]["mid"] == 100
+
+
+
+def test_writer_flushes_full_batches_without_dropping_events(tmp_path):
+    path = tmp_path / "batched.jsonl"
+    writer = MarketHistoryWriter(path, max_pending=3)
+    for timestamp in range(1, 11):
+        writer.append(timestamp_ns=timestamp, event_type="depth", payload={"n": timestamp})
+    stats = writer.stats()
+    assert stats["dropped"] == 0
+    assert stats["pending"] == 1
+    assert stats["written"] == 9
+    writer.close()
+    rows = list(replay_market_history(path))
+    assert [row["timestamp_ns"] for row in rows] == list(range(1, 11))

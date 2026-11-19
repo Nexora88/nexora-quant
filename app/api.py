@@ -99,6 +99,7 @@ canvas{height:168px!important}
     <div class=\"stat\"><div class=\"l\">Sembol</div><div class=\"v\" id=\"sym\">???</div></div>
     <div class=\"stat\"><div class=\"l\">Skor / Esik</div><div class=\"v\" id=\"sc\">???</div></div>
     <div class=\"stat\"><div class=\"l\">Net PnL</div><div class=\"v\" id=\"net\">???</div></div>
+    <div class=\"stat\"><div class=\"l\">Session PnL</div><div class=\"v\" id=\"sessionpnl\">???</div></div>
     <div class=\"stat\"><div class=\"l\">Islem</div><div class=\"v\" id=\"tc\">0</div></div>
     <div class=\"stat\"><div class=\"l\">Win rate (rolling)</div><div class=\"v\" id=\"wr\">???</div></div>
     <div class=\"stat\"><div class=\"l\">Drawdown</div><div class=\"v\" id=\"dd\">???</div></div>
@@ -154,7 +155,17 @@ canvas{height:168px!important}
         <div><div class="l">Ortalama giris</div><div class="v" id="entry">---</div></div>
         <div><div class="l">Acik PnL</div><div class="v" id="unreal">---</div></div>
         <div><div class="l">Gunluk fee</div><div class="v" id="dailyfee">---</div></div>
+        <div><div class="l">Gunluk net loss</div><div class="v" id="dailyloss">---</div></div>
         <div><div class="l">Fee-net expectancy</div><div class="v" id="expect">---</div></div>
+        <div><div class="l">Last exit reasons</div><div class="v" id="exitreasons">---</div></div>
+        <div><div class="l">Maker fill</div><div class="v" id="makerfill">---</div></div>
+        <div><div class="l">Maker timeout</div><div class="v" id="makertimeout">---</div></div>
+        <div><div class="l">Trades / hour</div><div class="v" id="tradeshour">---</div></div>
+        <div><div class="l">Max DD</div><div class="v" id="maxdd">---</div></div>
+        <div><div class="l">Events</div><div class="v" id="events">---</div></div>
+        <div><div class="l">Markout 1s / bps</div><div class="v" id="markout1">N/A</div></div>
+        <div><div class="l">Markout 5s / bps</div><div class="v" id="markout5">N/A</div></div>
+        <div><div class="l">Markout 30s / bps</div><div class="v" id="markout30">N/A</div></div>
       </div>
     </div>
     <div class="card">
@@ -167,6 +178,15 @@ canvas{height:168px!important}
         <div><div class="l">TP / compound</div><div class="v" id="ltp">---</div></div>
         <div><div class="l">Ogrenme notu</div><div class="v" id="ln" style="font-size:11px">---</div></div>
       </div>
+    </div>
+  </div>
+  <div class="card" style="margin-top:10px">
+    <h2>Dokuz sembol derinlik taramasi</h2>
+    <div style="overflow:auto">
+      <table>
+        <thead><tr><th>Sembol</th><th>Durum</th><th>Bid</th><th>Ask</th><th>Spread</th><th>Veri yasi</th></tr></thead>
+        <tbody id="scan"><tr><td colspan="6">Veri bekleniyor</td></tr></tbody>
+      </table>
     </div>
   </div>
   <div class=\"footer\">Edge olmadan islem yok; round-trip komisyon ve kayma hesaba katilir. Yatirim tavsiyesi degildir.</div>
@@ -238,6 +258,9 @@ async function tick(){
     el('sc').textContent=num(score,2)+' / '+num(minSc,2);
     el('net').textContent=num(realized,3);
     el('net').className='v'+(realized>=0?' pos':' neg');
+    const sessionPnl=Number(s.session_realized_pnl_usdt||0);
+    el('sessionpnl').textContent=(sessionPnl>=0?'+':'')+num(sessionPnl,3);
+    el('sessionpnl').className='v'+(sessionPnl>=0?' pos':' neg');
     const fills=s.recent_fills||[];
     const expectancy=s.session_expectancy||{};
     el('wr').textContent=expectancy.n?num(100*Number(expectancy.win_rate||0),0)+'%':'???';
@@ -269,6 +292,12 @@ async function tick(){
     drawLine('pc',s.price_curve||[],'mid','#2eff9a');
     drawLine('ec',s.equity_curve||[],'equity','#ffc14d');
     el('fills').innerHTML=fills.length?fills.slice(0,14).map(t=>{const pnl=Number(t.pnl_usdt);return '<tr><td>'+esc(String(t.timestamp||'').slice(11,19))+'</td><td>'+esc(String(t.side||'').toUpperCase())+'</td><td>'+num(t.quantity,5)+'</td><td>'+num(t.price,2)+'</td><td class=\"'+(pnl>=0?'pos':'neg')+'\">'+num(pnl,3)+'</td><td>'+num(t.fee_usdt,4)+'</td></tr>';}).join(''):'<tr><td colspan=\"6\" style=\"color:#7f9a8c\">Henuz fill yok</td></tr>';
+    const scan=s.scan_board||[];
+    el('scan').innerHTML=scan.length?scan.map(x=>{
+      const ok=x.status==='synchronized';
+      const status=String(x.status||'awaiting').toUpperCase();
+      return '<tr><td>'+esc(String(x.symbol||'').toUpperCase())+'</td><td class="'+(ok?'pos':'neg')+'">'+status+'</td><td>'+num(x.bid,6)+'</td><td>'+num(x.ask,6)+'</td><td>'+num(x.spread_bps,2)+' bps</td><td>'+num(x.data_age_seconds,2)+'s</td></tr>';
+    }).join(''):'<tr><td colspan="6">Watchlist bos</td></tr>';
     const logs=s.live_log||[];
     el('log').innerHTML=logs.length?logs.slice(0,30).map(x=>'<div>'+esc(x)+'</div>').join(''):'<div>Log bos</div>';
     const L=s.learner_snapshot||{};
@@ -278,8 +307,24 @@ async function tick(){
     el('entry').textContent=qty>0?num(p.average_entry_price,2):'--';
     el('unreal').textContent=num(p.unrealized_pnl_usdt,3)+' USDT';
     el('unreal').className='v'+(Number(p.unrealized_pnl_usdt||0)>=0?' pos':' neg');
-    el('dailyfee').textContent=num(s.session_fees_usdt,3)+' USDT';
-    el('expect').textContent=expectancy.n?num(expectancy.expectancy_usdt,4)+' / trade ('+expectancy.n+')':'sample < 12';
+    const riskBook=s.risk_book||{};
+    el('dailyfee').textContent=num(riskBook.daily_fee_usdt??s.session_fees_usdt,3)+' / '+num(riskBook.daily_fee_limit_usdt??s.daily_fee_budget_usdt,2)+' USDT'+(riskBook.daily_fee_halt?' LIMIT':'');
+    el('dailyloss').textContent=num(riskBook.daily_realized_pnl_usdt??s.realized_pnl_today,3)+' / -'+num(riskBook.daily_loss_limit_usdt,2)+' USDT';
+    el('expect').textContent=expectancy.n?num(expectancy.expectancy_usdt,4)+' / trade ('+expectancy.n+')':'sample < 50';
+    const maker=s.maker_stats||{};
+    el('makerfill').textContent=maker.fills+'/'+maker.attempts+' ('+(maker.fill_rate==null?'N/A':num(100*maker.fill_rate,1)+'%')+')';
+    el('makertimeout').textContent=maker.timeout_rate==null?'N/A':num(100*maker.timeout_rate,1)+'%';
+    el('tradeshour').textContent=String(s.trades_per_hour??0);
+    el('maxdd').textContent=num(s.max_drawdown_pct_observed,2)+'%';
+    el('events').textContent=String(s.events_seen??0);
+    const markouts=s.markout_history||[];
+    for(const horizon of [1,5,30]){
+      const samples=markouts.filter(x=>Number(x.horizon_seconds)===horizon).slice(-20);
+      const avg=samples.length?samples.reduce((sum,x)=>sum+Number(x.markout_bps||0),0)/samples.length:null;
+      el('markout'+horizon).textContent=avg==null?'N/A':num(avg,2)+' bps (n='+samples.length+')';
+    }
+    const exitReasons=s.session_exit_reasons||{};
+    el('exitreasons').textContent=Object.keys(exitReasons).length?Object.entries(exitReasons).map(([k,v])=>k+': '+v).join(', '):'N/A';
     el('lm').textContent=(L.growth_mode||'rebuild')+(L.frozen?' / FROZEN':' / ADAPTIVE');
     el('lt').textContent=String(L.lifetime_trades??L.trades??0);
     el('le').textContent=num(L.entry_min_score,3);

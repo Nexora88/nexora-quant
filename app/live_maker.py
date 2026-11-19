@@ -7,6 +7,15 @@ import time
 log = logging.getLogger(__name__)
 
 
+def _maker_metric(name: str) -> None:
+    try:
+        from app.engine_setup import state
+        attr = f"maker_entry_{name}"
+        setattr(state, attr, int(getattr(state, attr, 0) or 0) + 1)
+    except Exception:
+        log.exception("Could not record maker execution metric: %s", name)
+
+
 def _buy_limit(
     self,
     *,
@@ -41,6 +50,7 @@ def _buy_limit(
             raise RuntimeError(
                 "Order state is uncertain; reconcile exchange orders before new orders"
             )
+        _maker_metric("attempts")
         client_id = f"nqlm{time.time_ns():x}"[:36]
         try:
             result = self.client.place_limit_order(
@@ -68,6 +78,8 @@ def _buy_limit(
                 log.exception("poll limit order failed")
                 break
         if last.executed_qty <= 0 or last.status not in {"FILLED", "PARTIALLY_FILLED"}:
+            if time.time() >= deadline:
+                _maker_metric("timeouts")
             try:
                 self.client.cancel_order(symbol=self.symbol, order_id=last.order_id)
             except Exception:
@@ -78,6 +90,7 @@ def _buy_limit(
                 self.client.cancel_order(symbol=self.symbol, order_id=last.order_id)
             except Exception:
                 log.exception("cancel residual limit order failed")
+        _maker_metric("fills")
         return self._apply_fill(
             last,
             reason=f"{reason};limit_maker",

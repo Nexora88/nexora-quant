@@ -2,6 +2,7 @@
 from collections import deque
 from dataclasses import asdict
 from datetime import datetime, timezone
+import time
 from typing import Any
 
 from app.events import BookTicker, TradeTick
@@ -58,6 +59,11 @@ class RuntimeState:
         self.session_fees_usdt: float = 0.0
         self.session_fee_day: str | None = None
         self.hourly_trade_ts: list[float] = []
+        self.session_closed_trade_pnls: list[float] = []
+        self.current_position_realized_pnl_usdt: float = 0.0
+        self.session_exit_reasons: dict[str, int] = {}
+        self.max_drawdown_usdt: float = 0.0
+        self.max_drawdown_pct_observed: float = 0.0
         self.blockers_live: list[str] = []
         self.closed_trade_count: int = 0
         self.session_realized_pnl_usdt: float = 0.0
@@ -66,17 +72,71 @@ class RuntimeState:
         self.maker_entry_attempts: int = 0
         self.maker_entry_fills: int = 0
         self.maker_entry_timeouts: int = 0
+        self.markout_pending: list[dict[str, Any]] = []
+        self.markout_history: deque[dict[str, Any]] = deque(maxlen=500)
+
+    def evidence_snapshot(self) -> dict[str, Any]:
+        """JSON-safe evidence counters persisted with the paper account state."""
+        return {
+            "session_fees_usdt": self.session_fees_usdt,
+            "session_fee_day": self.session_fee_day,
+            "hourly_trade_ts": list(self.hourly_trade_ts),
+            "session_closed_trade_pnls": list(self.session_closed_trade_pnls),
+            "current_position_realized_pnl_usdt": self.current_position_realized_pnl_usdt,
+            "session_exit_reasons": dict(self.session_exit_reasons),
+            "max_drawdown_usdt": self.max_drawdown_usdt,
+            "max_drawdown_pct_observed": self.max_drawdown_pct_observed,
+            "closed_trade_count": self.closed_trade_count,
+            "session_realized_pnl_usdt": self.session_realized_pnl_usdt,
+            "last_exit_reason": self.last_exit_reason,
+            "maker_entry_attempts": self.maker_entry_attempts,
+            "maker_entry_fills": self.maker_entry_fills,
+            "maker_entry_timeouts": self.maker_entry_timeouts,
+            "markout_pending": list(self.markout_pending),
+            "markout_history": list(self.markout_history),
+            "peak_equity": self.peak_equity,
+        }
+
+    def restore_evidence(self, data: dict[str, Any] | None) -> None:
+        """Restore persisted evidence; reject malformed values instead of fabricating zeroes."""
+        if not data:
+            return
+        self.session_fees_usdt = max(0.0, float(data.get("session_fees_usdt", 0.0)))
+        self.session_fee_day = data.get("session_fee_day")
+        self.hourly_trade_ts = [
+            float(x) for x in data.get("hourly_trade_ts", [])
+            if isinstance(x, (int, float))
+        ]
+        self.session_closed_trade_pnls = [
+            float(x) for x in data.get("session_closed_trade_pnls", [])
+        ]
+        self.current_position_realized_pnl_usdt = float(
+            data.get("current_position_realized_pnl_usdt", 0.0)
+        )
+        self.session_exit_reasons = {
+            str(k): max(0, int(v)) for k, v in (data.get("session_exit_reasons") or {}).items()
+        }
+        self.max_drawdown_usdt = max(0.0, float(data.get("max_drawdown_usdt", 0.0)))
+        self.max_drawdown_pct_observed = max(
+            0.0, float(data.get("max_drawdown_pct_observed", 0.0))
+        )
+        self.closed_trade_count = max(0, int(data.get("closed_trade_count", len(self.session_closed_trade_pnls))))
+        self.session_realized_pnl_usdt = float(data.get("session_realized_pnl_usdt", 0.0))
+        self.last_exit_reason = data.get("last_exit_reason")
+        self.maker_entry_attempts = max(0, int(data.get("maker_entry_attempts", 0)))
+        self.maker_entry_fills = max(0, int(data.get("maker_entry_fills", 0)))
+        self.maker_entry_timeouts = max(0, int(data.get("maker_entry_timeouts", 0)))
+        self.markout_pending = [dict(x) for x in data.get("markout_pending", []) if isinstance(x, dict)]
+        self.markout_history = deque(
+            (dict(x) for x in data.get("markout_history", []) if isinstance(x, dict)),
+            maxlen=500,
+        )
+        self.peak_equity = max(self.peak_equity, float(data.get("peak_equity", 0.0)))
 
     def session_expectancy(self) -> dict[str, Any]:
-        """Fee-net expectancy from closed sells in recent_fills (session window)."""
-        sells = [
-            f
-            for f in list(self.recent_fills)
-            if str(f.get("side") or "").lower() in {"sell", "short"}
-            and f.get("accounting_complete", True) is True
-            and f.get("pnl_usdt") is not None
-        ]
-        if not sells:
+        """Fee-net expectancy across every fully closed trade in this process session."""
+        pnls = list(self.session_closed_trade_pnls)
+        if not pnls:
             return {
                 "n": 0,
                 "expectancy_usdt": None,
@@ -85,7 +145,6 @@ class RuntimeState:
                 "avg_win_usdt": None,
                 "avg_loss_usdt": None,
             }
-        pnls = [float(f.get("pnl_usdt") or 0.0) for f in sells]
         wins = [p for p in pnls if p > 0]
         losses = [p for p in pnls if p <= 0]
         n = len(pnls)
@@ -120,6 +179,33 @@ class RuntimeState:
         mid = (book.bid + book.ask) / 2 if book.bid and book.ask else book.bid
         now = datetime.now(timezone.utc).isoformat()
         self.price_curve.append({"ts": now, "mid": mid, "bid": book.bid, "ask": book.ask})
+        if mid and mid > 0:
+            self._advance_markouts(float(mid), book.received_at.timestamp())
+
+    def _advance_markouts(self, mid: float, observed_at: float) -> None:
+        remaining = []
+        for pending in self.markout_pending:
+            completed = pending.setdefault("completed", [])
+            for horizon in (1, 5, 30):
+                key = str(horizon)
+                if key in completed:
+                    continue
+                target_at = float(pending["fill_ts"]) + horizon
+                if observed_at >= target_at:
+                    direction = 1.0 if pending.get("side") == "buy" else -1.0
+                    markout = direction * (mid / float(pending["fill_price"]) - 1.0) * 10000.0
+                    self.markout_history.append({
+                        "fill_id": pending.get("fill_id"),
+                        "symbol": pending.get("symbol"),
+                        "horizon_seconds": horizon,
+                        "target_delay_seconds": round(observed_at - float(pending["fill_ts"]), 3),
+                        "markout_bps": round(markout, 3),
+                        "mid": mid,
+                    })
+                    completed.append(key)
+            if len(completed) < 3:
+                remaining.append(pending)
+        self.markout_pending = remaining
 
     def data_age_seconds(self) -> float | None:
         if not self.last_message_at:
@@ -184,8 +270,32 @@ class RuntimeState:
         if not row.get("symbol"):
             row["symbol"] = (self.trade_symbol or settings.symbol or "").lower()
         self.recent_fills.appendleft(row)
+        side = str(row.get("side") or "").lower()
+        try:
+            fill_price = float(row.get("price") or 0.0)
+            raw_ts = row.get("timestamp")
+            if isinstance(raw_ts, (int, float)):
+                fill_ts = float(raw_ts)
+            elif raw_ts:
+                fill_ts = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00")).timestamp()
+            else:
+                fill_ts = time.time()
+            if fill_price > 0 and side in {"buy", "sell"}:
+                self.markout_pending.append({
+                    "fill_id": str(row.get("event_key") or f"{row.get('symbol')}:{fill_ts}:{side}"),
+                    "symbol": row.get("symbol"),
+                    "side": side,
+                    "fill_price": fill_price,
+                    "fill_ts": fill_ts,
+                    "targets": {},
+                    "completed": [],
+                })
+        except (TypeError, ValueError):
+            pass
         fee = float(row.get("fee_usdt") or 0.0)
         if fee > 0:
+            if self.risk_manager is not None:
+                self.risk_manager.record_fee(fee)
             day = datetime.now(timezone.utc).date().isoformat()
             if self.session_fee_day != day:
                 self.session_fee_day = day
@@ -194,23 +304,35 @@ class RuntimeState:
         side = str(row.get("side") or "").lower()
         if side in {"buy", "long"}:
             import time as _t
+            if self.position_opened_at is None:
+                self.current_position_realized_pnl_usdt = 0.0
             self.position_opened_at = _t.time()
             self.last_entry_at = _t.time()
             self.hourly_trade_ts.append(_t.time())
             cutoff = _t.time() - 3600.0
             self.hourly_trade_ts = [x for x in self.hourly_trade_ts if x >= cutoff]
         elif side in {"sell", "short"}:
-            self.position_opened_at = None
             if row.get("accounting_complete", True) is True and row.get("pnl_usdt") is not None:
                 try:
-                    self.closed_trade_count = int(getattr(self, "closed_trade_count", 0) or 0) + 1
                     pnl = float(row["pnl_usdt"])
-                    self.session_realized_pnl_usdt = float(
-                        getattr(self, "session_realized_pnl_usdt", 0.0) or 0.0
-                    ) + pnl
-                    reason = str(row.get("reason") or "")
-                    if reason:
-                        self.last_exit_reason = reason.split(";")[0][:64]
+                    self.session_realized_pnl_usdt += pnl
+                    self.current_position_realized_pnl_usdt += pnl
+                    remaining_qty = getattr(self.executor, "base_quantity", None)
+                    position_closed = row.get("position_closed")
+                    if position_closed is None:
+                        position_closed = (
+                            remaining_qty <= 1e-12 if remaining_qty is not None else True
+                        )
+                    if position_closed:
+                        self.closed_trade_count += 1
+                        self.session_closed_trade_pnls.append(
+                            self.current_position_realized_pnl_usdt
+                        )
+                        self.current_position_realized_pnl_usdt = 0.0
+                        self.position_opened_at = None
+                        reason = str(row.get("reason") or "unknown").split(";")[0][:64]
+                        self.last_exit_reason = reason
+                        self.session_exit_reasons[reason] = self.session_exit_reasons.get(reason, 0) + 1
                 except (TypeError, ValueError):
                     self.last_exit_reason = "accounting_incomplete"
             else:
@@ -226,6 +348,13 @@ class RuntimeState:
             self.equity_curve.append({"ts": datetime.now(timezone.utc).isoformat(), "equity": eq})
             if eq > self.peak_equity:
                 self.peak_equity = eq
+            if self.peak_equity > 0:
+                drawdown = max(0.0, self.peak_equity - eq)
+                drawdown_pct = drawdown / self.peak_equity * 100.0
+                self.max_drawdown_usdt = max(self.max_drawdown_usdt, drawdown)
+                self.max_drawdown_pct_observed = max(
+                    self.max_drawdown_pct_observed, drawdown_pct
+                )
         except Exception:
             pass
 
@@ -256,7 +385,71 @@ class RuntimeState:
                 "ask_qty": b.ask_qty,
                 "received_at": str(getattr(b, "received_at", "")),
             }
+        now_ts = time.time()
+        scan_board: list[dict[str, Any]] = []
+        primary_symbol = (
+            str(getattr(self.latest_book, "symbol", "") or self.trade_symbol or settings.symbol)
+            .lower()
+        )
+        for symbol in self.depth_watch:
+            sym = str(symbol).lower()
+            if self.latest_book is not None and sym == primary_symbol:
+                bid = float(self.latest_book.bid or 0)
+                ask = float(self.latest_book.ask or 0)
+                age = self.data_age_seconds()
+                bid_qty = float(getattr(self.latest_book, "bid_qty", 0) or 0)
+                ask_qty = float(getattr(self.latest_book, "ask_qty", 0) or 0)
+                source = "primary"
+            else:
+                book = self.side_books.get(sym) or {}
+                bid = float(book.get("bid") or 0)
+                ask = float(book.get("ask") or 0)
+                updated_at = book.get("updated_at")
+                age = max(0.0, now_ts - float(updated_at)) if updated_at else None
+                bid_qty = float(book.get("bid_qty") or 0)
+                ask_qty = float(book.get("ask_qty") or 0)
+                source = "side_depth"
+            mid = (bid + ask) / 2.0 if bid > 0 and ask > 0 else 0.0
+            spread = ((ask - bid) / mid * 10_000.0) if mid > 0 else None
+            synchronized = bool(
+                age is not None and age <= settings.max_data_age_seconds
+                and bid > 0 and ask > bid
+            )
+            scan_board.append({
+                "symbol": sym,
+                "status": "synchronized" if synchronized else ("stale" if age is not None else "awaiting"),
+                "source": source,
+                "bid": bid or None,
+                "ask": ask or None,
+                "mid": mid or None,
+                "spread_bps": round(spread, 3) if spread is not None else None,
+                "data_age_seconds": round(age, 3) if age is not None else None,
+                "bid_qty": bid_qty,
+                "ask_qty": ask_qty,
+            })
+        risk = self.risk_manager
+        equity = float(portfolio.get("equity_usdt", portfolio.get("cash_usdt", 0.0)) or 0.0)
+        fees_today = float(getattr(risk, "fees_paid_today", self.session_fees_usdt) or 0.0)
+        goal = dict(getattr(self, "goal_status", None) or {})
+        risk_book = {
+            "equity_usdt": equity,
+            "peak_equity_usdt": float(self.peak_equity),
+            "drawdown_pct": round(dd_pct, 4),
+            "session_pnl_usdt": round(float(self.session_realized_pnl_usdt), 4),
+            "daily_realized_pnl_usdt": float(getattr(risk, "realized_pnl_today", 0.0) or 0.0),
+            "daily_fee_usdt": round(fees_today, 4),
+            "daily_fee_limit_usdt": float(settings.max_daily_fee_usdt),
+            "daily_fee_remaining_usdt": round(max(0.0, settings.max_daily_fee_usdt - fees_today), 4),
+            "daily_fee_halt": fees_today >= settings.max_daily_fee_usdt,
+            "daily_loss_limit_usdt": float(settings.max_daily_loss_usdt),
+            "consecutive_losses": int(getattr(risk, "consecutive_losses", 0) or 0),
+            "max_consecutive_losses": int(settings.max_consecutive_losses),
+            "kill": bool(getattr(risk, "kill_switch", False)),
+            "emergency": bool(self.emergency),
+            "goal_halt": bool(goal.get("halt_entries", False)),
+        }
         return {
+            "risk_book": risk_book,
             "mode": settings.trading_mode,
             "symbol": (self.trade_symbol or settings.symbol),
             "target_price": settings.target_price,
@@ -284,6 +477,16 @@ class RuntimeState:
             "last_exit_reason": getattr(self, "last_exit_reason", None),
             "session_expectancy": self.session_expectancy(),
             "maker_stats": self.maker_stats(),
+            "markout_history": list(self.markout_history)[-90:],
+            "markout_pending_count": len(self.markout_pending),
+            "trades_per_hour": len([
+                ts for ts in self.hourly_trade_ts if ts >= time.time() - 3600.0
+            ]),
+            "session_exit_reasons": dict(self.session_exit_reasons),
+            "max_drawdown_usdt": round(self.max_drawdown_usdt, 4),
+            "max_drawdown_pct_observed": round(self.max_drawdown_pct_observed, 3),
+            "daily_fee_budget_usdt": settings.max_daily_fee_usdt,
+            "daily_fee_budget_exceeded": self.session_fees_usdt >= settings.max_daily_fee_usdt,
             "position_opened_at": self.position_opened_at,
             "blockers_live": list(self.blockers_live)[:12],
             "shadow_leaderboard": list(self.shadow_leaderboard)[:5],
@@ -313,7 +516,9 @@ class RuntimeState:
             },
             "score_history": list(self.score_history)[-120:],
             "universe_board": list(self.universe_board)[:12],
-            "depth_watch": list(self.depth_watch)[:8],
+            "depth_watch": list(self.depth_watch)[:12],
+            "scan_board": scan_board,
+            "router_board": list(self.router_board)[:12],
             "paused": bool(self.paused),
             "peak_equity": self.peak_equity,
             "max_drawdown_pct": round(dd_pct, 3),

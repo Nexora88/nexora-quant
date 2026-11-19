@@ -62,17 +62,12 @@ class MarketHistoryWriter:
         if self._max_pending <= 0:
             self._write_line(encoded)
             return
-        while len(self._pending) >= self._max_pending:
-            self._pending.popleft()
-            self._dropped += 1
-            if self._dropped == 1 or self._dropped % 500 == 0:
-                log.warning(
-                    "MarketHistoryWriter backpressure path=%s dropped=%s pending=%s",
-                    self.path,
-                    self._dropped,
-                    len(self._pending),
-                )
+        # Flush a full batch instead of evicting the oldest events. The old
+        # bounded-deque behavior silently discarded market history whenever
+        # the engine produced events faster than shutdown-time flushing.
         self._pending.append(encoded)
+        if len(self._pending) >= self._max_pending:
+            self.flush()
 
     def _write_line(self, encoded: str) -> None:
         open_fn = gzip.open if self._compressed else open

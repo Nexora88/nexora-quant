@@ -116,6 +116,7 @@ async def run() -> None:
                 log.exception("Live startup reconciliation failed; engine will not trade")
                 raise RuntimeError("Live startup reconciliation failed; refusing to start") from exc
         risk.restore(saved.get("risk") or {})
+        state.restore_evidence(saved.get("evidence") or {})
         if mode == "paper" and risk.kill_switch:
             # Paper mode must not silently resume entries after a loss-streak halt.
             # Require an explicit operator reset after reviewing the paper ledger.
@@ -157,7 +158,9 @@ async def run() -> None:
             state.last_error = "live_startup_reconciliation_failed"
             log.exception("Live startup reconciliation failed; engine will not trade")
             raise RuntimeError("Live startup reconciliation failed; refusing to start") from exc
-    risk.rollover_day(today)
+    if risk.rollover_day(today):
+        state.session_fees_usdt = 0.0
+        state.session_fee_day = today
     try:
         learner.load_state((saved or {}).get("learner"))
         state.learner_snapshot = learner.to_dict()
@@ -240,6 +243,7 @@ async def run() -> None:
         payload = {
             "account": es.executor.snapshot(),
             "risk": risk.snapshot(),
+            "evidence": state.evidence_snapshot(),
             "peak_price": state.peak_price,
             "trade_symbol": state.trade_symbol or settings.symbol.lower(),
             "position_opened_at": state.position_opened_at,
@@ -265,7 +269,9 @@ async def run() -> None:
             try:
                 today = datetime.now(timezone.utc).date().isoformat()
                 if risk.rollover_day(today):
-                    log.info("UTC day rollover → realized_pnl_today reset day=%s", today)
+                    state.session_fees_usdt = 0.0
+                    state.session_fee_day = today
+                    log.info("UTC day rollover -> daily risk counters reset day=%s", today)
                     persist()
                 store.heartbeat_session(
                     session_id, ticks=ticks, reconnects=state.reconnect_count,
@@ -342,7 +348,10 @@ async def run() -> None:
         trade_tasks.append(asyncio.create_task(_trade_pump(trade_symbol), name=f"trades-{trade_symbol}"))
 
     try:
-        use_multi = len(watched) > 1 and bool(getattr(settings, "universe_auto", False))
+        # A fixed SYMBOLS list must also start every configured depth stream.
+        # UNIVERSE_AUTO controls dynamic discovery, not manual watchlist subscriptions.
+        # Otherwise a 9-symbol paper profile silently scans only its primary symbol.
+        use_multi = len(watched) > 1
 
         async def _consume(depth, *, symbol: str | None = None) -> None:
             nonlocal confirmations, ticks, primary
@@ -362,6 +371,7 @@ async def run() -> None:
                             "ask_qty": aq,
                             "spread_bps": spread_bps,
                             "mid": mid,
+                            "updated_at": time.time(),
                         }
                         state.side_books = board
                         imb = (bq / (bq + aq)) if (bq + aq) > 0 else 0.5

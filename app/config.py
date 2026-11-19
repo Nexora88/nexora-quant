@@ -60,6 +60,7 @@ class Settings:
     depth_top_n: int = int(os.getenv("DEPTH_TOP_N", "5"))
     universe_min_quote_volume: float = _float("UNIVERSE_MIN_QUOTE_VOLUME", 5_000_000.0)
     market_history_enabled: bool = _bool("MARKET_HISTORY_ENABLED", False)
+    history_max_pending: int = int(os.getenv("HISTORY_MAX_PENDING", "1000"))
     trading_mode: str = os.getenv("TRADING_MODE", "paper").lower()
     starting_cash_usdt: float = _float("STARTING_CASH_USDT", 100.0)
     order_size_usdt: float = _float("ORDER_SIZE_USDT", 15.0)
@@ -165,6 +166,8 @@ class Settings:
             raise ValueError("MIN_ORDER_USDT must be positive.")
         if not 0.05 <= self.risk_per_trade_pct <= 5.0:
             raise ValueError("RISK_PER_TRADE_PCT must be in [0.05, 5].")
+        if self.history_max_pending < 1:
+            raise ValueError("HISTORY_MAX_PENDING must be >= 1.")
         if self.max_concurrent_positions < 1:
             raise ValueError("MAX_CONCURRENT_POSITIONS must be >= 1.")
         if self.wick_stop_confirmations < 0:
