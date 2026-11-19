@@ -430,6 +430,11 @@ class RuntimeState:
         risk = self.risk_manager
         equity = float(portfolio.get("equity_usdt", portfolio.get("cash_usdt", 0.0)) or 0.0)
         fees_today = float(getattr(risk, "fees_paid_today", self.session_fees_usdt) or 0.0)
+        fee_limit = float(getattr(risk, "max_daily_fee_usdt", settings.max_daily_fee_usdt))
+        daily_loss_limit = float(getattr(risk, "max_daily_loss_usdt", settings.max_daily_loss_usdt))
+        consecutive_loss_limit = int(
+            getattr(risk, "max_consecutive_losses", settings.max_consecutive_losses)
+        )
         goal = dict(getattr(self, "goal_status", None) or {})
         risk_book = {
             "equity_usdt": equity,
@@ -438,12 +443,12 @@ class RuntimeState:
             "session_pnl_usdt": round(float(self.session_realized_pnl_usdt), 4),
             "daily_realized_pnl_usdt": float(getattr(risk, "realized_pnl_today", 0.0) or 0.0),
             "daily_fee_usdt": round(fees_today, 4),
-            "daily_fee_limit_usdt": float(settings.max_daily_fee_usdt),
-            "daily_fee_remaining_usdt": round(max(0.0, settings.max_daily_fee_usdt - fees_today), 4),
-            "daily_fee_halt": fees_today >= settings.max_daily_fee_usdt,
-            "daily_loss_limit_usdt": float(settings.max_daily_loss_usdt),
+            "daily_fee_limit_usdt": fee_limit,
+            "daily_fee_remaining_usdt": round(max(0.0, fee_limit - fees_today), 4),
+            "daily_fee_halt": fees_today >= fee_limit,
+            "daily_loss_limit_usdt": daily_loss_limit,
             "consecutive_losses": int(getattr(risk, "consecutive_losses", 0) or 0),
-            "max_consecutive_losses": int(settings.max_consecutive_losses),
+            "max_consecutive_losses": consecutive_loss_limit,
             "kill": bool(getattr(risk, "kill_switch", False)),
             "emergency": bool(self.emergency),
             "goal_halt": bool(goal.get("halt_entries", False)),
@@ -485,8 +490,8 @@ class RuntimeState:
             "session_exit_reasons": dict(self.session_exit_reasons),
             "max_drawdown_usdt": round(self.max_drawdown_usdt, 4),
             "max_drawdown_pct_observed": round(self.max_drawdown_pct_observed, 3),
-            "daily_fee_budget_usdt": settings.max_daily_fee_usdt,
-            "daily_fee_budget_exceeded": self.session_fees_usdt >= settings.max_daily_fee_usdt,
+            "daily_fee_budget_usdt": fee_limit,
+            "daily_fee_budget_exceeded": fees_today >= fee_limit,
             "position_opened_at": self.position_opened_at,
             "blockers_live": list(self.blockers_live)[:12],
             "shadow_leaderboard": list(self.shadow_leaderboard)[:5],
