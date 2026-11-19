@@ -45,12 +45,12 @@ def _buy_limit(
     # Re-check min notional after rounding (qty * price may undershoot).
     if qty * limit_price < self._min_notional() * 0.999:
         return None
-    _maker_metric("attempts")
     with self._order_lock:
         if self.order_state_uncertain:
             raise RuntimeError(
                 "Order state is uncertain; reconcile exchange orders before new orders"
             )
+        _maker_metric("attempts")
         client_id = f"nqlm{time.time_ns():x}"[:36]
         try:
             result = self.client.place_limit_order(
