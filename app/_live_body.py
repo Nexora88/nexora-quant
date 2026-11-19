@@ -14,7 +14,7 @@ from decimal import Decimal, ROUND_DOWN
 from typing import Any
 
 from app.binance_rest import BinanceRestClient, OrderResult
-from app.order_state import OrderState, OrderStateMachine
+from app.order_state import OrderStateMachine
 
 log = logging.getLogger(__name__)
 
