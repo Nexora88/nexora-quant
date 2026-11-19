@@ -158,7 +158,9 @@ async def run() -> None:
             state.last_error = "live_startup_reconciliation_failed"
             log.exception("Live startup reconciliation failed; engine will not trade")
             raise RuntimeError("Live startup reconciliation failed; refusing to start") from exc
-    risk.rollover_day(today)
+    if risk.rollover_day(today):
+        state.session_fees_usdt = 0.0
+        state.session_fee_day = today
     try:
         learner.load_state((saved or {}).get("learner"))
         state.learner_snapshot = learner.to_dict()
