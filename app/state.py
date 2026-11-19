@@ -72,6 +72,66 @@ class RuntimeState:
         self.maker_entry_attempts: int = 0
         self.maker_entry_fills: int = 0
         self.maker_entry_timeouts: int = 0
+        self.markout_pending: list[dict[str, Any]] = []
+        self.markout_history: deque[dict[str, Any]] = deque(maxlen=500)
+
+    def evidence_snapshot(self) -> dict[str, Any]:
+        """JSON-safe evidence counters persisted with the paper account state."""
+        return {
+            "session_fees_usdt": self.session_fees_usdt,
+            "session_fee_day": self.session_fee_day,
+            "hourly_trade_ts": list(self.hourly_trade_ts),
+            "session_closed_trade_pnls": list(self.session_closed_trade_pnls),
+            "current_position_realized_pnl_usdt": self.current_position_realized_pnl_usdt,
+            "session_exit_reasons": dict(self.session_exit_reasons),
+            "max_drawdown_usdt": self.max_drawdown_usdt,
+            "max_drawdown_pct_observed": self.max_drawdown_pct_observed,
+            "closed_trade_count": self.closed_trade_count,
+            "session_realized_pnl_usdt": self.session_realized_pnl_usdt,
+            "last_exit_reason": self.last_exit_reason,
+            "maker_entry_attempts": self.maker_entry_attempts,
+            "maker_entry_fills": self.maker_entry_fills,
+            "maker_entry_timeouts": self.maker_entry_timeouts,
+            "markout_pending": list(self.markout_pending),
+            "markout_history": list(self.markout_history),
+            "peak_equity": self.peak_equity,
+        }
+
+    def restore_evidence(self, data: dict[str, Any] | None) -> None:
+        """Restore persisted evidence; reject malformed values instead of fabricating zeroes."""
+        if not data:
+            return
+        self.session_fees_usdt = max(0.0, float(data.get("session_fees_usdt", 0.0)))
+        self.session_fee_day = data.get("session_fee_day")
+        self.hourly_trade_ts = [
+            float(x) for x in data.get("hourly_trade_ts", [])
+            if isinstance(x, (int, float))
+        ]
+        self.session_closed_trade_pnls = [
+            float(x) for x in data.get("session_closed_trade_pnls", [])
+        ]
+        self.current_position_realized_pnl_usdt = float(
+            data.get("current_position_realized_pnl_usdt", 0.0)
+        )
+        self.session_exit_reasons = {
+            str(k): max(0, int(v)) for k, v in (data.get("session_exit_reasons") or {}).items()
+        }
+        self.max_drawdown_usdt = max(0.0, float(data.get("max_drawdown_usdt", 0.0)))
+        self.max_drawdown_pct_observed = max(
+            0.0, float(data.get("max_drawdown_pct_observed", 0.0))
+        )
+        self.closed_trade_count = max(0, int(data.get("closed_trade_count", len(self.session_closed_trade_pnls))))
+        self.session_realized_pnl_usdt = float(data.get("session_realized_pnl_usdt", 0.0))
+        self.last_exit_reason = data.get("last_exit_reason")
+        self.maker_entry_attempts = max(0, int(data.get("maker_entry_attempts", 0)))
+        self.maker_entry_fills = max(0, int(data.get("maker_entry_fills", 0)))
+        self.maker_entry_timeouts = max(0, int(data.get("maker_entry_timeouts", 0)))
+        self.markout_pending = [dict(x) for x in data.get("markout_pending", []) if isinstance(x, dict)]
+        self.markout_history = deque(
+            (dict(x) for x in data.get("markout_history", []) if isinstance(x, dict)),
+            maxlen=500,
+        )
+        self.peak_equity = max(self.peak_equity, float(data.get("peak_equity", 0.0)))
 
     def session_expectancy(self) -> dict[str, Any]:
         """Fee-net expectancy across every fully closed trade in this process session."""
@@ -119,6 +179,34 @@ class RuntimeState:
         mid = (book.bid + book.ask) / 2 if book.bid and book.ask else book.bid
         now = datetime.now(timezone.utc).isoformat()
         self.price_curve.append({"ts": now, "mid": mid, "bid": book.bid, "ask": book.ask})
+        if mid and mid > 0:
+            self._advance_markouts(float(mid), book.received_at.timestamp())
+
+    def _advance_markouts(self, mid: float, observed_at: float) -> None:
+        remaining = []
+        for pending in self.markout_pending:
+            targets = pending.get("targets") or {}
+            completed = pending.setdefault("completed", [])
+            for horizon in (1, 5, 30):
+                key = str(horizon)
+                if key in completed:
+                    continue
+                target_at = float(pending["fill_ts"]) + horizon
+                if observed_at >= target_at:
+                    direction = 1.0 if pending.get("side") == "buy" else -1.0
+                    markout = direction * (mid / float(pending["fill_price"]) - 1.0) * 10000.0
+                    self.markout_history.append({
+                        "fill_id": pending.get("fill_id"),
+                        "symbol": pending.get("symbol"),
+                        "horizon_seconds": horizon,
+                        "target_delay_seconds": round(observed_at - float(pending["fill_ts"]), 3),
+                        "markout_bps": round(markout, 3),
+                        "mid": mid,
+                    })
+                    completed.append(key)
+            if len(completed) < 3:
+                remaining.append(pending)
+        self.markout_pending = remaining
 
     def data_age_seconds(self) -> float | None:
         if not self.last_message_at:
@@ -183,6 +271,28 @@ class RuntimeState:
         if not row.get("symbol"):
             row["symbol"] = (self.trade_symbol or settings.symbol or "").lower()
         self.recent_fills.appendleft(row)
+        side = str(row.get("side") or "").lower()
+        try:
+            fill_price = float(row.get("price") or 0.0)
+            raw_ts = row.get("timestamp")
+            if isinstance(raw_ts, (int, float)):
+                fill_ts = float(raw_ts)
+            elif raw_ts:
+                fill_ts = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00")).timestamp()
+            else:
+                fill_ts = time.time()
+            if fill_price > 0 and side in {"buy", "sell"}:
+                self.markout_pending.append({
+                    "fill_id": str(row.get("event_key") or f"{row.get('symbol')}:{fill_ts}:{side}"),
+                    "symbol": row.get("symbol"),
+                    "side": side,
+                    "fill_price": fill_price,
+                    "fill_ts": fill_ts,
+                    "targets": {},
+                    "completed": [],
+                })
+        except (TypeError, ValueError):
+            pass
         fee = float(row.get("fee_usdt") or 0.0)
         if fee > 0:
             if self.risk_manager is not None:
@@ -346,6 +456,8 @@ class RuntimeState:
             "last_exit_reason": getattr(self, "last_exit_reason", None),
             "session_expectancy": self.session_expectancy(),
             "maker_stats": self.maker_stats(),
+            "markout_history": list(self.markout_history)[-90:],
+            "markout_pending_count": len(self.markout_pending),
             "trades_per_hour": len([
                 ts for ts in self.hourly_trade_ts if ts >= time.time() - 3600.0
             ]),
