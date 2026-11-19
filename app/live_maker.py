@@ -7,6 +7,15 @@ import time
 log = logging.getLogger(__name__)
 
 
+def _maker_metric(name: str) -> None:
+    try:
+        from app.engine_setup import state
+        attr = f"maker_entry_{name}"
+        setattr(state, attr, int(getattr(state, attr, 0) or 0) + 1)
+    except Exception:
+        log.exception("Could not record maker execution metric: %s", name)
+
+
 def _buy_limit(
     self,
     *,
@@ -36,6 +45,7 @@ def _buy_limit(
     # Re-check min notional after rounding (qty * price may undershoot).
     if qty * limit_price < self._min_notional() * 0.999:
         return None
+    _maker_metric("attempts")
     with self._order_lock:
         if self.order_state_uncertain:
             raise RuntimeError(
@@ -68,6 +78,8 @@ def _buy_limit(
                 log.exception("poll limit order failed")
                 break
         if last.executed_qty <= 0 or last.status not in {"FILLED", "PARTIALLY_FILLED"}:
+            if time.time() >= deadline:
+                _maker_metric("timeouts")
             try:
                 self.client.cancel_order(symbol=self.symbol, order_id=last.order_id)
             except Exception:
@@ -78,6 +90,7 @@ def _buy_limit(
                 self.client.cancel_order(symbol=self.symbol, order_id=last.order_id)
             except Exception:
                 log.exception("cancel residual limit order failed")
+        _maker_metric("fills")
         return self._apply_fill(
             last,
             reason=f"{reason};limit_maker",
