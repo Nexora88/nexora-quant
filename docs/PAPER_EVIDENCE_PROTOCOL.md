@@ -45,6 +45,9 @@ observation or disable entries; do not relax gates to manufacture a pass.
   not realized PnL and not a fill simulation.
 - Maker attempt/fill/timeout counters increment only when the live LIMIT_MAKER
   path is actually invoked. A paper run with no maker route reports no sample.
+- PAPER does not emulate a maker queue: PREFER_MAKER is ignored in PAPER and
+  simulated entries use the taker execution model. Maker statistics remain
+  unknown until the actual exchange LIMIT_MAKER path is invoked and measured.
 
 ## Known limitations
 

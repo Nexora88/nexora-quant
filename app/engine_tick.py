@@ -5,34 +5,18 @@ Loader wraps handle_tick with TARGET_EQUITY soft-halt and paper milestones.
 """
 from __future__ import annotations
 
-import base64
 import time
-import zlib
 from dataclasses import asdict
-from pathlib import Path
 
 from app.order_flow import FlowPressure
 from app.engine_setup import state as _runtime_state, spoof_filter as _spoof_filter
 from app.profit_lock import net_profit_lock_reason
 from app.expectancy import pessimistic_slippage_pct
+import app.engine_tick_body as _body
 
-_DIR = Path(__file__).resolve().parent / "_et_b64"
-
-
-def _load_source() -> str:
-    z0 = _DIR / "body.z0"
-    z1 = _DIR / "body.z1"
-    if not z0.is_file() or not z1.is_file():
-        raise RuntimeError("Missing app/_et_b64/body.z0 or body.z1")
-    b64 = z0.read_text(encoding="ascii").strip() + z1.read_text(encoding="ascii").strip()
-    text = zlib.decompress(base64.b64decode(b64.encode("ascii"))).decode("utf-8")
-    if "async def handle_tick" not in text:
-        raise RuntimeError("Decoded engine_tick body invalid")
-    return text
-
-
-_ns: dict = {"__name__": "app.engine_tick", "__file__": str(Path(__file__).resolve())}
-exec(compile(_load_source(), str(Path(__file__).resolve()), "exec"), _ns)
+# Keep the trading loop in ordinary, reviewable Python source. The legacy
+# compressed body files remain untouched for audit/recovery until removal.
+_ns: dict = vars(_body)
 _inner_handle_tick = _ns["handle_tick"]
 
 # Down-weight transient L2 liquidity before the composite score is consumed.
