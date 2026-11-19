@@ -18,7 +18,7 @@ class OrderState(str, Enum):
 _TERMINAL = {OrderState.FILLED, OrderState.CANCELLED, OrderState.REJECTED}
 _ALLOWED = {
     OrderState.PENDING: {
-        OrderState.OPEN, OrderState.PARTIALLY_FILLED, OrderState.FILLED,
+        OrderState.PENDING, OrderState.OPEN, OrderState.PARTIALLY_FILLED, OrderState.FILLED,
         OrderState.CANCELLED, OrderState.REJECTED, OrderState.UNKNOWN,
     },
     OrderState.OPEN: {
