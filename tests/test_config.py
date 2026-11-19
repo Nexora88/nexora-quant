@@ -120,7 +120,11 @@ def test_min_edge_env_above_safe_floor_is_preserved(monkeypatch):
 
 def test_minimum_order_must_fit_order_cap():
     with pytest.raises(ValueError, match="MIN_ORDER_USDT cannot exceed"):
-        Settings(min_order_usdt=6, max_order_size_usdt=5).validate()
+        Settings(
+            order_size_usdt=5,
+            min_order_usdt=6,
+            max_order_size_usdt=5,
+        ).validate()
 
 
 def test_minimum_order_and_fee_must_fit_starting_cash():
