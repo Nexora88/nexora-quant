@@ -37,14 +37,25 @@ observation or disable entries; do not relax gates to manufacture a pass.
   not truncate the sample.
 - Max drawdown is the largest observed peak-to-subsequent-trough equity decline
   from sampled paper equity, both in USDT and percent of the peak.
-- Daily fees are reset by UTC day in the runtime session counters.
+- Daily fees are reset by UTC day. The central RiskManager blocks new entries once
+  actual reported fill fees reach MAX_DAILY_FEE_USDT; exits remain permitted.
 - Trades/hour counts entry fills observed in the trailing 60 minutes.
+- 1s/5s/30s markout is signed mid-price movement in bps from fill price to the
+  first observed book mid at or after each horizon. It is an execution diagnostic,
+  not realized PnL and not a fill simulation.
+- Maker attempt/fill/timeout counters increment only when the live LIMIT_MAKER
+  path is actually invoked. A paper run with no maker route reports no sample.
 
 ## Known limitations
 
-Runtime session counters are in-memory and reset on process restart; they are
-not a durable multi-week evidence ledger yet. The paper trade ledger persists,
-but a future P0 follow-up must rebuild session metrics from persisted trades
-and equity snapshots before claiming restart-proof evidence. Maker metrics
-remain zero/unknown unless the maker path is enabled and instrumented. No
-markout-based edge claim is available until the 1s/5s/30s observations exist.
+Session evidence counters and pending markout observations are now included in
+the durable paper_state snapshot and restored at startup. This is checkpoint
+persistence, not a full forensic rebuild from the append-only paper_trades table;
+a missing/corrupt state checkpoint still requires manual reconciliation. Daily
+fee blocking is enforced in the central entry gate. Maker metrics remain
+unknown until real maker attempts occur; they are not inferred from taker fills.
+Markout samples are sparse when book updates are sparse and must be reported
+with their sample count and observation delay. The risk book groups current
+equity, peak, drawdown, session PnL, daily realized PnL/fees, consecutive losses,
+kill, emergency, and target-equity halt state; live risk policy remains disabled
+for this paper profile.
