@@ -251,6 +251,7 @@ async function tick(){
     const p=s.portfolio||{};
     const a=s.analysis||{};
     const d=s.last_decision||{};
+    const expectancy=s.session_expectancy||{};
     const eq=Number(p.equity_usdt||p.cash_usdt||0);
     const start=Number(p.starting_cash_usdt||100);
     const realized=Number(p.realized_pnl_usdt||0);
@@ -267,17 +268,14 @@ async function tick(){
     el('eq').className='amt'+(eq<start?' neg':'');
     const feeSchedule=s.fee_schedule||{};
     el('eqsub').textContent='realized '+num(realized,3)+' / fees '+num(fees,3)+' / taker '+num(Number(feeSchedule.taker_rate||0)*10000,2)+' bps';
-    el('sym').textContent=String(s.symbol||'???').toUpperCase();
     const minSc=Number((s.risk_limits&&s.risk_limits.entry_min_score)||0.28);
     const score=Number(a.score!=null?a.score:0);
-    el('sc').textContent=num(score,2)+' / '+num(minSc,2);
     el('net').textContent=num(realized,3);
     el('net').className='v'+(realized>=0?' pos':' neg');
     const sessionPnl=Number(s.session_realized_pnl_usdt||0);
     el('sessionpnl').textContent=(sessionPnl>=0?'+':'')+num(sessionPnl,3);
     el('sessionpnl').className='v'+(sessionPnl>=0?' pos':' neg');
     const fills=s.recent_fills||[];
-    const expectancy=s.session_expectancy||{};
     el('wr').textContent=expectancy.n?num(100*Number(expectancy.win_rate||0),0)+'%':'???';
     el('tc').textContent=String(s.closed_trade_count??p.trade_count??0);
     el('dd').textContent=num(s.max_drawdown_pct,2)+'%';
