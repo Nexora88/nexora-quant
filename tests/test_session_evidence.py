@@ -40,3 +40,24 @@ def test_observed_drawdown_tracks_peak_to_trough_not_only_current_dd():
     snapshot = state.snapshot()
     assert snapshot["max_drawdown_usdt"] == 8.0
     assert snapshot["max_drawdown_pct_observed"] == 8.0
+
+def test_partial_exits_are_aggregated_until_position_is_flat():
+    state = RuntimeState()
+    state.executor = type("Position", (), {"base_quantity": 0.5})()
+    state.record_fill({
+        "side": "sell", "pnl_usdt": 0.2, "accounting_complete": True,
+        "reason": "partial_take_profit",
+    })
+    assert state.closed_trade_count == 0
+    assert state.session_expectancy()["n"] == 0
+    assert state.session_realized_pnl_usdt == 0.2
+
+    state.executor.base_quantity = 0.0
+    state.record_fill({
+        "side": "sell", "pnl_usdt": -0.05, "accounting_complete": True,
+        "reason": "stop_loss",
+    })
+    assert state.closed_trade_count == 1
+    assert state.session_expectancy()["n"] == 1
+    assert state.session_expectancy()["sum_pnl_usdt"] == 0.15
+    assert state.session_exit_reasons == {"stop_loss": 1}
