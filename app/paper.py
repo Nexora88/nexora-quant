@@ -17,6 +17,7 @@ class PaperExecutor:
         self.realized_pnl_usdt = 0.0
         self.fees_paid_usdt = 0.0
         self.trades: list[dict[str, Any]] = []
+        self.on_fill = None
 
     def restore(self, snapshot: dict[str, Any]) -> None:
         """Restore a previously saved account after validating numeric invariants."""
@@ -100,6 +101,8 @@ class PaperExecutor:
             "accounting_complete": True,
         }
         self.trades.append(trade)
+        if callable(self.on_fill):
+            self.on_fill(trade)
         return trade
 
     def sell_quantity(self, *, quantity: float, price: float, reason: str) -> dict | None:
@@ -136,6 +139,8 @@ class PaperExecutor:
             self.base_quantity = 0.0
             self.average_entry_price = 0.0
             self.entry_fees_remaining_usdt = 0.0
+        if callable(self.on_fill):
+            self.on_fill(trade)
         return trade
 
     def sell_all(self, *, price: float, reason: str = "manual_paper_exit") -> dict | None:
