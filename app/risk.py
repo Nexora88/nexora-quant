@@ -22,12 +22,16 @@ class RiskDecision:
 class RiskManager:
     def __init__(self, *, max_order_size_usdt: float, max_daily_loss_usdt: float,
                  max_consecutive_losses: int, max_spread_bps: float,
-                 max_data_age_seconds: float) -> None:
+                 max_data_age_seconds: float, max_daily_fee_usdt: float = float("inf")) -> None:
         self.max_order_size_usdt = max_order_size_usdt
         self.max_daily_loss_usdt = max_daily_loss_usdt
         self.max_consecutive_losses = max_consecutive_losses
         self.max_spread_bps = max_spread_bps
         self.max_data_age_seconds = max_data_age_seconds
+        self.max_daily_fee_usdt = float(max_daily_fee_usdt)
+        if self.max_daily_fee_usdt <= 0:
+            raise ValueError("max_daily_fee_usdt must be positive")
+        self.fees_paid_today = 0.0
         self.realized_pnl_today = 0.0
         self.consecutive_losses = 0
         self.kill_switch = False
@@ -50,6 +54,7 @@ class RiskManager:
     def snapshot(self) -> dict[str, Any]:
         return {
             "realized_pnl_today": float(self.realized_pnl_today),
+            "fees_paid_today": float(self.fees_paid_today),
             "consecutive_losses": int(self.consecutive_losses),
             "kill_switch": bool(self.kill_switch),
             "kill_switch_reason": self.kill_switch_reason,
@@ -62,6 +67,7 @@ class RiskManager:
                 self._load_durable_kill()
             return
         self.realized_pnl_today = float(data.get("realized_pnl_today", 0) or 0)
+        self.fees_paid_today = max(0.0, float(data.get("fees_paid_today", 0) or 0))
         self.consecutive_losses = int(data.get("consecutive_losses", 0) or 0)
         self.kill_switch = bool(data.get("kill_switch", False))
         self.kill_switch_reason = data.get("kill_switch_reason")
@@ -112,7 +118,8 @@ class RiskManager:
             return False
         self.day_utc = day_utc
         self.realized_pnl_today = 0.0
-        if self.kill_switch_reason == "Daily loss limit reached":
+        self.fees_paid_today = 0.0
+        if self.kill_switch_reason in {"Daily loss limit reached", "Daily fee budget reached"}:
             self.kill_switch = False
             self.kill_switch_reason = None
             self._persist_durable_kill()
@@ -122,6 +129,8 @@ class RiskManager:
                        bid: float, ask: float, data_age_seconds: float | None) -> RiskDecision:
         if self.kill_switch:
             return RiskDecision(False, self.kill_switch_reason or "Kill switch active")
+        if self.fees_paid_today >= self.max_daily_fee_usdt:
+            return RiskDecision(False, "Daily fee budget reached")
         if notional_usdt <= 0:
             return RiskDecision(False, "Order notional must be positive")
         if notional_usdt > self.max_order_size_usdt:
@@ -139,6 +148,13 @@ class RiskManager:
             self.activate_kill_switch("Daily loss limit reached")
             return RiskDecision(False, self.kill_switch_reason)
         return RiskDecision(True, "Approved for execution")
+
+    def record_fee(self, fee_usdt: float) -> None:
+        """Count actual reported execution fees toward the UTC-day entry budget."""
+        fee = float(fee_usdt)
+        if fee < 0:
+            raise ValueError("fee_usdt cannot be negative")
+        self.fees_paid_today += fee
 
     def record_realized_pnl(self, pnl_usdt: float, *, position_closed: bool = True) -> None:
         """Count every realized fill toward daily loss, but only completed exits toward streaks."""
