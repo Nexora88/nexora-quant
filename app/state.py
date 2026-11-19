@@ -185,6 +185,8 @@ class RuntimeState:
         self.recent_fills.appendleft(row)
         fee = float(row.get("fee_usdt") or 0.0)
         if fee > 0:
+            if self.risk_manager is not None:
+                self.risk_manager.record_fee(fee)
             day = datetime.now(timezone.utc).date().isoformat()
             if self.session_fee_day != day:
                 self.session_fee_day = day
