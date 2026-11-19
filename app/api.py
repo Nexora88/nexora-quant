@@ -162,6 +162,9 @@ canvas{height:168px!important}
         <div><div class="l">Trades / hour</div><div class="v" id="tradeshour">---</div></div>
         <div><div class="l">Max DD</div><div class="v" id="maxdd">---</div></div>
         <div><div class="l">Events</div><div class="v" id="events">---</div></div>
+        <div><div class="l">Markout 1s / bps</div><div class="v" id="markout1">N/A</div></div>
+        <div><div class="l">Markout 5s / bps</div><div class="v" id="markout5">N/A</div></div>
+        <div><div class="l">Markout 30s / bps</div><div class="v" id="markout30">N/A</div></div>
       </div>
     </div>
     <div class="card">
@@ -311,6 +314,12 @@ async function tick(){
     el('tradeshour').textContent=String(s.trades_per_hour??0);
     el('maxdd').textContent=num(s.max_drawdown_pct_observed,2)+'%';
     el('events').textContent=String(s.events_seen??0);
+    const markouts=s.markout_history||[];
+    for(const horizon of [1,5,30]){
+      const samples=markouts.filter(x=>Number(x.horizon_seconds)===horizon).slice(-20);
+      const avg=samples.length?samples.reduce((sum,x)=>sum+Number(x.markout_bps||0),0)/samples.length:null;
+      el('markout'+horizon).textContent=avg==null?'N/A':num(avg,2)+' bps (n='+samples.length+')';
+    }
     const exitReasons=s.session_exit_reasons||{};
     el('exitreasons').textContent=Object.keys(exitReasons).length?Object.entries(exitReasons).map(([k,v])=>k+': '+v).join(', '):'N/A';
     el('lm').textContent=(L.growth_mode||'rebuild')+(L.frozen?' / FROZEN':' / ADAPTIVE');
