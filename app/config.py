@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import warnings
 
 from dotenv import load_dotenv
 
@@ -39,6 +40,20 @@ def _bool(name: str, default: bool = False) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _min_edge_over_fees() -> float:
+    """Keep legacy paper .env files bootable without weakening the edge gate."""
+    configured = _float("MIN_EDGE_OVER_FEES", 2.0)
+    if configured < 2.0:
+        warnings.warn(
+            "MIN_EDGE_OVER_FEES was below the safety floor; using 2.0. "
+            "Update your .env to MIN_EDGE_OVER_FEES=2.0 or higher.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return 2.0
+    return configured
 
 
 def _optional_float(name: str) -> float | None:
@@ -99,7 +114,7 @@ class Settings:
     compound_fraction: float = _float("COMPOUND_FRACTION", 0.50)
     use_atr_targets: bool = _bool("USE_ATR_TARGETS", True)
     wick_stop_confirmations: int = int(os.getenv("WICK_STOP_CONFIRMATIONS", "2"))
-    min_edge_over_fees: float = _float("MIN_EDGE_OVER_FEES", 2.0)
+    min_edge_over_fees: float = _min_edge_over_fees()
     min_hold_seconds: float = _float("MIN_HOLD_SECONDS", 20.0)
     max_trades_per_hour: int = int(os.getenv("MAX_TRADES_PER_HOUR", "8"))
     max_daily_fee_usdt: float = _float("MAX_DAILY_FEE_USDT", 0.75)

@@ -101,3 +101,18 @@ def test_live_mode_rejects_unvalidated_multi_position_and_loose_data_age():
             binance_api_secret="s",
             max_data_age_seconds=20,
         ).validate()
+
+
+def test_legacy_min_edge_env_is_raised_to_safe_floor(monkeypatch):
+    from app.config import _min_edge_over_fees
+
+    monkeypatch.setenv("MIN_EDGE_OVER_FEES", "1.5")
+    with pytest.warns(RuntimeWarning, match="using 2.0"):
+        assert _min_edge_over_fees() == 2.0
+
+
+def test_min_edge_env_above_safe_floor_is_preserved(monkeypatch):
+    from app.config import _min_edge_over_fees
+
+    monkeypatch.setenv("MIN_EDGE_OVER_FEES", "2.5")
+    assert _min_edge_over_fees() == 2.5
