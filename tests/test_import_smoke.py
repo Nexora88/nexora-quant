@@ -20,7 +20,11 @@ def test_dashboard_and_status_endpoints_smoke():
     from app.api import app
 
     with TestClient(app) as client:
-        assert client.get("/").status_code == 200
+        dashboard = client.get("/")
+        assert dashboard.status_code == 200
+        assert 'id="sessionpnl"' in dashboard.text
+        assert 'id="exitreasons"' in dashboard.text
+        assert 'id="makerfill"' in dashboard.text
         assert client.get("/health").status_code == 200
         status = client.get("/status")
         assert status.status_code == 200
