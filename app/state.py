@@ -60,6 +60,7 @@ class RuntimeState:
         self.session_fee_day: str | None = None
         self.hourly_trade_ts: list[float] = []
         self.session_closed_trade_pnls: list[float] = []
+        self.current_position_realized_pnl_usdt: float = 0.0
         self.session_exit_reasons: dict[str, int] = {}
         self.max_drawdown_usdt: float = 0.0
         self.max_drawdown_pct_observed: float = 0.0
@@ -192,24 +193,35 @@ class RuntimeState:
         side = str(row.get("side") or "").lower()
         if side in {"buy", "long"}:
             import time as _t
+            if self.position_opened_at is None:
+                self.current_position_realized_pnl_usdt = 0.0
             self.position_opened_at = _t.time()
             self.last_entry_at = _t.time()
             self.hourly_trade_ts.append(_t.time())
             cutoff = _t.time() - 3600.0
             self.hourly_trade_ts = [x for x in self.hourly_trade_ts if x >= cutoff]
         elif side in {"sell", "short"}:
-            self.position_opened_at = None
             if row.get("accounting_complete", True) is True and row.get("pnl_usdt") is not None:
                 try:
-                    self.closed_trade_count = int(getattr(self, "closed_trade_count", 0) or 0) + 1
                     pnl = float(row["pnl_usdt"])
-                    self.session_realized_pnl_usdt = float(
-                        getattr(self, "session_realized_pnl_usdt", 0.0) or 0.0
-                    ) + pnl
-                    self.session_closed_trade_pnls.append(pnl)
-                    reason = str(row.get("reason") or "unknown").split(";")[0][:64]
-                    self.last_exit_reason = reason
-                    self.session_exit_reasons[reason] = self.session_exit_reasons.get(reason, 0) + 1
+                    self.session_realized_pnl_usdt += pnl
+                    self.current_position_realized_pnl_usdt += pnl
+                    remaining_qty = getattr(self.executor, "base_quantity", None)
+                    position_closed = row.get("position_closed")
+                    if position_closed is None:
+                        position_closed = (
+                            remaining_qty <= 1e-12 if remaining_qty is not None else True
+                        )
+                    if position_closed:
+                        self.closed_trade_count += 1
+                        self.session_closed_trade_pnls.append(
+                            self.current_position_realized_pnl_usdt
+                        )
+                        self.current_position_realized_pnl_usdt = 0.0
+                        self.position_opened_at = None
+                        reason = str(row.get("reason") or "unknown").split(";")[0][:64]
+                        self.last_exit_reason = reason
+                        self.session_exit_reasons[reason] = self.session_exit_reasons.get(reason, 0) + 1
                 except (TypeError, ValueError):
                     self.last_exit_reason = "accounting_incomplete"
             else:
