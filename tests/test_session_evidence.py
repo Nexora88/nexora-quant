@@ -1,3 +1,5 @@
+import pytest
+
 from app.state import RuntimeState
 
 
@@ -23,7 +25,7 @@ def test_session_metrics_cover_all_closed_trades_and_exit_reasons():
     assert metrics["n"] == 3
     assert metrics["sum_pnl_usdt"] == 0.75
     assert metrics["expectancy_usdt"] == 0.25
-    assert metrics["win_rate"] == 2 / 3
+    assert metrics["win_rate"] == pytest.approx(2 / 3)
     assert state.session_exit_reasons == {"take_profit": 2, "stop_loss": 1}
 
 
