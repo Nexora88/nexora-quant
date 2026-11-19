@@ -96,13 +96,20 @@ canvas{height:168px!important}
   </div>
 
   <div class=\"stats\">
-    <div class=\"stat\"><div class=\"l\">Sembol</div><div class=\"v\" id=\"sym\">???</div></div>
-    <div class=\"stat\"><div class=\"l\">Skor / Esik</div><div class=\"v\" id=\"sc\">???</div></div>
+    <div class=\"stat\"><div class=\"l\">Equity</div><div class=\"v\" id=\"top_eq\">???</div></div>
     <div class=\"stat\"><div class=\"l\">Net PnL</div><div class=\"v\" id=\"net\">???</div></div>
     <div class=\"stat\"><div class=\"l\">Session PnL</div><div class=\"v\" id=\"sessionpnl\">???</div></div>
-    <div class=\"stat\"><div class=\"l\">Islem</div><div class=\"v\" id=\"tc\">0</div></div>
-    <div class=\"stat\"><div class=\"l\">Win rate (rolling)</div><div class=\"v\" id=\"wr\">???</div></div>
     <div class=\"stat\"><div class=\"l\">Drawdown</div><div class=\"v\" id=\"dd\">???</div></div>
+    <div class=\"stat\"><div class=\"l\">Closed trades</div><div class=\"v\" id=\"tc\">0</div></div>
+    <div class=\"stat\"><div class=\"l\">Win rate</div><div class=\"v\" id=\"wr\">???</div></div>
+  </div>
+  <div class=\"stats\">
+    <div class=\"stat\"><div class=\"l\">Fees</div><div class=\"v\" id=\"top_fees\">???</div></div>
+    <div class=\"stat\"><div class=\"l\">Expectancy</div><div class=\"v\" id=\"top_expect\">???</div></div>
+    <div class=\"stat\"><div class=\"l\">Maker fill</div><div class=\"v\" id=\"top_maker\">N/A</div></div>
+    <div class=\"stat\"><div class=\"l\">Spread</div><div class=\"v\" id=\"top_spread\">???</div></div>
+    <div class=\"stat\"><div class=\"l\">Data age</div><div class=\"v\" id=\"top_age\">???</div></div>
+    <div class=\"stat\"><div class=\"l\">Events</div><div class=\"v\" id=\"top_events\">0</div></div>
   </div>
 
   <div class=\"row\">
@@ -248,6 +255,14 @@ async function tick(){
     const start=Number(p.starting_cash_usdt||100);
     const realized=Number(p.realized_pnl_usdt||0);
     const fees=Number(p.fees_paid_usdt||0);
+    el('top_eq').textContent=num(eq,2)+' USDT';
+    el('top_fees').textContent=num(s.session_fees_usdt??fees,3)+' USDT';
+    el('top_expect').textContent=expectancy.n?num(expectancy.expectancy_usdt,4)+' / '+expectancy.n:'N/A';
+    const topMaker=s.maker_stats||{};
+    el('top_maker').textContent=topMaker.fill_rate==null?'N/A':num(100*topMaker.fill_rate,1)+'%';
+    el('top_spread').textContent=num(a.spread_bps??s.market?.spread_bps,2)+' bps';
+    el('top_age').textContent=s.data_age_seconds==null?'N/A':num(s.data_age_seconds,2)+'s';
+    el('top_events').textContent=String(s.events_seen??0);
     el('eq').textContent=num(eq,2)+' USDT';
     el('eq').className='amt'+(eq<start?' neg':'');
     const feeSchedule=s.fee_schedule||{};
