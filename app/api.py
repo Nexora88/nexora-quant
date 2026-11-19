@@ -247,6 +247,9 @@ async function tick(){
     el('sc').textContent=num(score,2)+' / '+num(minSc,2);
     el('net').textContent=num(realized,3);
     el('net').className='v'+(realized>=0?' pos':' neg');
+    const sessionPnl=Number(s.session_realized_pnl_usdt||0);
+    el('sessionpnl').textContent=(sessionPnl>=0?'+':'')+num(sessionPnl,3);
+    el('sessionpnl').className='v'+(sessionPnl>=0?' pos':' neg');
     const fills=s.recent_fills||[];
     const expectancy=s.session_expectancy||{};
     el('wr').textContent=expectancy.n?num(100*Number(expectancy.win_rate||0),0)+'%':'???';
@@ -294,7 +297,13 @@ async function tick(){
     el('unreal').textContent=num(p.unrealized_pnl_usdt,3)+' USDT';
     el('unreal').className='v'+(Number(p.unrealized_pnl_usdt||0)>=0?' pos':' neg');
     el('dailyfee').textContent=num(s.session_fees_usdt,3)+' USDT';
-    el('expect').textContent=expectancy.n?num(expectancy.expectancy_usdt,4)+' / trade ('+expectancy.n+')':'sample < 12';
+    el('expect').textContent=expectancy.n?num(expectancy.expectancy_usdt,4)+' / trade ('+expectancy.n+')':'sample < 50';
+    const maker=s.maker_stats||{};
+    el('makerfill').textContent=maker.fill_rate==null?'N/A':num(100*maker.fill_rate,1)+'%';
+    el('makertimeout').textContent=maker.timeout_rate==null?'N/A':num(100*maker.timeout_rate,1)+'%';
+    el('tradeshour').textContent=String(s.trades_per_hour??0);
+    el('maxdd').textContent=num(s.max_drawdown_pct_observed,2)+'%';
+    el('events').textContent=String(s.events_seen??0);
     el('lm').textContent=(L.growth_mode||'rebuild')+(L.frozen?' / FROZEN':' / ADAPTIVE');
     el('lt').textContent=String(L.lifetime_trades??L.trades??0);
     el('le').textContent=num(L.entry_min_score,3);
