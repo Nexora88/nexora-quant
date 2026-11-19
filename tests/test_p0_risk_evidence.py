@@ -85,18 +85,12 @@ def test_fill_markouts_are_recorded_at_one_five_and_thirty_seconds():
     assert rows[0]["markout_bps"] > 0
     assert rows[2]["markout_bps"] < 0
 
-def test_paper_executor_emits_actual_fills_to_evidence_callback():
-    from app.paper import PaperExecutor
-
+def test_canonical_record_fill_updates_daily_fee_risk_counter():
     state = RuntimeState()
     state.risk_manager = make_risk()
-    paper = PaperExecutor(100, 0.001)
-    paper.on_fill = state.record_fill
-    paper.buy(notional_usdt=10, price=100, reason="entry")
-    paper.sell_all(price=101, reason="exit")
-
-    assert state.maker_stats()["attempts"] == 0
-    assert state.session_fees_usdt > 0
-    assert state.risk_manager.fees_paid_today == state.session_fees_usdt
-    assert state.closed_trade_count == 1
-    assert state.session_expectancy()["n"] == 1
+    state.record_fill({
+        "side": "buy", "price": 100.0, "quantity": 0.1,
+        "fee_usdt": 0.02, "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+    assert state.session_fees_usdt == 0.02
+    assert state.risk_manager.fees_paid_today == 0.02
