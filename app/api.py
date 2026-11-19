@@ -155,6 +155,7 @@ canvas{height:168px!important}
         <div><div class="l">Ortalama giris</div><div class="v" id="entry">---</div></div>
         <div><div class="l">Acik PnL</div><div class="v" id="unreal">---</div></div>
         <div><div class="l">Gunluk fee</div><div class="v" id="dailyfee">---</div></div>
+        <div><div class="l">Gunluk net loss</div><div class="v" id="dailyloss">---</div></div>
         <div><div class="l">Fee-net expectancy</div><div class="v" id="expect">---</div></div>
         <div><div class="l">Last exit reasons</div><div class="v" id="exitreasons">---</div></div>
         <div><div class="l">Maker fill</div><div class="v" id="makerfill">---</div></div>
@@ -306,7 +307,9 @@ async function tick(){
     el('entry').textContent=qty>0?num(p.average_entry_price,2):'--';
     el('unreal').textContent=num(p.unrealized_pnl_usdt,3)+' USDT';
     el('unreal').className='v'+(Number(p.unrealized_pnl_usdt||0)>=0?' pos':' neg');
-    el('dailyfee').textContent=num(s.session_fees_usdt,3)+' / '+num(s.daily_fee_budget_usdt,2)+' USDT'+(s.daily_fee_budget_exceeded?' LIMIT':'');
+    const riskBook=s.risk_book||{};
+    el('dailyfee').textContent=num(riskBook.daily_fee_usdt??s.session_fees_usdt,3)+' / '+num(riskBook.daily_fee_limit_usdt??s.daily_fee_budget_usdt,2)+' USDT'+(riskBook.daily_fee_halt?' LIMIT':'');
+    el('dailyloss').textContent=num(riskBook.daily_realized_pnl_usdt??s.realized_pnl_today,3)+' / -'+num(riskBook.daily_loss_limit_usdt,2)+' USDT';
     el('expect').textContent=expectancy.n?num(expectancy.expectancy_usdt,4)+' / trade ('+expectancy.n+')':'sample < 50';
     const maker=s.maker_stats||{};
     el('makerfill').textContent=maker.fills+'/'+maker.attempts+' ('+(maker.fill_rate==null?'N/A':num(100*maker.fill_rate,1)+'%')+')';
