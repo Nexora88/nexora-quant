@@ -164,6 +164,26 @@ async def run() -> None:
     try:
         learner.load_state((saved or {}).get("learner"))
         state.learner_snapshot = learner.to_dict()
+        # Prefer the account-scoped learner state; it cannot cross paper/live accounts.
+        account_learning.restore()
+        # A live account may load only an explicitly promoted, paper-origin strategy.
+        if mode == "live":
+            promoted = es.dual_account_store.active_strategy(es.account_id)
+            if promoted:
+                weights = learner.export_state()
+                params = promoted["parameters"]
+                mapping = {
+                    "entry_min_score": "entry_min",
+                    "size_bias": "size_bias",
+                    "tp_scale": "tp_scale",
+                    "compound_fraction": "compound",
+                }
+                for source, target in mapping.items():
+                    if source in params:
+                        weights[target] = float(params[source])
+                learner.load_state(weights)
+                log.info("Loaded approved strategy version=%s", promoted["version_id"])
+        state.learner_snapshot = learner.to_dict()
         log.info("Learner restored: %s", learner.to_dict().get("note"))
     except Exception as exc:
         log.warning("Learner restore skipped: %s", exc)
