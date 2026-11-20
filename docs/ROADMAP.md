@@ -23,10 +23,10 @@
 
 ## Required engineering before claiming the dual-account learning pipeline is complete
 
-1. **Foundation added, engine wiring pending:** `app/dual_account.py` provides account-ID-partitioned event and learner-state storage. Wire it into two concurrently running engine workers with distinct executors, DBs and account identities; reject duplicate account identities/modes.
+1. **Implemented for separate workers:** paper and live processes use distinct default SQLite ledgers, unique account identities and account-scoped learner state in the shared registry. Run both processes separately; they have independent executors and can consume the public market feed concurrently.
 2. **Foundation added, evidence enrichment pending:** versioned paper-only strategy snapshots, parameter allowlist, evidence checks, operator-approved live assignment and rollback exist in `app/dual_account.py`. Add market-data fingerprint, training window, fee assumptions, symbol/regime coverage and independently reproducible validation artifacts.
 3. Finish promotion validation against independently reproducible chronological out-of-sample artifacts; reject stale, incomplete, under-sampled or fee-negative candidates.
-4. Wire the account-scoped learner-state API into the live close path so only exchange-confirmed, fee-complete closes update the live learner; ensure no paper PnL crosses accounts and no hard risk controls are learnable.
+4. **Implemented:** each worker persists its own learner state. Live adaptation is driven only by exchange-confirmed FILLED closes with complete fee accounting; paper outcomes are never copied into the live learner. Hard risk controls are not learnable.
 5. **Monitor primitive added, live adapter pending:** `ReconciliationMonitor` can periodically compare local and exchange snapshots and invoke a fail-closed callback. Connect it to the live executor's balance/fill/commission/open-order snapshots and kill switch.
 6. Complete manual Spot Testnet E2E, rolling multi-asset/multi-regime OOS evidence, dashboard-to-ledger reconciliation and operator kill-switch drills.
 
@@ -41,5 +41,5 @@ Use docs/GO_LIVE_CHECKLIST.md as the single source of truth. The minimum paper w
 - The current OnlineLearner is bounded online adaptation, not proven reinforcement learning.
 - Paper maker queue priority is not simulated.
 - The live executor remains single-symbol/single-position.
-- The isolated dual-account shared-knowledge pipeline is not yet implemented end-to-end.
+- Continuous exchange/local-ledger reconciliation is not yet wired into the live executor. Spot Testnet E2E still requires dedicated credentials and an actual manual workflow run; CI's normal test suite skips it.
 - No backtest, testnet run or CI result proves future profitability or eliminates gaps, outages or slippage.
