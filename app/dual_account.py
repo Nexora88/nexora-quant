@@ -57,8 +57,9 @@ class DualAccountStore:
                 created_at TEXT NOT NULL,
                 initial_cash_usdt REAL NOT NULL CHECK(initial_cash_usdt > 0)
             );
-            CREATE UNIQUE INDEX IF NOT EXISTS one_account_per_mode
-                ON accounts(mode);
+            DROP INDEX IF EXISTS one_account_per_mode;
+            CREATE UNIQUE INDEX IF NOT EXISTS one_paper_account
+                ON accounts(mode) WHERE mode='paper';
             CREATE TABLE IF NOT EXISTS account_events (
                 event_id TEXT PRIMARY KEY,
                 account_id TEXT NOT NULL REFERENCES accounts(account_id),
@@ -105,11 +106,10 @@ class DualAccountStore:
             raise ValueError("account_id, paper/live mode and positive cash are required")
         with self.db:
             existing = self.db.execute(
-                "SELECT account_id, mode, initial_cash_usdt FROM accounts WHERE mode=?",
-                (mode,),
-            ).fetchone()
+                "SELECT account_id FROM accounts WHERE mode='paper'"
+            ).fetchone() if mode == "paper" else None
             if existing and existing["account_id"] != account_id:
-                raise ValueError(f"the {mode} account is already registered")
+                raise ValueError("the paper account is already registered")
             self.db.execute(
                 """INSERT INTO accounts(account_id,mode,created_at,initial_cash_usdt)
                    VALUES(?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET
