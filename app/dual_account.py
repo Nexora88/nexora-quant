@@ -173,6 +173,16 @@ class DualAccountStore:
             forbidden = sorted(keys - LEARNABLE_PARAMETERS)
             raise ValueError(f"candidate contains unsupported or hard-risk parameters: {forbidden}")
         clean_params = {k: _finite(v, k) for k, v in parameters.items()}
+        bounds = {
+            "entry_min_score": (0.22, 0.65),
+            "size_bias": (0.4, 1.6),
+            "tp_scale": (0.55, 1.25),
+            "compound_fraction": (0.5, 0.95),
+        }
+        for key, value in clean_params.items():
+            low, high = bounds[key]
+            if not low <= value <= high:
+                raise ValueError(f"candidate parameter {key} must be within [{low}, {high}]")
         required = {
             "closed_trades": 50, "oos_windows": 4, "positive_oos_windows": 3,
         }
