@@ -31,6 +31,88 @@ jobs:
       - name: Ruff
         run: python -m ruff check app tests scripts
 
+      - name: Uvicorn process smoke
+        env:
+          TRADING_MODE: paper
+          BINANCE_TESTNET: "true"
+          STARTING_CASH_USDT: "100"
+          NEXORA_ALLOW_LAN: "0"
+          NEXORA_API_TOKEN: ""
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import socket
+          import subprocess
+          import sys
+          import time
+          from urllib.error import URLError
+          from urllib.request import urlopen
+
+          with socket.socket() as sock:
+              sock.bind(("127.0.0.1", 0))
+              port = sock.getsockname()[1]
+
+          env = os.environ.copy()
+          env["PYTHONUNBUFFERED"] = "1"
+          process = subprocess.Popen(
+              [
+                  sys.executable, "-m", "uvicorn", "app.api:app",
+                  "--host", "127.0.0.1", "--port", str(port),
+                  "--log-level", "warning",
+              ],
+              env=env,
+              stdout=subprocess.PIPE,
+              stderr=subprocess.STDOUT,
+              text=True,
+          )
+          try:
+              deadline = time.monotonic() + 25
+              last_error = "server did not become ready"
+              while time.monotonic() < deadline:
+                  if process.poll() is not None:
+                      output = process.stdout.read() if process.stdout else ""
+                      raise RuntimeError(
+                          f"uvicorn exited with {process.returncode}: {output[-6000:]}"
+                      )
+                  try:
+                      with urlopen(f"http://127.0.0.1:{port}/status", timeout=2) as response:
+                          assert response.status == 200
+                          payload = json.load(response)
+                      with urlopen(f"http://127.0.0.1:{port}/", timeout=2) as response:
+                          dashboard = response.read().decode("utf-8")
+                      with urlopen(f"http://127.0.0.1:{port}/health", timeout=2) as response:
+                          health = json.load(response)
+                      assert payload.get("mode") == "paper", payload
+                      assert "engine_task_status" in payload, payload
+                      assert "NEXORA" in dashboard, "dashboard did not render"
+                      assert health.get("mode") == "paper", health
+                      print(
+                          "UVICORN_PROCESS_SMOKE_PASS "
+                          f"engine={payload.get('engine_task_status')} "
+                          f"closed_trades={payload.get('closed_trade_count', 0)}"
+                      )
+                      break
+                  except URLError as exc:
+                      last_error = str(exc)
+                      time.sleep(0.25)
+              else:
+                  raise RuntimeError(last_error)
+          finally:
+              if process.poll() is None:
+                  process.terminate()
+                  try:
+                      process.wait(timeout=10)
+                  except subprocess.TimeoutExpired:
+                      process.kill()
+                      process.wait(timeout=5)
+              if process.returncode not in (0, -15, 143):
+                  output = process.stdout.read() if process.stdout else ""
+                  raise RuntimeError(
+                      f"uvicorn shutdown failed ({process.returncode}): {output[-6000:]}"
+                  )
+          PY
+
       - name: Pytest
         env:
           TRADING_MODE: paper
