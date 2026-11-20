@@ -23,11 +23,11 @@
 
 ## Required engineering before claiming the dual-account learning pipeline is complete
 
-1. Implement isolated account-scoped persistence and learner state for simultaneous paper and live processes.
-2. Implement versioned candidate snapshots with provenance, market-data fingerprint, training window, fee assumptions, closed-trade count, regime/symbol coverage, metrics and deterministic rollback.
-3. Implement promotion validation against independent out-of-sample windows; reject stale, incomplete, under-sampled or fee-negative candidates.
-4. Add a live outcome learner that records only exchange-confirmed, fee-complete closed trades, isolated from paper state and incapable of modifying hard risk controls.
-5. Implement recurring exchange/local-ledger reconciliation and fail-closed handling for balance, commission, open-order and fill discrepancies.
+1. **Foundation added, engine wiring pending:** `app/dual_account.py` provides account-ID-partitioned event and learner-state storage. Wire it into two concurrently running engine workers with distinct executors, DBs and account identities; reject duplicate account identities/modes.
+2. **Foundation added, evidence enrichment pending:** versioned paper-only strategy snapshots, parameter allowlist, evidence checks, operator-approved live assignment and rollback exist in `app/dual_account.py`. Add market-data fingerprint, training window, fee assumptions, symbol/regime coverage and independently reproducible validation artifacts.
+3. Finish promotion validation against independently reproducible chronological out-of-sample artifacts; reject stale, incomplete, under-sampled or fee-negative candidates.
+4. Wire the account-scoped learner-state API into the live close path so only exchange-confirmed, fee-complete closes update the live learner; ensure no paper PnL crosses accounts and no hard risk controls are learnable.
+5. **Monitor primitive added, live adapter pending:** `ReconciliationMonitor` can periodically compare local and exchange snapshots and invoke a fail-closed callback. Connect it to the live executor's balance/fill/commission/open-order snapshots and kill switch.
 6. Complete manual Spot Testnet E2E, rolling multi-asset/multi-regime OOS evidence, dashboard-to-ledger reconciliation and operator kill-switch drills.
 
 ## Mainnet evidence policy
