@@ -107,12 +107,9 @@ learner = OnlineLearner(
     window=40,
     base_entry_min=float(settings.entry_min_score),
     base_compound=float(settings.compound_fraction),
-    # Online adaptation is paper-only until multi-regime out-of-sample evidence
-    # exists; mainnet/testnet execution uses a frozen, reproducible policy.
-    frozen=(
-        settings.trading_mode == "live"
-        or os.getenv("LEARNER_FROZEN", "").strip().lower() in {"1", "true", "yes", "on"}
-    ),
+    # Both account learners adapt only from their own fee-complete closed trades.
+    # Hard risk controls are outside OnlineLearner and remain immutable.
+    frozen=os.getenv("LEARNER_FROZEN", "").strip().lower() in {"1", "true", "yes", "on"},
     min_trades_before_adapt=int(os.getenv("LEARNER_MIN_TRADES", "25")),
 )
 # The paper and live workers share only this strategy/learning registry. Their
