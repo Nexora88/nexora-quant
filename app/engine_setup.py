@@ -21,6 +21,7 @@ from app.intelligence.adverse import AdverseSelectionFilter
 from app.intelligence.whale import WhaleTracker
 from app.intelligence.noise import NoiseFilter
 from app.intelligence.learner import OnlineLearner
+from app.dual_account import DualAccountStore, AccountLearningCoordinator
 from app.intelligence.trend_follow import TrendFollower
 from app.intelligence.memory import TradeMemory
 from app.intelligence.spoof import OrderPersistenceFilter
@@ -106,13 +107,24 @@ learner = OnlineLearner(
     window=40,
     base_entry_min=float(settings.entry_min_score),
     base_compound=float(settings.compound_fraction),
-    # Online adaptation is paper-only until multi-regime out-of-sample evidence
-    # exists; mainnet/testnet execution uses a frozen, reproducible policy.
-    frozen=(
-        settings.trading_mode == "live"
-        or os.getenv("LEARNER_FROZEN", "").strip().lower() in {"1", "true", "yes", "on"}
-    ),
+    # Both account learners adapt only from their own fee-complete closed trades.
+    # Hard risk controls are outside OnlineLearner and remain immutable.
+    frozen=os.getenv("LEARNER_FROZEN", "").strip().lower() in {"1", "true", "yes", "on"},
     min_trades_before_adapt=int(os.getenv("LEARNER_MIN_TRADES", "25")),
+)
+# The paper and live workers share only this strategy/learning registry. Their
+# execution ledgers remain in distinct mode-specific SQLite databases.
+dual_account_store = DualAccountStore(
+    os.getenv("DUAL_ACCOUNT_DB_PATH", "data/dual-account.sqlite3")
+)
+account_id = os.getenv(
+    "ACCOUNT_ID", "paper-main" if settings.trading_mode == "paper" else "live-main"
+)
+dual_account_store.register_account(
+    account_id, settings.trading_mode, float(settings.starting_cash_usdt)
+)
+account_learning = AccountLearningCoordinator(
+    dual_account_store, account_id, settings.trading_mode, learner
 )
 memory = TradeMemory(capacity=200)
 sustained = SustainedSignalGate(
