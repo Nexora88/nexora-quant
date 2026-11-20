@@ -11,6 +11,7 @@ from app.decision import build_decision
 from app.engine_setup import (
     _event_key,
     _paper_fill,
+    account_learning,
     adverse_filter,
     atr_tracker,
     circuit_breaker,
@@ -244,14 +245,21 @@ async def handle_tick(
                         state.wick_stop_state = None
                         if accounting_complete:
                             try:
-                                learner.record_trade(
+                                account_learning.record_closed_trade(
                                     float(pnl_v),
+                                    event_id=_event_key(key, trade),
                                     regime=str(getattr(analysis, "regime", "unknown") or "unknown"),
                                     reason=str(reason or ""),
+                                    accounting_complete=accounting_complete,
+                                    exchange_confirmed=(
+                                        mode == "paper"
+                                        or (
+                                            trade.get("status") == "FILLED"
+                                            and bool(trade.get("exchange_order_id"))
+                                        )
+                                    ),
                                 )
-                                state.learner_snapshot = (
-                                    learner.snapshot() if hasattr(learner, "snapshot") else learner.to_dict()
-                                )
+                                state.learner_snapshot = learner.to_dict()
                             except Exception:
                                 log.exception("learner.record_trade failed")
                         try:
