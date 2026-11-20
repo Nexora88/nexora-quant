@@ -98,3 +98,36 @@ def test_reconciliation_reports_drift_and_clean_snapshot(tmp_path):
         assert "cash_usdt" in result["differences"]
     finally:
         store.close()
+
+
+def test_live_learner_requires_exchange_confirmed_fee_complete_close(tmp_path):
+    from app.intelligence.learner import OnlineLearner
+    from app.dual_account import AccountLearningCoordinator
+
+    store = setup_store(tmp_path)
+    try:
+        learner = OnlineLearner(frozen=False, min_trades_before_adapt=1)
+        coordinator = AccountLearningCoordinator(
+            store, "live-main", "live", learner,
+        )
+        with pytest.raises(ValueError):
+            coordinator.record_closed_trade(
+                0.1, event_id="live-1", accounting_complete=True,
+                exchange_confirmed=False,
+            )
+        assert coordinator.record_closed_trade(
+            0.1, event_id="live-1", accounting_complete=True,
+            exchange_confirmed=True,
+        )
+        assert not coordinator.record_closed_trade(
+            0.1, event_id="live-1", accounting_complete=True,
+            exchange_confirmed=True,
+        )
+        restored = OnlineLearner(frozen=False, min_trades_before_adapt=1)
+        restored_coordinator = AccountLearningCoordinator(
+            store, "live-main", "live", restored,
+        )
+        assert restored_coordinator.restore()
+        assert restored.to_dict()["lifetime_trades"] == 1
+    finally:
+        store.close()
