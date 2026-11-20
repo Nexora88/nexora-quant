@@ -179,6 +179,13 @@ class Settings:
             raise ValueError("COMPOUND_FRACTION must be in (0, 1].")
         if self.min_order_usdt <= 0:
             raise ValueError("MIN_ORDER_USDT must be positive.")
+        if self.min_order_usdt > self.max_order_size_usdt:
+            raise ValueError(
+                "MIN_ORDER_USDT cannot exceed MAX_ORDER_SIZE_USDT; "
+                "otherwise every order is guaranteed to be rejected."
+            )
+        if self.min_order_usdt * (1.0 + self.fee_rate) > self.starting_cash_usdt:
+            raise ValueError("Minimum order plus quote fee exceeds starting cash.")
         if not 0.05 <= self.risk_per_trade_pct <= 5.0:
             raise ValueError("RISK_PER_TRADE_PCT must be in [0.05, 5].")
         if self.history_max_pending < 1:
@@ -213,6 +220,10 @@ class Settings:
                 raise ValueError("Live mode requires MAX_DATA_AGE_SECONDS <= 10.")
             if self.risk_per_trade_pct > 1.0:
                 raise ValueError("Live mode requires RISK_PER_TRADE_PCT <= 1.0.")
+            if self.order_size_usdt > self.max_order_size_usdt:
+                raise ValueError("Live ORDER_SIZE_USDT cannot exceed MAX_ORDER_SIZE_USDT.")
+            if self.max_daily_fee_usdt > self.max_daily_loss_usdt:
+                raise ValueError("Live MAX_DAILY_FEE_USDT cannot exceed MAX_DAILY_LOSS_USDT.")
             if self.max_order_size_usdt > self.starting_cash_usdt * 0.25:
                 raise ValueError("Live MAX_ORDER_SIZE_USDT cannot exceed 25% of starting cash.")
             if self.max_daily_loss_usdt > self.starting_cash_usdt * 0.10:

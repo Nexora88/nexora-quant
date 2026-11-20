@@ -14,6 +14,7 @@ from decimal import Decimal, ROUND_DOWN
 from typing import Any
 
 from app.binance_rest import BinanceRestClient, OrderResult
+from app.order_state import OrderStateMachine
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +50,7 @@ class LiveExecutor:
         self._order_sequence = 0
         self.order_state_uncertain = False
         self.unresolved_client_order_id: str | None = None
+        self.order_state_machine = OrderStateMachine()
         self.locked_base_quantity = 0.0
         self.locked_quote_balance = 0.0
         self.open_orders_snapshot: list[dict[str, Any]] = []
@@ -159,6 +161,9 @@ class LiveExecutor:
         self._order_sequence = int(snapshot.get("order_sequence", 0))
         self.order_state_uncertain = bool(snapshot.get("order_state_uncertain", False))
         self.unresolved_client_order_id = snapshot.get("unresolved_client_order_id")
+        self.order_state_machine.restore(snapshot.get("order_state_machine") or {})
+        if self.order_state_uncertain:
+            self.order_state_machine.force_unknown(self.unresolved_client_order_id)
         self.processed_exchange_trade_ids = {
             str(item) for item in snapshot.get("processed_exchange_trade_ids", [])
         }
@@ -421,12 +426,19 @@ class LiveExecutor:
                 f"{self.symbol}|{side}|{reason}|{amount:.12f}|{self._order_sequence}".encode()
             ).hexdigest()[:18]
             client_id = f"nq{self._order_sequence:x}{digest}"[:36]
+            # A client ID is created once per intent. No retry path may mint a
+            # second ID while the previous intent is pending or ambiguous.
+            self.order_state_machine.begin(client_id)
             try:
                 existing = self.client.get_order_by_client_id(self.symbol, client_id)
             except Exception as exc:
                 if "-2013" not in str(exc) and "Order does not exist" not in str(exc):
+                    self.order_state_machine.mark_unknown(client_id)
+                    self.order_state_uncertain = True
+                    self.unresolved_client_order_id = client_id
                     raise
             else:
+                self.order_state_machine.observe(existing.status)
                 if existing.status not in ("FILLED", "CANCELED", "EXPIRED", "REJECTED"):
                     self.order_state_uncertain = True
                     self.unresolved_client_order_id = client_id
@@ -449,6 +461,7 @@ class LiveExecutor:
                 try:
                     result = self.client.get_order_by_client_id(self.symbol, client_id)
                 except Exception:
+                    self.order_state_machine.mark_unknown(client_id)
                     self.order_state_uncertain = True
                     self.unresolved_client_order_id = client_id
                     log.exception(
@@ -456,6 +469,7 @@ class LiveExecutor:
                         client_id,
                     )
                     raise
+            self.order_state_machine.observe(result.status)
             if result.status not in ("FILLED", "CANCELED", "EXPIRED", "REJECTED"):
                 self.order_state_uncertain = True
                 self.unresolved_client_order_id = client_id
@@ -638,6 +652,7 @@ class LiveExecutor:
             "last_order_latency_measured": getattr(self, "_last_order_latency_measured", False),
             "order_state_uncertain": self.order_state_uncertain,
             "unresolved_client_order_id": self.unresolved_client_order_id,
+            "order_state_machine": self.order_state_machine.snapshot(),
             "processed_exchange_trade_ids": sorted(self.processed_exchange_trade_ids),
             "processed_oco_list_ids": sorted(self.processed_oco_list_ids),
             "locked_base_quantity": self.locked_base_quantity,

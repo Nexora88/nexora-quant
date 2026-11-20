@@ -54,8 +54,8 @@ Only proceed toward live size after summaries look coherent (no runaway trade co
 1. Overnight paper — check logs for sequence gaps / `Database is locked`.
 2. Binance key: no withdrawals, IP whitelist.
 3. Prefer Tokyo host ([AWS_TOKYO.md](AWS_TOKYO.md)).
-4. `.env`: `TRADING_MODE=live`, keys, `BINANCE_TESTNET=false`, `LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY`.
-5. Restart service; confirm `mode=live` and fills / OCO in logs.
+4. Do not switch to mainnet until every gate in `INSTITUTIONAL_READINESS_SCORECARD.md` is evidenced and approved. A generic `.env` edit is not approval.
+5. Dedicated Spot Testnet only before that point; verify reconciliation, OCO, ambiguous-order recovery and cleanup.
 
 Details: [GO_LIVE_CHECKLIST.md](GO_LIVE_CHECKLIST.md), [deploy/](../deploy/).
 
@@ -76,3 +76,11 @@ python scripts/run_l2_backtest.py data/market-history.jsonl.gz --min-score 0.55
 - `LIVE BUY` / `OCO` (live only)
 - Kill switch / emergency flatten reasons
 - `io_queue_stats` under stress
+
+
+## 20 USDT sizing policy
+
+- Start with a 5 USDT candidate notional only when the selected symbol's current exchange filters permit it.
+- Keep at least 5 USDT uncommitted as a fee, partial-fill and recovery reserve in the initial paper/Testnet profile.
+- Scan multiple symbols, but rank only candidates with conservative fee-net edge; no-trade is a valid outcome.
+- The future portfolio ceiling is three concurrent positions, not unlimited. Live remains one position until shared cash reservation, per-symbol protection and full account reconciliation are implemented and proven.

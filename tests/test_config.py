@@ -116,3 +116,53 @@ def test_min_edge_env_above_safe_floor_is_preserved(monkeypatch):
 
     monkeypatch.setenv("MIN_EDGE_OVER_FEES", "2.5")
     assert _min_edge_over_fees() == 2.5
+
+
+def test_minimum_order_must_fit_order_cap():
+    with pytest.raises(ValueError, match="MIN_ORDER_USDT cannot exceed"):
+        Settings(
+            order_size_usdt=5,
+            min_order_usdt=6,
+            max_order_size_usdt=5,
+        ).validate()
+
+
+def test_minimum_order_and_fee_must_fit_starting_cash():
+    with pytest.raises(ValueError, match="Minimum order plus quote fee"):
+        Settings(starting_cash_usdt=5, min_order_usdt=5, fee_rate=0.001).validate()
+
+
+def test_20_usdt_live_profile_limits_are_internally_consistent():
+    settings = Settings(
+        trading_mode="live",
+        starting_cash_usdt=20,
+        order_size_usdt=5,
+        max_order_size_usdt=5,
+        min_order_usdt=5,
+        max_daily_loss_usdt=1,
+        max_daily_fee_usdt=0.15,
+        risk_per_trade_pct=0.25,
+        max_concurrent_positions=1,
+        binance_api_key="test-key",
+        binance_api_secret="test-secret",
+        binance_testnet=True,
+    ).validate()
+    assert settings.order_size_usdt <= settings.max_order_size_usdt
+    assert settings.max_order_size_usdt <= settings.starting_cash_usdt * 0.25
+
+
+def test_20_usdt_live_rejects_fee_budget_above_daily_loss():
+    with pytest.raises(ValueError, match="MAX_DAILY_FEE_USDT"):
+        Settings(
+            trading_mode="live",
+            starting_cash_usdt=20,
+            order_size_usdt=5,
+            max_order_size_usdt=5,
+            min_order_usdt=5,
+            max_daily_loss_usdt=0.10,
+            max_daily_fee_usdt=0.15,
+            risk_per_trade_pct=0.25,
+            binance_api_key="test-key",
+            binance_api_secret="test-secret",
+            binance_testnet=True,
+        ).validate()

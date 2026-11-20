@@ -36,20 +36,12 @@ BINANCE_API_SECRET=...
 ```
 Confirm OCO protect + flatten on a tiny notional.
 
-## 4. Small mainnet
-```env
-TRADING_MODE=live
-BINANCE_TESTNET=false
-LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY
-STARTING_CASH_USDT=30   # or your real free USDT
-MAX_ORDER_SIZE_USDT=15
-MAX_DAILY_LOSS_USDT=5
-MAX_CONCURRENT_POSITIONS=1
-```
-Phone: Binance app ready for manual flatten if network dies.
+## 4. Mainnet remains blocked until institutional gates pass
+
+Do not copy a generic mainnet .env block or enable mainnet based only on a successful unit-test run. Require the scorecard evidence: exact-commit CI green, Spot Testnet E2E green, at least 48 hours of durable paper evidence, fee-net positive OOS results across multiple regimes, exchange/ledger reconciliation, and an operator-reviewed kill-switch procedure. Until then, use PAPER or dedicated Spot Testnet only. If/when approved, use the actual free USDT balance and live symbol filters; never copy a fixed notional from this document.
 
 ## 5. Explicitly NOT yet
-- Multi-position concurrent books
+- Multi-position concurrent books (planned ceiling: at most three for a 20 USDT wallet, but live remains one until shared-wallet and per-symbol OCO reconciliation is proven)
 - Autonomous symbol switching in live mode (the live executor is bound to one configured symbol; other streams are scan-only)
 - Online learner updates in live mode (policy remains frozen until independent multi-regime validation)
 - HFT / co-lo competition (step 5: order-flow accumulation)
@@ -94,3 +86,8 @@ The script selects parameters on the training segment and evaluates only the sel
 - [ ] Run rolling multi-asset research with separate chronological CSVs covering trend, range, choppy and stressed periods; inspect worst-window drawdown and net results.
 - [ ] Reconcile a live account's free/locked balances, order lists, actual fills, commission assets and local ledger before any strategy order.
 - [ ] Keep the strategy learner frozen in mainnet. Do not promote weights from paper without a separate, reproducible out-of-sample approval process.
+
+
+## 10. 20 USDT account sizing reality
+
+The 20 USDT candidate profile is Testnet-first, with a 5 USDT order cap and a 5 USDT minimum-order assumption only as a placeholder. Binance symbol filters are authoritative and vary by symbol and order type. The scanner must reject any candidate whose exchange minimum, quantity step, fees, spread, and conservative slippage do not fit the available quote balance and net-edge threshold. Do not increase the cap automatically to satisfy a symbol minimum. A 20 USDT wallet does not justify unlimited concurrent orders: the intended future hard ceiling is three, with a cash/fee reserve; current live routing remains one position.
