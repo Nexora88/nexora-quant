@@ -332,3 +332,66 @@ class ReconciliationMonitor:
                     "differences": {"reconciliation_error": str(exc)},
                 })
             await asyncio.sleep(self.interval_seconds)
+
+class AccountLearningCoordinator:
+    """Persist one OnlineLearner per account; live learns only confirmed closes."""
+
+    def __init__(self, store: DualAccountStore, account_id: str, mode: str, learner: Any) -> None:
+        account = store.account(account_id)
+        if account["mode"] != mode:
+            raise ValueError("learner mode does not match its account")
+        self.store = store
+        self.account_id = account_id
+        self.mode = mode
+        self.learner = learner
+
+    def restore(self) -> bool:
+        state = self.store.load_learner_state(self.account_id)
+        if not state:
+            return False
+        self.learner.load_state(state)
+        return True
+
+    def persist(self) -> None:
+        self.store.save_learner_state(self.account_id, self.learner.export_state())
+
+    def record_closed_trade(
+        self, pnl_usdt: float, *, event_id: str, regime: str = "unknown",
+        reason: str = "", accounting_complete: bool, exchange_confirmed: bool,
+    ) -> bool:
+        if not accounting_complete:
+            return False
+        if self.mode == "live" and not exchange_confirmed:
+            raise ValueError("live learning requires an exchange-confirmed close")
+        pnl = _finite(pnl_usdt, "pnl_usdt")
+        previous = self.learner.export_state()
+        self.learner.record_trade(pnl, regime=regime, reason=reason)
+        state_json = json.dumps(
+            self.learner.export_state(), sort_keys=True, separators=(",", ":"), allow_nan=False,
+        )
+        payload = json.dumps(
+            {"pnl_usdt": pnl, "regime": regime, "reason": reason,
+             "accounting_complete": True, "exchange_confirmed": bool(exchange_confirmed)},
+            sort_keys=True, separators=(",", ":"), allow_nan=False,
+        )
+        try:
+            with self.store.db:
+                inserted = self.store.db.execute(
+                    """INSERT OR IGNORE INTO account_events
+                       (event_id,account_id,event_type,payload_json,created_at)
+                       VALUES(?,?,?,?,?)""",
+                    (event_id, self.account_id, "closed_trade", payload, _utc_now()),
+                ).rowcount
+                if not inserted:
+                    self.learner.load_state(previous)
+                    return False
+                self.store.db.execute(
+                    """INSERT INTO learner_states(account_id,state_json,updated_at)
+                       VALUES(?,?,?) ON CONFLICT(account_id) DO UPDATE SET
+                       state_json=excluded.state_json, updated_at=excluded.updated_at""",
+                    (self.account_id, state_json, _utc_now()),
+                )
+        except Exception:
+            self.learner.load_state(previous)
+            raise
+        return True
