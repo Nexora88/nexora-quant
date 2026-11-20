@@ -165,7 +165,7 @@ async def run() -> None:
         learner.load_state((saved or {}).get("learner"))
         state.learner_snapshot = learner.to_dict()
         # Prefer the account-scoped learner state; it cannot cross paper/live accounts.
-        account_learning.restore()
+        es.account_learning.restore()
         # A live account may load only an explicitly promoted, paper-origin strategy.
         if mode == "live":
             promoted = es.dual_account_store.active_strategy(es.account_id)
