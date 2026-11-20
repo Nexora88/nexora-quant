@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from app.config import settings
 from app.engine_setup import state, risk, log
 from app.storage import PaperStore
+from app.dual_account import ReconciliationMonitor
 from app.paper import restore_paper_account
 from app.io_queue import AsyncIoQueue
 from app.market_history import MarketHistoryWriter
@@ -317,6 +318,50 @@ async def run() -> None:
         else settings.symbol.lower()
     )
     trade_tasks: list[asyncio.Task] = []
+
+    if mode == "live":
+        async def _exchange_reconciliation_snapshot():
+            def _read_snapshots():
+                client = es.executor.client
+                account_payload = client.account()
+                balances = {
+                    str(item.get("asset", "")).upper(): item
+                    for item in account_payload.get("balances", [])
+                }
+                quote = balances.get(str(es.executor.quote_asset).upper(), {})
+                base = balances.get(str(es.executor.base_asset).upper(), {})
+                local_snapshot = {
+                    "cash_usdt": float(es.executor.cash_usdt),
+                    "base_quantity": float(es.executor.base_quantity),
+                    "open_order_count": (
+                        1 if getattr(es.executor, "protective_order_list_id", None) is not None else 0
+                    ),
+                }
+                exchange_snapshot = {
+                    "cash_usdt": float(quote.get("free", 0.0)),
+                    "base_quantity": float(base.get("free", 0.0)) + float(base.get("locked", 0.0)),
+                    "open_order_count": len(client.open_order_lists()),
+                }
+                return local_snapshot, exchange_snapshot
+
+            return await asyncio.to_thread(_read_snapshots)
+
+        def _reconciliation_mismatch(result: dict) -> None:
+            risk.activate_kill_switch("Recurring exchange/local account reconciliation failed")
+            state.last_error = "exchange_local_reconciliation_mismatch"
+            log.error("Live account reconciliation failed: %s", result)
+            persist()
+
+        monitor = ReconciliationMonitor(
+            es.dual_account_store,
+            es.account_id,
+            _exchange_reconciliation_snapshot,
+            _reconciliation_mismatch,
+            interval_seconds=float(os.getenv("RECONCILIATION_INTERVAL_SECONDS", "30")),
+        )
+        trade_tasks.append(
+            asyncio.create_task(monitor.run_forever(), name="live-account-reconciliation")
+        )
 
     async def _trade_pump(symbol: str) -> None:
         tracker = TradeFlowTracker(window_seconds=10.0, min_trades=20, max_age_seconds=2.5)
