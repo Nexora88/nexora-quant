@@ -11,15 +11,17 @@
 
 ## 1. Paper account: 20 USDT
 
-Copy .env.paper.example to .env for paper mode. It configures one 20 USDT bankroll, one open position, fee-aware simulated fills and an unfrozen paper learner. The learner changes bounded strategy preferences only after completed trade outcomes; repeated market ticks are not independent training labels.
+Copy .env.paper.example to a paper-specific env file. It configures one 20 USDT bankroll, one open position, fee-aware simulated fills and an unfrozen paper learner. Run this process on port 8000. Copy .env.live.example to a separate live-process env file; it defaults to Spot Testnet, uses a separate live SQLite ledger, a separate account learner and port 8001. Both processes may share only DUAL_ACCOUNT_DB_PATH for strategy metadata. Never point LIVE_DB_PATH and PAPER_DB_PATH at the same file. The learner changes bounded strategy preferences only after completed trade outcomes; repeated market ticks are not independent training labels.
 
-Run the paper service and retain its database and market-history files. Do not reset the database to make the evidence look better.
+Run the paper and live/Testnet services as separate processes with their respective env files and retain their databases. Do not reset either database to make evidence look better. The live profile is deliberately Testnet-only by default; it is not a mainnet authorization.
 
     uvicorn app.api:app --host 127.0.0.1 --port 8000
     # after the evidence window:
     PYTHONPATH=. python scripts/overnight_paper_check.py
 
 Minimum paper evidence for mainnet consideration is 168 continuous hours, at least 1,000 primary depth ticks, at least 50 fee-complete closed trades, and positive fee-net expectancy. The operator scorecard must additionally attest to drawdown below 8%, daily fees no greater than 0.75 USDT, zero unreported data/ledger gaps, multi-window out-of-sample results, Spot Testnet E2E success, exchange reconciliation and kill-switch review. These are minimum review gates, not a guarantee of future returns.
+
+To export a measured paper learner snapshot, prepare a scorecard from retained evidence and run `PYTHONPATH=. python scripts/strategy_registry.py publish --evidence-json /path/to/oos-scorecard.json`. Review the candidate, then explicitly promote it with `PYTHONPATH=. python scripts/strategy_registry.py promote --version STRATEGY_VERSION --i-approve-live-strategy`. The live process loads only the assigned version on startup. Roll back with `PYTHONPATH=. python scripts/strategy_registry.py rollback`. Candidate parameters are limited to entry threshold, size bias, TP scale and compounding preference; hard risk limits cannot be transferred. Live learning remains separate and records only exchange-confirmed, fee-complete closes.
 
 ## 2. Spot Testnet before any mainnet
 
@@ -76,7 +78,7 @@ The gate removes any prior approval stamp before checking and does not change tr
 - Public L2 does not expose hidden liquidity or matching-engine ordering.
 - Historical replay is not a complete exchange simulator.
 - The live executor remains single-symbol/single-position.
-- `app/dual_account.py` now provides account-ID-partitioned event/learner storage, paper-only versioned strategy candidates, operator-approved live assignment, rollback and a periodic reconciliation monitor. These are infrastructure primitives; the current engine's single global executor/learner has not yet been wired to run both account workers concurrently or to call these hooks on every fill. Do not treat the module's existence as proof of live dual-account operation.
+- Paper and live are now intended to run as separate engine processes with distinct default SQLite ledgers and account-scoped learner state; `app/dual_account.py` provides the shared strategy registry, explicit candidate promotion/rollback and a periodic reconciliation monitor primitive. The live close hook records only exchange-confirmed, fee-complete outcomes. The reconciliation monitor is not yet connected to the live executor's recurring exchange snapshot adapter, so continuous exchange/local reconciliation remains unfinished.
 - The 20 USDT live account has not been proven profitable or safe merely by configuration. Testnet and real account reconciliation remain mandatory.
 
 ## 6. Data retention
