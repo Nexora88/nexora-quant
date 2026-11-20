@@ -68,7 +68,7 @@ The gate removes any prior approval stamp before checking and does not change tr
 - Keep API withdrawals disabled and restrict keys by IP.
 - Use a conservative order cap, daily loss cap and fee cap appropriate to 20 USDT. The existing 20 USDT candidate profile is not a claim that all symbols can trade at its minimum notional.
 - Startup exchange reconciliation and OCO protection must fail closed. Any balance, fill, commission, open-order or local-ledger mismatch blocks new entries.
-- Do not enable live online weight adaptation until an independently reviewed promotion design exists. The live learner may collect/record closed-trade outcomes separately; it must not inherit paper PnL or mutate hard risk limits.
+- Live outcome learning must be account-scoped and accept only exchange-confirmed, fee-complete closed trades. The new storage primitives support this isolation, but engine integration is still pending. Neither learner may mutate hard risk limits.
 
 ## 5. Known limitations (must not be represented as closed)
 
@@ -76,7 +76,7 @@ The gate removes any prior approval stamp before checking and does not change tr
 - Public L2 does not expose hidden liquidity or matching-engine ordering.
 - Historical replay is not a complete exchange simulator.
 - The live executor remains single-symbol/single-position.
-- The current engine persists one learner under the mode/symbol state key; a fully isolated shared-knowledge promotion pipeline between two simultaneously running accounts is still an engineering item, not delivered by this checklist.
+- `app/dual_account.py` now provides account-ID-partitioned event/learner storage, paper-only versioned strategy candidates, operator-approved live assignment, rollback and a periodic reconciliation monitor. These are infrastructure primitives; the current engine's single global executor/learner has not yet been wired to run both account workers concurrently or to call these hooks on every fill. Do not treat the module's existence as proof of live dual-account operation.
 - The 20 USDT live account has not been proven profitable or safe merely by configuration. Testnet and real account reconciliation remain mandatory.
 
 ## 6. Data retention
