@@ -27,7 +27,7 @@
 2. **Foundation added, evidence enrichment pending:** versioned paper-only strategy snapshots, parameter allowlist, evidence checks, operator-approved live assignment and rollback exist in `app/dual_account.py`. Add market-data fingerprint, training window, fee assumptions, symbol/regime coverage and independently reproducible validation artifacts.
 3. Finish promotion validation against independently reproducible chronological out-of-sample artifacts; reject stale, incomplete, under-sampled or fee-negative candidates.
 4. **Implemented:** each worker persists its own learner state. Live adaptation is driven only by exchange-confirmed FILLED closes with complete fee accounting; paper outcomes are never copied into the live learner. Hard risk controls are not learnable.
-5. **Monitor primitive added, live adapter pending:** `ReconciliationMonitor` can periodically compare local and exchange snapshots and invoke a fail-closed callback. Connect it to the live executor's balance/fill/commission/open-order snapshots and kill switch.
+5. **Partially implemented:** live workers now reconcile free quote balance, total base balance and open OCO-list count with Binance every 30 seconds; mismatches and API failures activate the kill switch. Add full per-fill trade-history/commission reconciliation and coverage for non-OCO open orders.
 6. Complete manual Spot Testnet E2E, rolling multi-asset/multi-regime OOS evidence, dashboard-to-ledger reconciliation and operator kill-switch drills.
 
 ## Mainnet evidence policy
