@@ -88,6 +88,10 @@ python scripts/evaluate_profitability.py --data-dir data/ohlcv --train-bars 500 
 
 The runner selects parameters only on each training window, evaluates the next unseen window, and reports cross-asset worst windows and per-regime outcomes. Set `--annualization-periods` to match the candle interval (365 daily, 8760 hourly, 525600 one-minute). Results are historical diagnostics, not a forecast.
 
+### OpticOdds and Polymarket research
+
+Compare saved NBA moneyline snapshots with no-vig sportsbook references, size-aware Polymarket asks, and stale-data controls. This offline tool does not place orders or modify the Binance trading engine. See [the snapshot format and runnable example](docs/PREDICTION_MARKET_RESEARCH.md).
+
 ### Spot Testnet integration
 
 The normal test suite deliberately skips real network orders. For the isolated, bounded Spot Testnet lifecycle test, add dedicated Testnet-only GitHub Actions secrets and manually run `.github/workflows/spot-testnet-e2e.yml`. The test caps the test order at 25 USDT and will refuse a competing cleanup sell unless the OCO is confirmed terminal. Do not use mainnet keys.

@@ -1,0 +1,72 @@
+{
+  "match": {
+    "opticodds_fixture_id": "synthetic-nba-001",
+    "opticodds_odds_format": "DECIMAL",
+    "polymarket_slug": "synthetic-nba-comets-meteors",
+    "outcome_to_opticodds_team": {
+      "Meteors": "Example Meteors",
+      "Comets": "Example Comets"
+    },
+    "polymarket_resolution_rules": "On a completed game, settle using the final score including overtime. If the game has no result, settle 50-50.",
+    "settlement_review": "Synthetic example: normal completed-game winner (including overtime) matches. Sportsbooks void no-result games; Polymarket can settle 50-50, so this comparison excludes those states."
+  },
+  "opticodds": {
+    "data": [{
+      "id": "synthetic-nba-001",
+      "league": {"id": "nba"},
+      "home_competitors": [{"name": "Example Comets"}],
+      "away_competitors": [{"name": "Example Meteors"}],
+      "status": "unplayed",
+      "is_live": false,
+      "start_date": "2026-01-01T01:00:00Z",
+      "odds": [
+        {"id": "a-comets", "sportsbook": "Example Book A", "selection": "Example Comets", "market_id": "moneyline", "is_main": true, "grouping_key": "default", "price": 1.80, "timestamp": 1767225590},
+        {"id": "a-meteors", "sportsbook": "Example Book A", "selection": "Example Meteors", "market_id": "moneyline", "is_main": true, "grouping_key": "default", "price": 2.10, "timestamp": 1767225590},
+        {"id": "b-comets", "sportsbook": "Example Book B", "selection": "Example Comets", "market_id": "moneyline", "is_main": true, "grouping_key": "default", "price": 1.85, "timestamp": 1767225592},
+        {"id": "b-meteors", "sportsbook": "Example Book B", "selection": "Example Meteors", "market_id": "moneyline", "is_main": true, "grouping_key": "default", "price": 2.05, "timestamp": 1767225592}
+      ]
+    }]
+  },
+  "polymarket_market": {
+    "retrieved_at": "2025-12-31T23:59:45Z",
+    "is_stale": false,
+    "data": [{
+      "slug": "synthetic-nba-comets-meteors",
+      "conditionId": "0xsynthetic",
+      "sportsMarketType": "moneyline",
+      "gameStartTime": "2026-01-01 01:00:00+00",
+      "active": true,
+      "closed": false,
+      "acceptingOrders": true,
+      "description": "On a completed game, settle using the final score including overtime. If the game has no result, settle 50-50.",
+      "outcomes": "[\"Meteors\", \"Comets\"]",
+      "clobTokenIds": "[\"2301\", \"1234567890123456789012345678901234567890\"]"
+    }]
+  },
+  "polymarket_books": [
+    {
+      "retrieved_at": "2025-12-31T23:59:56Z",
+      "is_stale": false,
+      "data": {
+        "asset_id": "1234567890123456789012345678901234567890",
+        "market": "0xsynthetic",
+        "timestamp": "1767225595000",
+        "min_order_size": "5",
+        "bids": [{"price": "0.50", "size": "20"}, {"price": "0.47", "size": "80"}],
+        "asks": [{"price": "0.53", "size": "25"}, {"price": "0.51", "size": "4"}]
+      }
+    },
+    {
+      "retrieved_at": "2025-12-31T23:59:57Z",
+      "is_stale": false,
+      "data": {
+        "asset_id": "2301",
+        "market": "0xsynthetic",
+        "timestamp": "1767225596000",
+        "min_order_size": "5",
+        "bids": [{"price": "0.47", "size": "45"}],
+        "asks": [{"price": "0.49", "size": "18"}]
+      }
+    }
+  ]
+}
