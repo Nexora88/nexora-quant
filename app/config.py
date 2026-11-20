@@ -102,7 +102,11 @@ class Settings:
     simulated_latency_ms: int = int(os.getenv("SIMULATED_LATENCY_MS", "50"))
     simulated_partial_fill_probability: float = _float("SIMULATED_PARTIAL_FILL_PROBABILITY", 0.0)
     simulation_seed: int = int(os.getenv("SIMULATION_SEED", "0"))
-    store_path: str = (\n        os.getenv("LIVE_DB_PATH", "data/live.sqlite3")\n        if os.getenv("TRADING_MODE", "paper").strip().lower() == "live"\n        else os.getenv("PAPER_DB_PATH", "data/paper.sqlite3")\n    )
+    store_path: str = (
+        os.getenv("LIVE_DB_PATH", "data/live.sqlite3")
+        if os.getenv("TRADING_MODE", "paper").strip().lower() == "live"
+        else os.getenv("PAPER_DB_PATH", "data/paper.sqlite3")
+    )
     market_history_path: str = os.getenv("MARKET_HISTORY_PATH", "data/market-history.jsonl.gz")
     log_level: str = os.getenv("LOG_LEVEL", "INFO").upper()
     binance_api_key: str = os.getenv("BINANCE_API_KEY", "")
