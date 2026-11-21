@@ -111,7 +111,9 @@ def test_paper_mode_remains_default_without_credentials() -> None:
 
 
 
-def test_testnet_and_mainnet_live_ledgers_are_isolated() -> None:
+def test_testnet_and_mainnet_live_ledgers_are_isolated(tmp_path) -> None:
+    stamp = tmp_path / "GO_LIVE_OK"
+    _approval_stamp(stamp)
     for testnet, expected in (
         ("true", "data/live-testnet.sqlite3"),
         ("false", "data/live.sqlite3"),
@@ -125,6 +127,8 @@ def test_testnet_and_mainnet_live_ledgers_are_isolated() -> None:
             "BINANCE_TESTNET": testnet,
             "BINANCE_API_KEY": "test-key",
             "BINANCE_API_SECRET": "test-secret",
+            "LIVE_CONFIRM": "I_UNDERSTAND_REAL_MONEY",
+            "GO_LIVE_STAMP_PATH": str(stamp),
         })
         result = subprocess.run(
             [sys.executable, "-c",
