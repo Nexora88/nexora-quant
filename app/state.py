@@ -43,6 +43,9 @@ class RuntimeState:
         self.trade_symbol: str | None = None
         self.side_books: dict = {}
         self.router_board: list = []
+        self.symbol_diagnostics: dict[str, dict[str, Any]] = {}
+        self.symbol_runtime_state: dict[str, dict[str, Any]] = {}
+        self.last_entry_eligible: bool = False
         self.position_tp_pct: float | None = None
         self.position_sl_pct: float | None = None
         self.position_trail_pct: float | None = None
@@ -524,6 +527,7 @@ class RuntimeState:
             "depth_watch": list(self.depth_watch)[:12],
             "scan_board": scan_board,
             "router_board": list(self.router_board)[:12],
+            "symbol_diagnostics": {k: dict(v) for k, v in self.symbol_diagnostics.items()},
             "paused": bool(self.paused),
             "peak_equity": self.peak_equity,
             "max_drawdown_pct": round(dd_pct, 3),

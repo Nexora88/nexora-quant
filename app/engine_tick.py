@@ -6,6 +6,7 @@ Loader wraps handle_tick with TARGET_EQUITY soft-halt and paper milestones.
 from __future__ import annotations
 
 import time
+from copy import deepcopy
 from dataclasses import asdict
 
 from app.order_flow import FlowPressure
@@ -27,7 +28,9 @@ def _analyze_with_persistent_depth(**kwargs):
     analysis = _base_analyze_market(**kwargs)
     bids = kwargs.get("bids") or []
     asks = kwargs.get("asks") or []
-    report = _spoof_filter.update(bids, asks)
+    symbol = str(getattr(_runtime_state, "trade_symbol", None) or "unknown").lower()
+    spoof_filter = _symbol_spoof_filters.get(symbol, _spoof_filter)
+    report = spoof_filter.update(bids, asks)
     _runtime_state.last_depth_quality = {
         "spoof_score": report.spoof_score,
         "stable_bid_usdt": report.stable_bid_usdt,
@@ -237,8 +240,94 @@ def _exit_with_net_profit_lock(**kwargs):
 _ns["exit_reason"] = _exit_with_net_profit_lock
 
 
+# Per-symbol rolling state: never let BTC prices/OBI contaminate another asset.
+_symbol_contexts = {}
+_symbol_order_flows = {}
+_symbol_spoof_filters = {}
+_active_symbol_key = None
+_SYMBOL_RUNTIME_FIELDS = (
+    "last_analysis", "last_signal", "last_decision", "decision_history",
+    "score_history", "score_ema", "_score_ema_seeded", "last_flow",
+    "last_book_flow", "last_trade_flow", "last_depth_quality",
+    "last_market_indicators", "last_macro_context", "blockers_live",
+    "last_entry_eligible", "motor_report",
+)
+
+
+def _activate_symbol_context(symbol: str) -> None:
+    from app.strategy import PriceWindow
+    from app.analytics.microstructure import OrnsteinUhlenbeckTracker
+    from app.analytics.regime import RegimeClassifier
+    from app.analytics.walls import WallTracker
+    from app.order_flow import OrderFlowAccumulator
+    from app.atr_stops import AtrTracker
+    from app.analytics.sustained import SustainedSignalGate
+    from app.intelligence.adverse import AdverseSelectionFilter
+    from app.intelligence.whale import WhaleTracker
+    from app.intelligence.spoof import OrderPersistenceFilter
+    from app.config import settings
+
+    global _active_symbol_key
+    key = str(symbol or settings.symbol).lower()
+    if _active_symbol_key and _active_symbol_key != key:
+        saved = {}
+        for field in _SYMBOL_RUNTIME_FIELDS:
+            if hasattr(_runtime_state, field):
+                saved[field] = deepcopy(getattr(_runtime_state, field))
+        _runtime_state.symbol_runtime_state[_active_symbol_key] = saved
+    saved = _runtime_state.symbol_runtime_state.get(key)
+    if saved is not None:
+        for field in _SYMBOL_RUNTIME_FIELDS:
+            if field in saved:
+                setattr(_runtime_state, field, deepcopy(saved[field]))
+    else:
+        from collections import deque
+        defaults = {
+            "last_analysis": None, "last_signal": None, "last_decision": None,
+            "decision_history": deque(maxlen=50), "score_history": deque(maxlen=180),
+            "score_ema": 0.0, "_score_ema_seeded": False, "last_flow": None,
+            "last_book_flow": None, "last_trade_flow": None, "last_depth_quality": None,
+            "last_market_indicators": None, "last_macro_context": None,
+            "blockers_live": [], "last_entry_eligible": False, "motor_report": None,
+        }
+        for field, value in defaults.items():
+            setattr(_runtime_state, field, deepcopy(value))
+    _active_symbol_key = key
+    ctx = _symbol_contexts.get(key)
+    if ctx is None:
+        ctx = {
+            "price_window": PriceWindow(maxlen=1200, sample_interval_seconds=0.5),
+            "ou_tracker": OrnsteinUhlenbeckTracker(maxlen=300, z_entry=2.0),
+            "regime_clf": RegimeClassifier(),
+            "wall_tracker": WallTracker(levels=15, multiple=3.0),
+            "atr_tracker": AtrTracker(period=28),
+            "sustained": SustainedSignalGate(
+                min_confirmations=max(1, int(settings.signal_confirmations)),
+                min_hold_seconds=1.5,
+                min_score=float(settings.entry_min_score),
+            ),
+            "adverse_filter": AdverseSelectionFilter(),
+            "whale_tracker": WhaleTracker(multiple=4.0, persist_ticks=5),
+            "spoof_filter": OrderPersistenceFilter(min_persist_ms=1500.0),
+            "order_flow": OrderFlowAccumulator(
+                hold_seconds=1.8, min_samples=7, min_abs_pressure=0.14
+            ),
+        }
+        _symbol_contexts[key] = ctx
+        _symbol_spoof_filters[key] = ctx["spoof_filter"]
+        _symbol_order_flows[key] = _TradeConfirmedOrderFlow(ctx["order_flow"])
+    # The body module resolves these names from its module globals on each tick.
+    for name, value in ctx.items():
+        if name != "spoof_filter":
+            _ns[name] = value
+    _ns["order_flow"] = _symbol_order_flows[key]
+
+
 async def handle_tick(depth, store, history, features, mode, key, persist, confirmations, ticks):
     """Core tick + soft equity goal halt (new entries only; exits still run)."""
+    from app.config import settings as _settings
+    symbol = str(getattr(_runtime_state, "trade_symbol", None) or _settings.symbol).lower()
+    _activate_symbol_context(symbol)
     try:
         from app.config import settings
         from app.goal import evaluate_goal, paper_milestones
@@ -300,9 +389,49 @@ async def handle_tick(depth, store, history, features, mode, key, persist, confi
     except Exception:
         pass
 
-    return await _inner_handle_tick(
+    result = await _inner_handle_tick(
         depth, store, history, features, mode, key, persist, confirmations, ticks
     )
+    # Keep a compact, per-coin explanation for the dashboard instead of exposing
+    # only whichever symbol happened to be processed most recently.
+    try:
+        diagnostics = getattr(_runtime_state, "symbol_diagnostics", None)
+        if diagnostics is None:
+            diagnostics = {}
+            _runtime_state.symbol_diagnostics = diagnostics
+        analysis = getattr(_runtime_state, "last_analysis", None) or {}
+        decision = getattr(_runtime_state, "last_decision", None) or {}
+        diagnostics[symbol] = {
+            "symbol": symbol,
+            "score": analysis.get("score") if isinstance(analysis, dict) else None,
+            "regime": analysis.get("regime") if isinstance(analysis, dict) else None,
+            "action": decision.get("action") if isinstance(decision, dict) else None,
+            "entry_eligible": bool(getattr(_runtime_state, "last_entry_eligible", False)),
+            "blockers": list(getattr(_runtime_state, "blockers_live", []) or [])[:12],
+            "flow": dict(getattr(_runtime_state, "last_flow", None) or {}),
+            "indicators": dict(getattr(_runtime_state, "last_market_indicators", None) or {}),
+            "updated_at": time.time(),
+        }
+        router = getattr(__import__("app.engine_setup", fromlist=["symbol_router"]), "symbol_router", None)
+        if router is not None and isinstance(analysis, dict):
+            router.update_analysis(
+                symbol,
+                score=float(decision.get("score", analysis.get("score", 0.0)) or 0.0),
+                regime=str(decision.get("regime", analysis.get("regime", "unknown")) or "unknown"),
+                spoof_score=float((getattr(_runtime_state, "last_depth_quality", None) or {}).get("spoof_score", 0.0) or 0.0),
+                btc_blocked=bool(getattr(_runtime_state, "btc_block", False)),
+                reasons=list(getattr(decision, "get", lambda *_: [])("blockers", []) or []),
+                entry_ready=bool(getattr(_runtime_state, "last_entry_eligible", False)),
+            )
+            _runtime_state.router_board = router.leaderboard()
+        saved = {}
+        for field in _SYMBOL_RUNTIME_FIELDS:
+            if hasattr(_runtime_state, field):
+                saved[field] = deepcopy(getattr(_runtime_state, field))
+        _runtime_state.symbol_runtime_state[symbol] = saved
+    except Exception:
+        pass
+    return result
 
 
 __all__ = ["handle_tick"]

@@ -472,10 +472,9 @@ async def run() -> None:
                         state.side_books = board
                         imb = (bq / (bq + aq)) if (bq + aq) > 0 else 0.5
                         rough = max(0.0, min(1.0, 0.45 + (imb - 0.5) * 1.2 - min(spread_bps, 25) / 80.0))
-                        es.symbol_router.update(
+                        es.symbol_router.update_scan(
                             sym,
                             score=rough,
-                            regime="scan",
                             depth_usdt=mid * min(bq, aq) * 2.0 if mid else 0.0,
                             liquid=spread_bps < 25.0,
                             reasons=[f"scan_obi={imb:.2f}"],
@@ -488,7 +487,13 @@ async def run() -> None:
                             and float(getattr(es.executor, "base_quantity", 0) or 0) <= 0
                         ):
                             best = es.symbol_router.select_best()
-                            if best and best.symbol != primary and best.score >= float(settings.entry_min_score):
+                            candidate_score = (
+                                best.score if best and best.analysis_confirmed
+                                else (best.scan_score if best and best.scan_score is not None else (best.score if best else 0.0))
+                            )
+                            if best and best.symbol != primary and (
+                                best.entry_ready or candidate_score >= float(settings.entry_min_score)
+                            ):
                                 primary = best.symbol
                                 state.trade_symbol = primary
                                 log.info("Router switch → %s score=%.2f", primary.upper(), best.score)
