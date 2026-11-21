@@ -54,3 +54,68 @@ def test_oco_market_stop_omits_stop_limit_fields(monkeypatch):
     assert params["belowType"] == "STOP_LOSS"
     assert params["belowStopPrice"] == "90"
     assert "belowPrice" not in params and "belowTimeInForce" not in params
+
+
+
+def test_rest_helpers_cover_live_startup_and_testnet_workflow(monkeypatch):
+    client = BinanceRestClient(api_key="key", api_secret="secret", testnet=True)
+    calls = []
+
+    def fake_request(method, path, params=None, *, signed=False):
+        calls.append((method, path, params, signed))
+        if path == "/api/v3/ping":
+            return {}
+        if path == "/api/v3/exchangeInfo":
+            return {"symbols": [{"symbol": "BTCUSDT", "baseAsset": "BTC", "filters": []}]}
+        if path == "/api/v3/account":
+            return {"balances": [{"asset": "USDT", "free": "12.5", "locked": "1"}]}
+        if path == "/api/v3/openOrders":
+            return [{"orderId": 7, "symbol": "BTCUSDT", "status": "NEW"}]
+        if path == "/api/v3/order":
+            return {
+                "orderId": 7, "clientOrderId": "nq-7", "symbol": "BTCUSDT",
+                "side": "BUY", "status": "FILLED", "executedQty": "1",
+                "cummulativeQuoteQty": "10", "fills": [],
+            }
+        raise AssertionError(path)
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    assert client.ping() is True
+    assert client.exchange_info_symbol("btcusdt")["baseAsset"] == "BTC"
+    assert client.free_balance("usdt") == pytest.approx(12.5)
+    assert client.open_orders("btcusdt")[0]["orderId"] == 7
+    assert client.get_order_by_client_id("btcusdt", "nq-7").order_id == 7
+    assert calls[0] == ("GET", "/api/v3/ping", None, False)
+    assert calls[1] == ("GET", "/api/v3/exchangeInfo", {"symbol": "BTCUSDT"}, False)
+    assert calls[3] == ("GET", "/api/v3/openOrders", {"symbol": "BTCUSDT"}, True)
+
+
+def test_all_orders_and_my_trades_paginate_without_skipping_ids(monkeypatch):
+    client = BinanceRestClient(api_key="key", api_secret="secret", testnet=True)
+    calls = []
+
+    def fake_request(method, path, params=None, *, signed=False):
+        calls.append((path, dict(params or {})))
+        if path == "/api/v3/allOrders":
+            if params.get("orderId", 0) == 0:
+                return [{"orderId": 10}, {"orderId": 11}]
+            return [{"orderId": 12}]
+        if path == "/api/v3/myTrades":
+            if params.get("fromId", 0) == 0:
+                return [{"id": 20}, {"id": 21}]
+            return [{"id": 22}]
+        raise AssertionError(path)
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    orders = client.all_orders("BTCUSDT", limit=2)
+    trades = client.all_my_trades("BTCUSDT", limit=2)
+    assert [item["orderId"] for item in orders] == [10, 11, 12]
+    assert [item["id"] for item in trades] == [20, 21, 22]
+    assert calls[1] == ("/api/v3/allOrders", {"symbol": "BTCUSDT", "limit": 2, "orderId": 12})
+    assert calls[3] == ("/api/v3/myTrades", {"symbol": "BTCUSDT", "limit": 2, "fromId": 22})
+
+
+def test_all_order_lists_plural_alias(monkeypatch):
+    client = BinanceRestClient(api_key="key", api_secret="secret", testnet=True)
+    monkeypatch.setattr(client, "all_order_list", lambda **kwargs: [{"orderListId": 1}])
+    assert client.all_order_lists(limit=25) == [{"orderListId": 1}]

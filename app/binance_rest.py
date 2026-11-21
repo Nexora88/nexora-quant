@@ -116,6 +116,117 @@ class BinanceRestClient:
             setattr(exc, "binance_body", err_body)
             raise
 
+    def ping(self) -> bool:
+        """Verify reachability of the configured Spot endpoint."""
+        self._request("GET", "/api/v3/ping")
+        return True
+
+    def exchange_info_symbol(self, symbol: str) -> dict[str, Any]:
+        """Return one symbol's exchange filters or fail closed if it is absent."""
+        if not symbol or not symbol.isalnum():
+            raise ValueError("invalid symbol")
+        payload = self.exchange_info(symbol.upper())
+        matches = [
+            item for item in payload.get("symbols", [])
+            if str(item.get("symbol", "")).upper() == symbol.upper()
+        ]
+        if len(matches) != 1:
+            raise RuntimeError(f"Binance exchangeInfo did not return exactly one {symbol} symbol")
+        return matches[0]
+
+    def free_balance(self, asset: str) -> float:
+        """Return exchange-reported free balance for one asset."""
+        name = str(asset or "").upper()
+        if not name or not name.isalnum():
+            raise ValueError("invalid asset")
+        payload = self.account()
+        for item in payload.get("balances", []):
+            if str(item.get("asset", "")).upper() == name:
+                value = float(item.get("free", 0) or 0)
+                if value < 0:
+                    raise RuntimeError(f"Binance returned a negative free balance for {name}")
+                return value
+        return 0.0
+
+    def open_orders(self, symbol: str | None = None) -> list[dict[str, Any]]:
+        """List every currently open ordinary order (including OCO child orders)."""
+        params: dict[str, Any] = {}
+        if symbol:
+            if not symbol.isalnum():
+                raise ValueError("invalid symbol")
+            params["symbol"] = symbol.upper()
+        raw = self._request("GET", "/api/v3/openOrders", params, signed=True)
+        if not isinstance(raw, list):
+            raise RuntimeError("Unexpected openOrders response")
+        return raw
+
+    def get_order_by_client_id(self, symbol: str, client_order_id: str) -> OrderResult:
+        """Resolve an order submission by its original client ID without resubmitting."""
+        if not symbol.isalnum() or not client_order_id:
+            raise ValueError("symbol and client_order_id are required")
+        raw = self._request(
+            "GET", "/api/v3/order",
+            {"symbol": symbol.upper(), "origClientOrderId": client_order_id},
+            signed=True,
+        )
+        if not isinstance(raw, dict):
+            raise RuntimeError("Unexpected order-by-client-id response")
+        return _parse_order(raw)
+
+    def all_orders(
+        self, symbol: str, *, from_id: int = 0, limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """Fetch complete symbol order history using Binance order-ID pagination."""
+        if not symbol or not symbol.isalnum():
+            raise ValueError("invalid symbol")
+        if not 1 <= limit <= 1000 or from_id < 0:
+            raise ValueError("from_id must be nonnegative and limit must be in 1..1000")
+        result: list[dict[str, Any]] = []
+        cursor: int | None = from_id
+        for _ in range(10000):
+            params: dict[str, Any] = {"symbol": symbol.upper(), "limit": limit}
+            if cursor is not None:
+                params["orderId"] = cursor
+            batch = self._request("GET", "/api/v3/allOrders", params, signed=True)
+            if not isinstance(batch, list):
+                raise RuntimeError("Unexpected allOrders response")
+            result.extend(batch)
+            if len(batch) < limit:
+                return result
+            ids = [int(item.get("orderId", 0)) for item in batch]
+            next_id = max(ids, default=0) + 1
+            if next_id <= (cursor or -1):
+                raise RuntimeError("allOrders pagination did not advance")
+            cursor = next_id
+        raise RuntimeError("allOrders history exceeded pagination safety limit")
+
+    def all_my_trades(
+        self, symbol: str, *, from_id: int = 0, limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """Fetch complete per-symbol fills, retaining exchange commission assets."""
+        if not symbol or not symbol.isalnum():
+            raise ValueError("invalid symbol")
+        if not 1 <= limit <= 1000 or from_id < 0:
+            raise ValueError("from_id must be nonnegative and limit must be in 1..1000")
+        result: list[dict[str, Any]] = []
+        cursor: int | None = from_id
+        for _ in range(10000):
+            params: dict[str, Any] = {"symbol": symbol.upper(), "limit": limit}
+            if cursor is not None:
+                params["fromId"] = cursor
+            batch = self._request("GET", "/api/v3/myTrades", params, signed=True)
+            if not isinstance(batch, list):
+                raise RuntimeError("Unexpected myTrades response")
+            result.extend(batch)
+            if len(batch) < limit:
+                return result
+            ids = [int(item.get("id", -1)) for item in batch]
+            next_id = max(ids, default=-1) + 1
+            if next_id <= (cursor if cursor is not None else -1):
+                raise RuntimeError("myTrades pagination did not advance")
+            cursor = next_id
+        raise RuntimeError("myTrades history exceeded pagination safety limit")
+
     def exchange_info(self, symbol: str | None = None) -> dict[str, Any]:
         params: dict[str, Any] = {}
         if symbol:
@@ -330,3 +441,7 @@ class BinanceRestClient:
                 raise RuntimeError("allOrderList pagination did not advance")
             from_id = next_id
         raise RuntimeError("allOrderList history may be truncated; reconciliation blocked")
+
+    def all_order_lists(self, *, from_id: int | None = None, limit: int = 500) -> list[dict[str, Any]]:
+        """Plural compatibility alias used by Testnet recovery and audits."""
+        return self.all_order_list(from_id=from_id, limit=limit)
