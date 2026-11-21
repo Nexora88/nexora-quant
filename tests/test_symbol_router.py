@@ -108,7 +108,8 @@ def test_scan_score_only_selects_a_candidate_and_full_analysis_controls_entry():
     candidate = r.select_best()
     assert candidate is not None and candidate.symbol == "solusdt"
 
-    # A full positive decision, not the scan score, makes a coin entry-selectable.
+    # A stronger raw scan score cannot displace a symbol approved by full analysis.
+    r.update_scan("bnbusdt", score=0.99, liquid=True, reasons=["scan_obi=1.00"])
     r.update_analysis("solusdt", score=0.64, regime="trend", entry_ready=True)
     best = r.select_best()
     assert best is not None and best.symbol == "solusdt"
