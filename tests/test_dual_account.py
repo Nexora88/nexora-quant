@@ -163,3 +163,33 @@ def test_reconciliation_monitor_invokes_fail_closed_callback_on_drift(tmp_path):
         assert seen[0]["differences"]["cash_usdt"]["delta"] == 1.0
     finally:
         store.close()
+
+
+def test_paper_and_live_learning_coordinators_do_not_share_outcomes(tmp_path):
+    from app.intelligence.learner import OnlineLearner
+    from app.dual_account import AccountLearningCoordinator
+
+    store = setup_store(tmp_path)
+    try:
+        paper_learner = OnlineLearner(frozen=False, min_trades_before_adapt=1)
+        live_learner = OnlineLearner(frozen=False, min_trades_before_adapt=1)
+        paper = AccountLearningCoordinator(store, "paper-main", "paper", paper_learner)
+        live = AccountLearningCoordinator(store, "live-main", "live", live_learner)
+
+        assert paper.record_closed_trade(
+            0.2, event_id="paper-close-1", accounting_complete=True,
+            exchange_confirmed=False,
+        )
+        assert paper_learner.to_dict()["lifetime_trades"] == 1
+        assert live_learner.to_dict()["lifetime_trades"] == 0
+        assert store.load_learner_state("paper-main")["lifetime_trades"] == 1
+        assert store.load_learner_state("live-main") is None
+
+        with pytest.raises(ValueError):
+            live.record_closed_trade(
+                -0.1, event_id="unconfirmed-live-close", accounting_complete=True,
+                exchange_confirmed=False,
+            )
+        assert live_learner.to_dict()["lifetime_trades"] == 0
+    finally:
+        store.close()
