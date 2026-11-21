@@ -289,6 +289,7 @@ class DualAccountStore:
             "unmatched_local_order_count": 0.0,
             "unknown_open_order_count": 0.0,
             "unpriced_commission_count": 0.0,
+            "fee_asset_mismatch_count": 0.0,
         })
         differences: dict[str, dict[str, float]] = {}
         for key, tolerance in tolerances.items():
