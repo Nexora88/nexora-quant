@@ -130,12 +130,14 @@ account_learning = AccountLearningCoordinator(
 )
 memory = TradeMemory(capacity=200)
 sustained = SustainedSignalGate(
+    # Autonomous routing still needs multi-tick confirmation; it may not
+    # bypass the anti-spoof/anti-flash entry gate.
     min_confirmations=(
-        max(1, settings.signal_confirmations)
+        max(settings.signal_confirmations, 3)
         if getattr(settings, "autonomous_mode", True)
         else max(settings.signal_confirmations, 4)
     ),
-    min_hold_seconds=(1.5 if getattr(settings, "autonomous_mode", True) else 2.0),
+    min_hold_seconds=2.0,
     min_score=float(settings.entry_min_score),
 )
 
