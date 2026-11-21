@@ -149,3 +149,14 @@ def test_local_trade_ledger_rejects_non_advancing_pagination():
 
     with pytest.raises(RuntimeError, match="did not advance"):
         load_local_trade_ledger(Store())
+
+
+
+def test_native_commission_asset_delta_is_detected_even_when_order_ids_match():
+    result = audit(local_trade_rows=[{"trade": {
+        "exchange_order_id": 11,
+        "commission_by_asset": {"USDT": 0.11},
+        "commission_usdt_by_asset": {"USDT": 0.11},
+        "accounting_complete": True,
+    }}], local_fees_usdt=0.11)
+    assert result["exchange"]["fee_asset_mismatch_count"] == 1
