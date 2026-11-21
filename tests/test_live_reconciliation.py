@@ -14,7 +14,9 @@ def audit(**overrides):
         "exchange_base": 0.1,
         "local_fees_usdt": 0.12,
         "expected_oco_list_id": 8,
-        "local_trade_rows": [{"trade": {"exchange_order_id": 11, "fee_usdt": 0.12}}],
+        "local_trade_rows": [{"trade": {"exchange_order_id": 11, "fee_usdt": 0.12,
+            "commission_by_asset": {"USDT": 0.12},
+            "commission_usdt_by_asset": {"USDT": 0.12}}}],
         "executor_trades": [],
         "exchange_orders": [{"symbol": "BTCUSDT", "orderId": 11, "status": "FILLED"}],
         "exchange_trades": [{
@@ -61,7 +63,9 @@ def test_local_order_missing_from_exchange_history_is_a_hard_mismatch():
 def test_base_asset_commission_is_valued_at_fill_price():
     result = audit(
         local_fees_usdt=0.01,
-        local_trade_rows=[{"trade": {"exchange_order_id": 11, "fee_usdt": 0.01}}],
+        local_trade_rows=[{"trade": {"exchange_order_id": 11, "fee_usdt": 0.01,
+         "commission_by_asset": {"BTC": 0.0001},
+         "commission_usdt_by_asset": {"BTC": 0.01}}}],
         exchange_trades=[{
             "symbol": "BTCUSDT", "id": 2, "orderId": 11, "price": "100",
             "qty": "0.1", "commission": "0.0001", "commissionAsset": "BTC",
@@ -73,7 +77,9 @@ def test_base_asset_commission_is_valued_at_fill_price():
 def test_third_asset_commission_uses_exchange_conversion_price():
     result = audit(
         local_fees_usdt=0.03,
-        local_trade_rows=[{"trade": {"exchange_order_id": 11, "fee_usdt": 0.03}}],
+        local_trade_rows=[{"trade": {"exchange_order_id": 11, "fee_usdt": 0.03,
+         "commission_by_asset": {"BNB": 0.0001},
+         "commission_usdt_by_asset": {"BNB": 0.03}}}],
         exchange_trades=[{
             "symbol": "BTCUSDT", "id": 3, "orderId": 11, "price": "100",
             "qty": "0.1", "commission": "0.0001", "commissionAsset": "BNB",
