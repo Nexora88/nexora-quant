@@ -35,7 +35,11 @@ from app import engine_setup as es
 async def run() -> None:
     es.executor = es._build_executor()
     state.executor = es.executor
-    store = PaperStore(settings.store_path)
+    # Live fills use synchronous SQLite commits; paper retains the async hot path.
+    store = PaperStore(
+        settings.store_path,
+        async_writes=(settings.trading_mode != "live"),
+    )
     io_q = AsyncIoQueue(store)
     io_q.start()
     hist_on = bool(getattr(settings, "market_history_enabled", False))
@@ -494,20 +498,24 @@ async def run() -> None:
             trade_count_before = (
                 len(getattr(es.executor, "trades", []) or []) if mode == "live" else 0
             )
-            confirmations, ticks = await handle_tick(
-                depth, store, history, features, mode, key, persist, confirmations, ticks,
-            )
-            if mode == "live":
-                new_trades = (getattr(es.executor, "trades", []) or [])[trade_count_before:]
-                for trade in new_trades:
-                    order_id = trade.get("exchange_order_id")
-                    venue = "testnet" if bool(getattr(es.executor.client, "testnet", False)) else "mainnet"
-                    event_key = (
-                        f"live:{venue}:{es.executor.symbol}:{order_id}"
-                        if order_id is not None
-                        else f"live:{venue}:{es.executor.symbol}:{trade.get('timestamp')}:{trade.get('side')}"
-                    )
-                    io_q.enqueue_trade(trade, event_key=event_key)
+            try:
+                confirmations, ticks = await handle_tick(
+                    depth, store, history, features, mode, key, persist, confirmations, ticks,
+                )
+            finally:
+                if mode == "live":
+                    # Commit exchange-confirmed fills synchronously, even if later
+                    # tick processing raises after an order was already executed.
+                    new_trades = (getattr(es.executor, "trades", []) or [])[trade_count_before:]
+                    for trade in new_trades:
+                        order_id = trade.get("exchange_order_id")
+                        venue = "testnet" if bool(getattr(es.executor.client, "testnet", False)) else "mainnet"
+                        event_key = (
+                            f"live:{venue}:{es.executor.symbol}:{order_id}"
+                            if order_id is not None
+                            else f"live:{venue}:{es.executor.symbol}:{trade.get('timestamp')}:{trade.get('side')}"
+                        )
+                        store.append_trade(trade, event_key=event_key)
             if ticks == 1 or ticks % 200 == 0:
                 log.info(
                     "L2 live primary=%s ticks=%s mid_ok=%s",
