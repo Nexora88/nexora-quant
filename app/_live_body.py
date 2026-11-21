@@ -316,6 +316,11 @@ class LiveExecutor:
                 base_fee = fee_by_asset.get(self.base_asset, 0.0)
                 quote_fee = fee_by_asset.get(self.quote_asset, 0.0)
                 fee_usdt = base_fee * price + quote_fee
+                fee_usdt_by_asset = {}
+                if base_fee:
+                    fee_usdt_by_asset[self.base_asset] = base_fee * price
+                if quote_fee:
+                    fee_usdt_by_asset[self.quote_asset] = quote_fee
                 pnl = (price - self.average_entry_price) * qty - fee_usdt
                 self.cash_usdt += quote - quote_fee
                 self.realized_pnl_usdt += pnl
@@ -328,6 +333,7 @@ class LiveExecutor:
                     "side": "sell", "price": price, "quantity": qty,
                     "notional_usdt": quote, "fee_usdt": fee_usdt,
                     "commission_by_asset": fee_by_asset,
+                    "commission_usdt_by_asset": fee_usdt_by_asset,
                     "unpriced_commission_by_asset": {},
                     "accounting_complete": True, "fee_estimated": False,
                     "reason": "recovered_oco_fill", "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -552,17 +558,24 @@ class LiveExecutor:
             if asset not in (self.base_asset, self.quote_asset)
         }
         other_fee_usdt = 0.0
+        fee_usdt_by_asset: dict[str, float] = {}
+        if quote_fee:
+            fee_usdt_by_asset[self.quote_asset] = quote_fee
+        if base_fee:
+            fee_usdt_by_asset[self.base_asset] = base_fee * avg_price
         unpriced_fees: dict[str, float] = {}
         for asset, amount in other_fees.items():
             try:
                 fee_price = float(self.client.ticker_price(f"{asset}{self.quote_asset}"))
                 if not math.isfinite(fee_price) or fee_price <= 0:
                     raise ValueError("invalid commission conversion price")
-                other_fee_usdt += amount * fee_price
+                valued = amount * fee_price
+                other_fee_usdt += valued
+                fee_usdt_by_asset[asset] = valued
             except Exception as exc:
                 unpriced_fees[asset] = amount
                 log.error("Cannot value %s commission in %s: %s", asset, self.quote_asset, exc)
-        fee_usdt = quote_fee + base_fee * avg_price + other_fee_usdt
+        fee_usdt = sum(fee_usdt_by_asset.values())
         accounting_complete = not unpriced_fees and not missing_commission_asset and bool(fills)
         fee_estimated = not fills
         if fee_estimated:
@@ -576,6 +589,7 @@ class LiveExecutor:
             "notional_usdt": quote,
             "fee_usdt": fee_usdt,
             "commission_by_asset": fee_by_asset,
+            "commission_usdt_by_asset": fee_usdt_by_asset,
             "other_fee_usdt": other_fee_usdt,
             "unpriced_commission_by_asset": unpriced_fees,
             "missing_commission_asset": missing_commission_asset,
