@@ -34,8 +34,8 @@ def test_spot_testnet_market_oco_cancel_and_recovery_flow():
     quote_amount = float(os.getenv("NEXORA_TESTNET_ORDER_QUOTE_USDT", "15"))
     if not key or not secret:
         pytest.fail("Testnet E2E requires BINANCE_API_KEY and BINANCE_API_SECRET")
-    if not 10 <= quote_amount <= 25:
-        pytest.fail("Testnet order must be between 10 and 25 USDT")
+    if not 19.99 <= quote_amount <= 20.01:
+        pytest.fail("Testnet E2E is deliberately capped at 20 USDT")
     if not symbol.isalnum() or not 5 <= len(symbol) <= 20:
         pytest.fail("NEXORA_TESTNET_SYMBOL must be a plain Binance symbol")
 
