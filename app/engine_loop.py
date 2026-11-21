@@ -320,29 +320,36 @@ async def run() -> None:
     trade_tasks: list[asyncio.Task] = []
 
     if mode == "live":
+        from app.live_reconciliation import fetch_exchange_audit, load_local_trade_ledger
+
+        history_cache: dict[str, object] = {}
+        history_interval = max(
+            60.0, float(os.getenv("RECONCILIATION_HISTORY_INTERVAL_SECONDS", "300")),
+        )
+
         async def _exchange_reconciliation_snapshot():
             def _read_snapshots():
                 client = es.executor.client
-                account_payload = client.account()
-                balances = {
-                    str(item.get("asset", "")).upper(): item
-                    for item in account_payload.get("balances", [])
-                }
-                quote = balances.get(str(es.executor.quote_asset).upper(), {})
-                base = balances.get(str(es.executor.base_asset).upper(), {})
-                local_snapshot = {
-                    "cash_usdt": float(es.executor.cash_usdt),
-                    "base_quantity": float(es.executor.base_quantity),
-                    "open_order_count": (
-                        1 if getattr(es.executor, "protective_order_list_id", None) is not None else 0
-                    ),
-                }
-                exchange_snapshot = {
-                    "cash_usdt": float(quote.get("free", 0.0)),
-                    "base_quantity": float(base.get("free", 0.0)) + float(base.get("locked", 0.0)),
-                    "open_order_count": len(client.open_order_lists()),
-                }
-                return local_snapshot, exchange_snapshot
+                now = time.monotonic()
+                if (
+                    "orders" not in history_cache
+                    or now - float(history_cache.get("updated_at", 0.0)) >= history_interval
+                ):
+                    # Full symbol history is fetched periodically, while balances and
+                    # all open orders/order lists are checked on every monitor cycle.
+                    history_cache["orders"] = client.all_orders(es.executor.symbol, from_id=0)
+                    history_cache["trades"] = client.all_my_trades(es.executor.symbol, from_id=0)
+                    history_cache["updated_at"] = now
+                local_rows = load_local_trade_ledger(store)
+                audit = fetch_exchange_audit(
+                    client=client,
+                    executor=es.executor,
+                    local_trade_rows=local_rows,
+                    exchange_orders=history_cache["orders"],
+                    exchange_trades=history_cache["trades"],
+                )
+                state.exchange_reconciliation = audit["details"]
+                return audit["local"], audit["exchange"]
 
             return await asyncio.to_thread(_read_snapshots)
 
@@ -464,9 +471,23 @@ async def run() -> None:
                 except Exception:
                     log.exception("side-book/router update failed for %s", sym)
                 return
+            trade_count_before = (
+                len(getattr(es.executor, "trades", []) or []) if mode == "live" else 0
+            )
             confirmations, ticks = await handle_tick(
                 depth, store, history, features, mode, key, persist, confirmations, ticks,
             )
+            if mode == "live":
+                new_trades = (getattr(es.executor, "trades", []) or [])[trade_count_before:]
+                for trade in new_trades:
+                    order_id = trade.get("exchange_order_id")
+                    venue = "testnet" if bool(getattr(es.executor.client, "testnet", False)) else "mainnet"
+                    event_key = (
+                        f"live:{venue}:{es.executor.symbol}:{order_id}"
+                        if order_id is not None
+                        else f"live:{venue}:{es.executor.symbol}:{trade.get('timestamp')}:{trade.get('side')}"
+                    )
+                    io_q.enqueue_trade(trade, event_key=event_key)
             if ticks == 1 or ticks % 200 == 0:
                 log.info(
                     "L2 live primary=%s ticks=%s mid_ok=%s",
