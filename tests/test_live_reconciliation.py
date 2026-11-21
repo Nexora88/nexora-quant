@@ -106,6 +106,7 @@ def test_unmanaged_normal_open_order_is_detected_even_with_an_active_oco():
 
 def test_unexpected_active_oco_list_is_detected():
     result = audit(
+        open_orders=[],
         open_order_lists=[{
             "symbol": "BTCUSDT", "orderListId": 88, "listStatusType": "EXECUTING",
             "orderReports": [],
@@ -123,21 +124,22 @@ def test_local_trade_ledger_reads_every_page():
         def list_trades(self, *, limit, before_id=None):
             self.calls.append((limit, before_id))
             if before_id is None:
-                return [{"id": 3}, {"id": 2}]
-            if before_id == 2:
-                return [{"id": 1}]
+                return [{"id": value} for value in range(1000, 0, -1)]
+            if before_id == 1:
+                return [{"id": 0}]
             return []
 
     store = Store()
     rows = load_local_trade_ledger(store)
-    assert [row["id"] for row in rows] == [3, 2, 1]
-    assert store.calls == [(1000, None), (1000, 2)]
+    assert len(rows) == 1001
+    assert rows[0]["id"] == 1000 and rows[-1]["id"] == 0
+    assert store.calls == [(1000, None), (1000, 1)]
 
 
 def test_local_trade_ledger_rejects_non_advancing_pagination():
     class Store:
         def list_trades(self, *, limit, before_id=None):
-            return [{"id": 3}, {"id": 2}]
+            return [{"id": value} for value in range(1000, 0, -1)]
 
     with pytest.raises(RuntimeError, match="did not advance"):
         load_local_trade_ledger(Store())
