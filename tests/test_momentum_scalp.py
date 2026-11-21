@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from app.atr_stops import compute_dynamic_targets
 from app.decision import build_decision
+from app.analytics.sustained import SustainedDecision
 from app.strategy import MarketAnalysis, PriceWindow, entry_signal_from_analysis, exit_reason
 
 
@@ -73,3 +74,41 @@ def test_dynamic_target_covers_twice_all_in_round_trip_cost():
         atr_pct=0.0001, regime="range", fee_round_trip_pct=0.25,
     )
     assert targets.take_profit_pct >= 0.50
+
+
+def test_autonomous_mode_cannot_bypass_round_trip_cost_gate():
+    decision = build_decision(
+        analysis=_analysis(m1=8.0, m5=8.0),
+        autonomous_mode=True,
+        entry_min_score=0.2,
+        edge_tradeable=False,
+        edge_notes=["cost_multiple_low=1.10<2.50"],
+    )
+    assert decision.action == "block"
+    assert "edge_quality_insufficient" in decision.blockers
+    assert "cost_multiple_low=1.10<2.50" in decision.rationale
+
+
+def test_autonomous_mode_cannot_bypass_sustained_confirmation():
+    decision = build_decision(
+        analysis=_analysis(m1=8.0, m5=8.0),
+        sustained=SustainedDecision(False, 0.4, 1, 0.9, "need_more_confirmations"),
+        autonomous_mode=True,
+        entry_min_score=0.2,
+        edge_tradeable=True,
+    )
+    assert decision.action == "block"
+    assert "sustained:need_more_confirmations" in decision.blockers
+
+
+def test_autonomous_mode_cannot_bypass_adverse_selection_gate():
+    decision = build_decision(
+        analysis=_analysis(m1=8.0, m5=8.0),
+        autonomous_mode=True,
+        entry_min_score=0.2,
+        edge_tradeable=True,
+        adverse_toxic=True,
+        adverse_reasons=["persistent_ask_wall"],
+    )
+    assert decision.action == "block"
+    assert "adverse_selection" in decision.blockers

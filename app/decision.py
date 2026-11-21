@@ -130,20 +130,16 @@ def build_decision(
     if analysis.score < entry_min_score and not in_position:
         blockers.append(f"score_below_{entry_min_score}")
 
+    # Execution-cost and adverse-selection gates are safety constraints, not
+    # strategy preferences. Autonomous mode must never turn either into a warning.
     if edge_tradeable is False:
-        if autonomous_mode:
-            rationale.append("edge_soft:" + (edge_notes[0] if edge_notes else "low"))
-        else:
-            blockers.append("edge_quality_insufficient")
-            if edge_notes:
-                rationale.extend(edge_notes[:3])
+        blockers.append("edge_quality_insufficient")
+        if edge_notes:
+            rationale.extend(edge_notes[:3])
     if adverse_toxic:
-        if autonomous_mode:
-            rationale.append("adverse_soft:" + (adverse_reasons[0] if adverse_reasons else "toxic"))
-        else:
-            blockers.append("adverse_selection")
-            if adverse_reasons:
-                rationale.extend(adverse_reasons[:3])
+        blockers.append("adverse_selection")
+        if adverse_reasons:
+            rationale.extend(adverse_reasons[:3])
     if noise_noisy:
         if autonomous_mode:
             rationale.append("noise_soft:" + (noise_reason or "noisy"))
@@ -151,10 +147,6 @@ def build_decision(
             blockers.append("noise_filter")
             if noise_reason:
                 rationale.append(noise_reason)
-    if autonomous_mode and sustained is not None and not sustained.ready and not in_position:
-        blockers[:] = [b for b in blockers if not str(b).startswith("sustained:")]
-        rationale.append("sustained_soft:" + sustained.reason)
-
     if in_position:
         action = "hold"
         rationale.append("position_open_manage_exits")

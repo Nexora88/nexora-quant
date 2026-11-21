@@ -438,8 +438,8 @@ async def handle_tick(
         and ex is not None
         and ex.base_quantity <= 0
         and not risk.kill_switch
-        and (signal is not None or auto)
-        and (sus.ready or auto)
+        and signal is not None
+        and sus.ready
         and flow_ok
         and churn_block is None
         and cb_allow
