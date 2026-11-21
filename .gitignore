@@ -1,4 +1,10 @@
 .env
+.env.*
+!.env.example
+!.env.live.example
+!.env.paper.example
+!.env.testnet.example
+!.env.paper-100usdt.example
 .venv/
 venv/
 __pycache__/
@@ -24,3 +30,6 @@ data/
 
 reports/multi_symbol_replay_latest.json
 .env.testnet
+
+# Runtime and paper-test reports
+reports/

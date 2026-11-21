@@ -444,6 +444,7 @@ async def handle_tick(
         and churn_block is None
         and cb_allow
     )
+    state.last_entry_eligible = False
     try:
         bl = list(getattr(decision, "blockers", None) or [])
         if churn_block:
@@ -532,6 +533,7 @@ async def handle_tick(
                 data_age_seconds=state.data_age_seconds(),
             )
             if risk_dec.allowed:
+                state.last_entry_eligible = True
                 try:
                     if mode == "paper":
                         prefer_maker = maker_route_enabled(mode, settings.prefer_maker)
