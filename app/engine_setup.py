@@ -118,7 +118,9 @@ dual_account_store = DualAccountStore(
     os.getenv("DUAL_ACCOUNT_DB_PATH", "data/dual-account.sqlite3")
 )
 account_id = os.getenv(
-    "ACCOUNT_ID", "paper-main" if settings.trading_mode == "paper" else "live-main"
+    "ACCOUNT_ID",
+    "paper-main" if settings.trading_mode == "paper"
+    else ("live-testnet" if settings.binance_testnet else "live-main"),
 )
 dual_account_store.register_account(
     account_id, settings.trading_mode, float(settings.starting_cash_usdt)

@@ -281,8 +281,15 @@ class DualAccountStore:
         if account["mode"] != "live":
             raise ValueError("exchange reconciliation applies only to the live account")
         tolerances = dict(tolerances or {
-            "cash_usdt": 0.01, "base_quantity": 1e-8, "fees_usdt": 0.01,
+            "cash_usdt": 0.01,
+            "base_quantity": 1e-8,
+            "fees_usdt": 0.01,
             "open_order_count": 0.0,
+            "unmatched_exchange_order_count": 0.0,
+            "unmatched_local_order_count": 0.0,
+            "unknown_open_order_count": 0.0,
+            "unpriced_commission_count": 0.0,
+            "fee_asset_mismatch_count": 0.0,
         })
         differences: dict[str, dict[str, float]] = {}
         for key, tolerance in tolerances.items():

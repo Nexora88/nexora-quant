@@ -28,6 +28,7 @@ def _import_config_with(**overrides: str) -> subprocess.CompletedProcess[str]:
         "LIVE_CONFIRM",
         "REQUIRE_GO_LIVE_GATE",
         "GO_LIVE_STAMP_PATH",
+        "LIVE_DB_PATH",
     ):
         env.pop(key, None)
     env.update(overrides)
@@ -107,3 +108,32 @@ def test_testnet_live_configuration_remains_available() -> None:
 def test_paper_mode_remains_default_without_credentials() -> None:
     result = _import_config_with()
     assert result.returncode == 0, result.stderr
+
+
+
+def test_testnet_and_mainnet_live_ledgers_are_isolated(tmp_path) -> None:
+    stamp = tmp_path / "GO_LIVE_OK"
+    _approval_stamp(stamp)
+    for testnet, expected in (
+        ("true", "data/live-testnet.sqlite3"),
+        ("false", "data/live.sqlite3"),
+    ):
+        env = os.environ.copy()
+        for key in ("TRADING_MODE", "BINANCE_TESTNET", "BINANCE_API_KEY",
+                    "BINANCE_API_SECRET", "LIVE_DB_PATH"):
+            env.pop(key, None)
+        env.update({
+            "TRADING_MODE": "live",
+            "BINANCE_TESTNET": testnet,
+            "BINANCE_API_KEY": "test-key",
+            "BINANCE_API_SECRET": "test-secret",
+            "LIVE_CONFIRM": "I_UNDERSTAND_REAL_MONEY",
+            "GO_LIVE_STAMP_PATH": str(stamp),
+        })
+        result = subprocess.run(
+            [sys.executable, "-c",
+             "from app.config import settings; print(settings.store_path)"],
+            env=env, capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == expected
