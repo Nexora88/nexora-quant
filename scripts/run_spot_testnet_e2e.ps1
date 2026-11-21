@@ -9,10 +9,12 @@ if (-not (Test-Path $envPath)) {
 $values = @{}
 foreach ($line in Get-Content $envPath) {
     $trimmed = $line.Trim()
-    if (-not $trimmed -or $trimmed.StartsWith("#") -or $trimmed -notmatch "^([A-Za-z_][A-Za-z0-9_]*)=(.*)$") { continue }
-    $name = $Matches[1]
-    $value = $Matches[2].Trim().Trim('"').Trim("'")
-    $values[$name] = $value
+    if (-not $trimmed -or $trimmed.StartsWith("#")) { continue }
+    if ($trimmed -match "^([A-Za-z_][A-Za-z0-9_]*)=(.*)$") {
+        $name = $Matches[1]
+        $value = $Matches[2].Trim().Trim('"').Trim("'")
+        $values[$name] = $value
+    }
 }
 if ($values["BINANCE_TESTNET"] -ne "true") { throw "Refusing to run: BINANCE_TESTNET must be exactly true." }
 if ($values["TRADING_MODE"] -ne "paper") { throw "Refusing to run: E2E harness must keep app TRADING_MODE=paper." }
