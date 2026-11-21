@@ -97,11 +97,11 @@ def test_all_orders_and_my_trades_paginate_without_skipping_ids(monkeypatch):
     def fake_request(method, path, params=None, *, signed=False):
         calls.append((path, dict(params or {})))
         if path == "/api/v3/allOrders":
-            if "orderId" not in params:
+            if params.get("orderId", 0) == 0:
                 return [{"orderId": 10}, {"orderId": 11}]
             return [{"orderId": 12}]
         if path == "/api/v3/myTrades":
-            if "fromId" not in params:
+            if params.get("fromId", 0) == 0:
                 return [{"id": 20}, {"id": 21}]
             return [{"id": 22}]
         raise AssertionError(path)
