@@ -21,7 +21,7 @@ if ($values["BINANCE_TESTNET"] -ne "true") { throw "Refusing to run: BINANCE_TES
 if ($values["TRADING_MODE"] -ne "paper") { throw "Refusing to run: E2E harness must keep app TRADING_MODE=paper." }
 if (-not $values["BINANCE_API_KEY"] -or -not $values["BINANCE_API_SECRET"]) { throw "Dedicated Spot Testnet API key/secret are missing from .env.testnet." }
 $amount = 0.0
-if (-not [double]::TryParse($values["NEXORA_TESTNET_ORDER_QUOTE_USDT"], [ref]$amount) -or $amount -lt 10 -or $amount -gt 25) { throw "NEXORA_TESTNET_ORDER_QUOTE_USDT must be between 10 and 25." }
+if (-not [double]::TryParse($values["NEXORA_TESTNET_ORDER_QUOTE_USDT"], [ref]$amount) -or $amount -lt 19.99 -or $amount -gt 20.01) { throw "NEXORA_TESTNET_ORDER_QUOTE_USDT must be exactly 20 USDT (tolerance 0.01)." }
 $symbol = $values["NEXORA_TESTNET_SYMBOL"]
 if (-not $symbol -or $symbol -notmatch "^[A-Za-z0-9]{5,20}$") { throw "NEXORA_TESTNET_SYMBOL is invalid." }
 foreach ($name in $values.Keys) { Set-Item -Path "Env:$name" -Value $values[$name] }
