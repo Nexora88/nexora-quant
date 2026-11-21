@@ -38,6 +38,17 @@ def test_composite_entry_and_target():
     assert sig is not None and sig.action == "buy"
 
 
+def test_analysis_uses_seeded_candle_momentum_overrides_during_tick_warmup():
+    window = PriceWindow()
+    analysis = analyze_market(
+        bid=100.0, ask=100.02, bid_qty=20, ask_qty=10,
+        price_window=window, imbalance_threshold=0.65,
+        momentum_1m_override_bps=12.0, momentum_5m_override_bps=28.0,
+    )
+    assert analysis.momentum_1m_bps == pytest.approx(12.0)
+    assert analysis.momentum_5m_bps == pytest.approx(28.0)
+
+
 def test_analysis_uses_supplied_event_time_for_replay_momentum():
     window = PriceWindow(maxlen=1200)
     common = {

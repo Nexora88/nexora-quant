@@ -40,6 +40,18 @@ def test_closed_candles_produce_grouped_indicators():
     assert snap.momentum_bias == "bullish"
 
 
+def test_closed_candle_freshness_uses_close_time_not_open_time():
+    now = 2_000_000_000.0
+    tracker = MarketIndicatorTracker()
+    tracker.seed(
+        [candle("1m", i, now) for i in range(220)]
+        + [candle("5m", i, now, total=60) for i in range(60)]
+    )
+    snap = tracker.snapshot(now=now)
+    assert snap.ready
+    assert snap.age_seconds == 0.0
+
+
 def test_forming_and_out_of_order_candles_are_ignored():
     now = 2_000_000_000.0
     tracker = MarketIndicatorTracker()

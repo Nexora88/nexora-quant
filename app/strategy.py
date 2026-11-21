@@ -129,13 +129,23 @@ def analyze_market(
     regime_classifier: RegimeClassifier | None = None,
     wall_bias: float = 0.0,
     timestamp: float | None = None,
+    momentum_1m_override_bps: float | None = None,
+    momentum_5m_override_bps: float | None = None,
 ) -> MarketAnalysis:
     mid = (bid + ask) / 2 if bid > 0 and ask >= bid else 0.0
     spread_bps = ((ask - bid) / mid * 10_000) if mid > 0 else 0.0
     if mid > 0:
         price_window.push(mid, timestamp=timestamp)
-    mom_1m = price_window.momentum_over(60.0)
-    mom_5m = price_window.momentum_over(300.0)
+    mom_1m = (
+        float(momentum_1m_override_bps)
+        if momentum_1m_override_bps is not None
+        else price_window.momentum_over(60.0)
+    )
+    mom_5m = (
+        float(momentum_5m_override_bps)
+        if momentum_5m_override_bps is not None
+        else price_window.momentum_over(300.0)
+    )
     # Do not relabel a burst of websocket events as a 1m return during warmup.
     mom = mom_1m if mom_1m is not None else 0.0
     trend = "up" if mom > 3 else "down" if mom < -3 else "flat"

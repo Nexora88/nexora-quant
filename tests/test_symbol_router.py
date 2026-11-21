@@ -116,6 +116,25 @@ def test_scan_score_only_selects_a_candidate_and_full_analysis_controls_entry():
     assert best.analysis_confirmed and best.entry_ready and best.tradeable
 
 
+def test_router_dwell_prevents_scan_churn_and_allows_rotation_after_analysis_window():
+    r = SymbolRouter(min_score=0.30)
+    r.update_scan("solusdt", score=0.95, liquid=True)
+    r.update_scan("adausdt", score=0.80, liquid=True)
+    assert r.select_switch_candidate(
+        current_symbol="ethusdt", active_since=100.0,
+        min_dwell_seconds=30.0, now=129.9,
+    ) is None
+    candidate = r.select_switch_candidate(
+        current_symbol="ethusdt", active_since=100.0,
+        min_dwell_seconds=30.0, now=130.1,
+    )
+    assert candidate is not None and candidate.symbol == "solusdt"
+    assert r.select_switch_candidate(
+        current_symbol="ethusdt", active_since=0.0,
+        min_dwell_seconds=1.0, in_position=True, now=100.0,
+    ) is None
+
+
 def test_scan_refresh_does_not_overwrite_fresh_full_analysis():
     r = SymbolRouter(min_score=0.30)
     r.update_scan("adausdt", score=0.88, liquid=True)
