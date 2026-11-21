@@ -140,7 +140,7 @@ class OnlineLearner:
         self._entry_min = min(self.max_entry, max(self.min_entry, self._entry_min))
         self._size_bias = min(1.6, max(0.4, self._size_bias))
         self._tp_scale = min(1.25, max(0.55, self._tp_scale))
-        self._compound = min(0.95, max(0.5, self._compound))
+        self._compound = min(0.95, max(0.05, self._compound))
 
     def record_trade(self, pnl_usdt: float, *, regime: str = "unknown", reason: str = "") -> None:
         p = float(pnl_usdt)
@@ -213,7 +213,7 @@ class OnlineLearner:
             self._entry_min = min(self.max_entry, self._entry_min + 0.03)
             self._size_bias = max(0.4, self._size_bias - 0.08)
             self._tp_scale = min(1.2, self._tp_scale + 0.03)
-            self._compound = max(0.5, self._compound - 0.05)
+            self._compound = max(0.05, self._compound - 0.05)
             self._note = f"protect wr={wr:.2f} avg={avg:.3f}"
         else:
             self._growth = "rebuild"
@@ -387,7 +387,7 @@ class OnlineLearner:
             raise ValueError("learner entry threshold is outside configured bounds")
         if not 0.4 <= size_bias <= 1.6 or not 0.55 <= tp_scale <= 1.25:
             raise ValueError("learner sizing/target weights are outside configured bounds")
-        if not 0.5 <= compound <= 0.95:
+        if not 0.05 <= compound <= 0.95:
             raise ValueError("learner compound weight is outside configured bounds")
 
         lifetime_trades = int(data.get("lifetime_trades", 0))
