@@ -10,9 +10,10 @@ $values = @{}
 foreach ($line in Get-Content $envPath) {
     $trimmed = $line.Trim()
     if (-not $trimmed -or $trimmed.StartsWith("#")) { continue }
-    if ($trimmed -match "^([A-Za-z_][A-Za-z0-9_]*)=(.*)$") {
-        $name = $Matches[1]
-        $value = $Matches[2].Trim().Trim('"').Trim("'")
+    $parts = $trimmed -split '=', 2
+    if ($parts.Count -eq 2) {
+        $name = $parts[0].Trim()
+        $value = $parts[1].Trim().Trim('"').Trim("'")
         $values[$name] = $value
     }
 }
