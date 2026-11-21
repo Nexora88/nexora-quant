@@ -34,7 +34,7 @@ Remote/LAN requests require `NEXORA_API_TOKEN` by default. For a trusted isolate
 
 `git pull` sonrası paper ledger dosyasını **otomatik silme**. Önce yedek al ve pozisyonu/hesap durumunu doğrula; silmek bakiye ve işlem geçmişini geri döndürülemez biçimde kaybettirebilir. Paper hesap artık yeniden başlatmada kayıtlı nakit, maliyet, komisyon ve açık pozisyonu korur; açık pozisyonu atmak yerine `PAPER_RESUME_POSITION=false` ayarında başlangıcı reddeder.
 
-Live modda emir göndermeden önce Binance bakiyesi ve OCO emir geçmişi yeniden uzlaştırılır. Açık pozisyonun borsada koruyucu OCO emri yoksa bot yeni işlem döngüsüne başlamaz; önce korumayı kurmayı dener. Live modda otomatik coin değiştirme ve online learner güncellemesi kapalıdır; çoklu semboller yalnızca tarama içindir.
+Live modda emir göndermeden önce Binance bakiyesi ve OCO emir geçmişi yeniden uzlaştırılır. Açık pozisyonun borsada koruyucu OCO emri yoksa bot yeni işlem döngüsüne başlamaz; önce korumayı kurmayı dener. Live modda otomatik coin değiştirme kapalıdır; çoklu semboller yalnızca tarama içindir. Live learner yalnızca kendi hesabındaki borsaca doğrulanmış, komisyon muhasebesi tamamlanmış kapanışlardan öğrenir; risk limitleri ve koruma kuralları öğrenilebilir parametre değildir. `LEARNER_FROZEN=true` ile uyarlama ayrıca kapatılabilir.
 
 ---
 
@@ -50,7 +50,7 @@ Live modda emir göndermeden önce Binance bakiyesi ve OCO emir geçmişi yenide
 | Targets | ATR dynamic TP / SL / trail (`USE_ATR_TARGETS`); ceiling on SL |
 | Exit | TP, SL, **trailing** (peak ratcheted every tick), wick confirm, **`time_stop`** (`MAX_HOLD_SECONDS`) |
 | Anti-churn | `MIN_HOLD_SECONDS`, `MAX_TRADES_PER_HOUR`, `ENTRY_COOLDOWN_SECONDS`, `MAX_DAILY_FEE_USDT` |
-| Learning | Policy changes only from fee-complete closed trades; unlabeled ticks do not drift weights; frozen in live mode |
+| Learning | Paper adapts from its own fee-complete closes; live adapts only from its own exchange-confirmed, fee-complete closes; hard risk controls remain immutable (`LEARNER_FROZEN=true` disables adaptation) |
 | Recovery | Negative rolling expectancy activates a smaller-size, slightly higher-score probe; it does not permanently deadlock new evidence |
 | Paper fills | Depth-aware fills with configured slippage, latency, partial fills, fees, and stressed stop exits |
 | Dashboard | Equity, fills, blockers, session PnL, learner snapshot, universe board |
