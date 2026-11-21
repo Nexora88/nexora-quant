@@ -177,7 +177,7 @@ class DualAccountStore:
             "entry_min_score": (0.22, 0.65),
             "size_bias": (0.4, 1.6),
             "tp_scale": (0.55, 1.25),
-            "compound_fraction": (0.5, 0.95),
+            "compound_fraction": (0.05, 0.95),
         }
         for key, value in clean_params.items():
             low, high = bounds[key]

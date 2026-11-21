@@ -20,6 +20,18 @@ def test_learner_compound_grow():
     assert L.tp_scale <= 1.1
 
 
+def test_learner_restores_conservative_configured_compound_fraction():
+    learner = OnlineLearner(window=10, base_compound=0.25)
+    state = learner.export_state()
+    restored = OnlineLearner(window=10, base_compound=0.25)
+    restored.load_state(state)
+    assert restored.compound_fraction == 0.25
+
+    for _ in range(10):
+        restored.record_trade(-0.1, regime="trend")
+    assert 0.05 <= restored.compound_fraction <= 0.95
+
+
 def test_learner_persist_roundtrip():
     L = OnlineLearner(window=10)
     L.record_trade(0.5, regime="trend", reason="take_profit")

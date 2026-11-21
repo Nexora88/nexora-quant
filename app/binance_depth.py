@@ -39,6 +39,20 @@ def _levels(values: list[list[str]]) -> list[tuple[float, float]]:
     return [(float(price), float(quantity)) for price, quantity in values]
 
 
+def _apply_depth_event(book: DepthBook, event: dict[str, Any]) -> bool:
+    """Ignore already-applied duplicate/stale events; reject only a real gap."""
+    first_id = int(event["U"])
+    final_id = int(event["u"])
+    if book.last_update_id is not None and final_id <= book.last_update_id:
+        return True
+    return book.apply_diff(
+        first_update_id=first_id,
+        final_update_id=final_id,
+        bids=_levels(event["b"]),
+        asks=_levels(event["a"]),
+    )
+
+
 async def stream_synchronized_depth(
     symbol: str,
     *,
@@ -98,14 +112,14 @@ async def stream_synchronized_depth(
                     event = json.loads(raw)
                     if event.get("e") != "depthUpdate":
                         continue
-                    accepted = book.apply_diff(
-                        first_update_id=int(event["U"]),
-                        final_update_id=int(event["u"]),
-                        bids=_levels(event["b"]),
-                        asks=_levels(event["a"]),
-                    )
+                    previous_id = book.last_update_id
+                    accepted = _apply_depth_event(book, event)
                     if not accepted:
-                        raise RuntimeError("Binance depth sequence gap; resynchronizing")
+                        raise RuntimeError(
+                            "Binance depth sequence gap; "
+                            f"local={previous_id} event_U={event.get('U')} event_u={event.get('u')}; "
+                            "resynchronizing"
+                        )
                     yield book
                 raise ConnectionError("Binance depth websocket closed")
         except asyncio.CancelledError:

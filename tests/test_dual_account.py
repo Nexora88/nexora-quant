@@ -67,6 +67,18 @@ def test_strategy_candidate_requires_evidence_and_cannot_change_risk(tmp_path):
         store.close()
 
 
+def test_strategy_candidate_accepts_conservative_compound_fraction(tmp_path):
+    store = setup_store(tmp_path)
+    try:
+        version = store.publish_paper_candidate(
+            "paper-main", {"compound_fraction": 0.25}, valid_evidence(),
+        )
+        active = store.promote_candidate(version, "live-main", operator_approved=True)
+        assert active["parameters"]["compound_fraction"] == 0.25
+    finally:
+        store.close()
+
+
 def test_strategy_promotion_can_be_rolled_back(tmp_path):
     store = setup_store(tmp_path)
     try:
