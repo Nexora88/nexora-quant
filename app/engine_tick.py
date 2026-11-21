@@ -392,6 +392,9 @@ async def handle_tick(depth, store, history, features, mode, key, persist, confi
     result = await _inner_handle_tick(
         depth, store, history, features, mode, key, persist, confirmations, ticks
     )
+    # Do not refresh diagnostics or router eligibility on an invalid/stale depth tick.
+    if not isinstance(result, tuple) or len(result) != 2 or result[1] <= ticks:
+        return result
     # Keep a compact, per-coin explanation for the dashboard instead of exposing
     # only whichever symbol happened to be processed most recently.
     try:

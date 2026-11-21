@@ -33,3 +33,4 @@ reports/multi_symbol_replay_latest.json
 
 # Runtime and paper-test reports
 reports/
+_build_verify/
