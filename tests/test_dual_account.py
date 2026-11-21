@@ -143,3 +143,23 @@ def test_live_learner_requires_exchange_confirmed_fee_complete_close(tmp_path):
         assert restored.to_dict()["lifetime_trades"] == 1
     finally:
         store.close()
+
+
+def test_reconciliation_monitor_invokes_fail_closed_callback_on_drift(tmp_path):
+    import asyncio
+    from app.dual_account import ReconciliationMonitor
+
+    store = setup_store(tmp_path)
+    seen = []
+    async def snapshot():
+        return ({"cash_usdt": 20.0}, {"cash_usdt": 19.0})
+    monitor = ReconciliationMonitor(
+        store, "live-main", snapshot, seen.append, interval_seconds=1.0,
+    )
+    try:
+        result = asyncio.run(monitor.run_once())
+        assert result["status"] == "mismatch"
+        assert len(seen) == 1
+        assert seen[0]["differences"]["cash_usdt"]["delta"] == 1.0
+    finally:
+        store.close()
