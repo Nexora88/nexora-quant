@@ -103,7 +103,10 @@ class Settings:
     simulated_partial_fill_probability: float = _float("SIMULATED_PARTIAL_FILL_PROBABILITY", 0.0)
     simulation_seed: int = int(os.getenv("SIMULATION_SEED", "0"))
     store_path: str = (
-        os.getenv("LIVE_DB_PATH", "data/live.sqlite3")
+        os.getenv(
+            "LIVE_DB_PATH",
+            "data/live-testnet.sqlite3" if _bool("BINANCE_TESTNET", True) else "data/live.sqlite3",
+        )
         if os.getenv("TRADING_MODE", "paper").strip().lower() == "live"
         else os.getenv("PAPER_DB_PATH", "data/paper.sqlite3")
     )
