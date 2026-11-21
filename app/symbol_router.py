@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import time
 from typing import Any
 
 
@@ -188,6 +189,27 @@ class SymbolRouter:
         best = max(pending, key=lambda r: (r.scan_score if r.scan_score is not None else r.score, r.depth_usdt))
         self.active_symbol = best.symbol
         return best
+
+    def select_switch_candidate(
+        self, *, current_symbol: str, active_since: float,
+        min_dwell_seconds: float = 30.0, in_position: bool = False,
+        now: float | None = None,
+    ) -> SymbolScore | None:
+        """Rotate only after a symbol has had time to complete its full analysis.
+
+        Without this dwell, every side-book scan could replace the active symbol
+        immediately after one analysis tick, continually resetting momentum,
+        sustained-signal and order-flow confirmation windows.
+        """
+        if in_position:
+            return None
+        current_time = time.monotonic() if now is None else float(now)
+        if current_time - float(active_since) < max(0.0, float(min_dwell_seconds)):
+            return None
+        candidate = self.select_best()
+        if candidate is None or candidate.symbol == str(current_symbol).lower():
+            return None
+        return candidate
 
     def select_best_entry(self) -> SymbolScore | None:
         """Return only a fresh, full-analysis-approved entry candidate."""

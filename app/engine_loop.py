@@ -341,6 +341,7 @@ async def run() -> None:
         if mode == "paper" and float(getattr(es.executor, "base_quantity", 0) or 0) > 1e-12
         else settings.symbol.lower()
     )
+    primary_since = time.monotonic()
     trade_tasks: list[asyncio.Task] = []
 
     if mode == "live":
@@ -450,7 +451,7 @@ async def run() -> None:
         use_multi = len(watched) > 1
 
         async def _consume(depth, *, symbol: str | None = None) -> None:
-            nonlocal confirmations, ticks, primary
+            nonlocal confirmations, ticks, primary, primary_since
             sym = (symbol or primary).lower()
             if sym != primary:
                 try:
@@ -486,17 +487,16 @@ async def run() -> None:
                             and es.executor is not None
                             and float(getattr(es.executor, "base_quantity", 0) or 0) <= 0
                         ):
-                            best = es.symbol_router.select_best()
-                            candidate_score = (
-                                best.score if best and best.analysis_confirmed
-                                else (best.scan_score if best and best.scan_score is not None else (best.score if best else 0.0))
+                            best = es.symbol_router.select_switch_candidate(
+                                current_symbol=primary, active_since=primary_since,
+                                min_dwell_seconds=float(getattr(settings, "router_min_dwell_seconds", 30.0)),
+                                in_position=float(getattr(es.executor, "base_quantity", 0) or 0) > 0,
                             )
-                            if best and best.symbol != primary and (
-                                best.entry_ready or candidate_score >= float(settings.entry_min_score)
-                            ):
+                            if best is not None:
                                 primary = best.symbol
+                                primary_since = time.monotonic()
                                 state.trade_symbol = primary
-                                log.info("Router switch → %s score=%.2f", primary.upper(), best.score)
+                                log.info("Router switch -> %s score=%.2f after dwell", primary.upper(), best.score)
                 except Exception:
                     log.exception("side-book/router update failed for %s", sym)
                 return

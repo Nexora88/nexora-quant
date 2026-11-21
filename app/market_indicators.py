@@ -126,7 +126,14 @@ class MarketIndicatorTracker:
         rows5 = list(self._candles["5m"])
         closes = [c.close for c in rows]
         close = closes[-1] if closes else None
-        age = max(0.0, current - rows[-1].open_time / 1000.0) if rows else None
+        # Binance open_time marks the beginning of a candle, not its close.
+        # Freshness must be measured from the end of the last CLOSED candle;
+        # otherwise a perfectly current 1m candle appears ~60s old (and 5m
+        # appears ~300s old), causing valid seeded history to fail readiness.
+        age = (
+            max(0.0, current - (rows[-1].open_time / 1000.0 + 60.0))
+            if rows else None
+        )
 
         e9, e21 = _ema(closes, 9), _ema(closes, 21)
         e50, e200 = _ema(closes, 50), _ema(closes, 200)
@@ -213,7 +220,10 @@ class MarketIndicatorTracker:
             elif macd_hist < 0 and rsi < 50:
                 momentum = "bearish"
 
-        age5 = max(0.0, current - rows5[-1].open_time / 1000.0) if rows5 else None
+        age5 = (
+            max(0.0, current - (rows5[-1].open_time / 1000.0 + 300.0))
+            if rows5 else None
+        )
         ready = (
             len(rows) >= 200 and len(rows5) >= 50
             and age is not None and age <= 120.0

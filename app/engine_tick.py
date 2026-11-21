@@ -25,6 +25,22 @@ _base_analyze_market = _ns["analyze_market"]
 
 
 def _analyze_with_persistent_depth(**kwargs):
+    from app.config import settings
+    symbol = str(getattr(_runtime_state, "trade_symbol", None) or settings.symbol).lower()
+    indicator_trackers = getattr(_runtime_state, "market_indicator_trackers", None) or {}
+    indicator_tracker = indicator_trackers.get(symbol)
+    indicator = indicator_tracker.snapshot() if indicator_tracker is not None else None
+    if indicator is not None and indicator.ready and indicator_tracker is not None:
+        # Use the last two fully closed candles for each horizon. This avoids
+        # waiting five minutes after every router selection to rebuild tick history.
+        kwargs.setdefault(
+            "momentum_1m_override_bps",
+            indicator_tracker.return_bps(interval="1m", bars=1),
+        )
+        kwargs.setdefault(
+            "momentum_5m_override_bps",
+            indicator_tracker.return_bps(interval="5m", bars=1),
+        )
     analysis = _base_analyze_market(**kwargs)
     bids = kwargs.get("bids") or []
     asks = kwargs.get("asks") or []
@@ -39,11 +55,6 @@ def _analyze_with_persistent_depth(**kwargs):
         "transient_ask_usdt": report.transient_ask_usdt,
         "note": report.note,
     }
-    from app.config import settings
-    symbol = str(getattr(_runtime_state, "trade_symbol", None) or settings.symbol).lower()
-    indicator_trackers = getattr(_runtime_state, "market_indicator_trackers", None) or {}
-    indicator_tracker = indicator_trackers.get(symbol)
-    indicator = indicator_tracker.snapshot() if indicator_tracker is not None else None
     _runtime_state.last_market_indicators = asdict(indicator) if indicator is not None else {
         "ready": False, "note": "indicator_history_unavailable", "symbol": symbol,
     }
