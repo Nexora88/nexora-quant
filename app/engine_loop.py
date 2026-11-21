@@ -54,6 +54,26 @@ async def run() -> None:
 
     def reconcile_live_startup() -> None:
         es.executor.sync_balances()
+        from app.live_reconciliation import fetch_exchange_audit, load_local_trade_ledger
+        local_rows = load_local_trade_ledger(store)
+        audit = fetch_exchange_audit(
+            client=es.executor.client,
+            executor=es.executor,
+            local_trade_rows=local_rows,
+        )
+        result = es.dual_account_store.reconcile(
+            es.account_id, audit["local"], audit["exchange"],
+        )
+        state.exchange_reconciliation = {
+            **audit["details"],
+            "status": result["status"],
+            "differences": result["differences"],
+        }
+        if result["status"] != "pass":
+            raise RuntimeError(
+                "Full Binance order/fill/commission reconciliation failed: "
+                + str(result["differences"])
+            )
         if (
             float(getattr(es.executor, "base_quantity", 0) or 0) > 1e-12
             and getattr(es.executor, "protective_order_list_id", None) is None
