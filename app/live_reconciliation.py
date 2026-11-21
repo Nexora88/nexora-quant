@@ -58,13 +58,27 @@ def audit_exchange_history(
             local_items.append(item)
     local_items.extend(item for item in executor_trades if isinstance(item, Mapping))
 
-    local_order_ids: set[int] = set()
+    local_by_order_id: dict[int, Mapping[str, Any]] = {}
     for item in local_items:
         raw_id = item.get("exchange_order_id")
         if raw_id is not None:
             order_id = int(raw_id)
             if order_id > 0:
-                local_order_ids.add(order_id)
+                local_by_order_id[order_id] = item
+    local_order_ids = set(local_by_order_id)
+
+    local_fee_by_asset: dict[str, float] = {}
+    local_fee_usdt_by_asset: dict[str, float] = {}
+    local_incomplete_commissions = 0
+    for item in local_by_order_id.values():
+        if item.get("accounting_complete") is False or item.get("fee_estimated") is True:
+            local_incomplete_commissions += 1
+        for asset, amount in (item.get("commission_by_asset") or {}).items():
+            key = str(asset).upper()
+            local_fee_by_asset[key] = local_fee_by_asset.get(key, 0.0) + float(amount)
+        for asset, amount in (item.get("commission_usdt_by_asset") or {}).items():
+            key = str(asset).upper()
+            local_fee_usdt_by_asset[key] = local_fee_usdt_by_asset.get(key, 0.0) + float(amount)
 
     order_rows = [item for item in exchange_orders if str(item.get("symbol", symbol)).upper() == symbol]
     exchange_order_ids = {int(item.get("orderId", 0)) for item in order_rows if int(item.get("orderId", 0)) > 0}
@@ -91,6 +105,7 @@ def audit_exchange_history(
     exchange_fees_usdt = 0.0
     unpriced_commissions = 0
     fee_by_asset: dict[str, float] = {}
+    fee_asset_prices: dict[str, float] = {}
     for fill in unique_trades:
         asset = str(fill.get("commissionAsset", "")).upper()
         amount = float(fill.get("commission", 0) or 0)
@@ -107,13 +122,24 @@ def audit_exchange_history(
         elif asset == base_asset:
             exchange_fees_usdt += amount * float(fill.get("price", 0) or 0)
         else:
-            try:
-                conversion = float(ticker_price(f"{asset}{quote_asset}"))
-                if conversion <= 0 or not math.isfinite(conversion):
-                    raise ValueError("invalid commission conversion rate")
-                exchange_fees_usdt += amount * conversion
-            except Exception:
+            # Historical BNB/third-asset fees must use the local execution-time
+            # valuation, not today's ticker. Missing valuation fails closed.
+            local_amount = local_fee_by_asset.get(asset, 0.0)
+            local_value = local_fee_usdt_by_asset.get(asset, 0.0)
+            if local_amount <= 0 or local_value <= 0:
                 unpriced_commissions += 1
+            else:
+                unit_value = local_value / local_amount
+                fee_asset_prices[asset] = unit_value
+                exchange_fees_usdt += amount * unit_value
+
+    fee_asset_mismatch_count = 0
+    for asset in set(local_fee_by_asset) | set(fee_by_asset):
+        local_amount = local_fee_by_asset.get(asset, 0.0)
+        exchange_amount = fee_by_asset.get(asset, 0.0)
+        tolerance = max(1e-10, max(abs(local_amount), abs(exchange_amount)) * 1e-6)
+        if abs(local_amount - exchange_amount) > tolerance:
+            fee_asset_mismatch_count += 1
 
     child_order_ids: set[int] = set()
     active_lists: list[Mapping[str, Any]] = []
@@ -150,7 +176,8 @@ def audit_exchange_history(
         "unmatched_exchange_order_count": 0,
         "unmatched_local_order_count": 0,
         "unknown_open_order_count": 0,
-        "unpriced_commission_count": 0,
+        "unpriced_commission_count": local_incomplete_commissions,
+        "fee_asset_mismatch_count": 0,
     }
     exchange = {
         "cash_usdt": float(exchange_cash),
@@ -161,6 +188,7 @@ def audit_exchange_history(
         "unmatched_local_order_count": len(missing_exchange),
         "unknown_open_order_count": len(unknown_open_orders) + len(unexpected_active_lists),
         "unpriced_commission_count": unpriced_commissions,
+        "fee_asset_mismatch_count": fee_asset_mismatch_count,
     }
     return {
         "local": local,
@@ -171,6 +199,8 @@ def audit_exchange_history(
             "exchange_fill_count": len(unique_trades),
             "local_order_count": len(local_order_ids),
             "exchange_fee_by_asset": fee_by_asset,
+            "local_fee_by_asset": local_fee_by_asset,
+            "historical_fee_asset_usdt_unit_values": fee_asset_prices,
             "missing_local_order_ids": sorted(missing_local),
             "missing_exchange_order_ids": sorted(missing_exchange),
             "unknown_open_order_ids": sorted(
