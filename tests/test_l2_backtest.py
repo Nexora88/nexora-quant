@@ -2,6 +2,9 @@ import gzip
 import json
 from pathlib import Path
 
+import pytest
+
+import app.l2_backtest as replay
 from app.l2_backtest import L2BacktestConfig, run_l2_backtest, summarize_l2_result
 from app.simulation import market_impact_bps
 
@@ -230,8 +233,8 @@ def test_l2_replay_consumes_trade_and_closed_kline_events(tmp_path):
 
 
 
-def test_l2_replay_liquidates_open_position_at_end_with_exit_costs(tmp_path):
-    path = tmp_path / "end-liquidation.jsonl.gz"
+def test_l2_replay_marks_open_position_without_fabricating_final_trade(tmp_path):
+    path = tmp_path / "end-mark.jsonl.gz"
     base_ns = 1_700_000_000_000_000_000
     base_ms = base_ns // 1_000_000
     records = []
@@ -283,6 +286,89 @@ def test_l2_replay_liquidates_open_position_at_end_with_exit_costs(tmp_path):
         primary_symbol="btcusdt",
     )
     assert result.entries >= 1
-    assert result.final_open_quantity == 0
-    assert "l2_end_of_sample_liquidation" in result.trades[-1]["reason"]
-    assert result.equity_curve[-1]["phase"] == "end_of_sample_liquidation"
+    assert result.final_open_quantity > 0
+    assert result.closed_positions == 0
+    assert result.exits == 0
+    assert result.trades[-1]["side"] == "buy"
+    assert summarize_l2_result(result)["ending_valuation"] == "mark_to_observed_bid_no_forced_close"
+    assert result.final_equity == pytest.approx(result.final_cash + 99.99 * result.final_open_quantity)
+
+
+def _execution_replay(tmp_path, monkeypatch, records, *, exit_when=None, **overrides):
+    monkeypatch.setattr(replay, "entry_signal_from_analysis", lambda *a, **k: True)
+    monkeypatch.setattr(replay.ReplayMarketContext, "entry_blockers", lambda *a: ([], {}))
+    monkeypatch.setattr(replay.ExecutionSimulator, "sample_latency_ms", lambda self, **kw: self.latency_ms)
+    if exit_when is not None:
+        monkeypatch.setattr(replay, "exit_reason", lambda **kw: "take_profit" if exit_when(kw["bid"]) else None)
+    path = tmp_path / "events.jsonl"
+    path.write_text(
+        "\n".join(json.dumps({
+            "timestamp_ns": ms * 1_000_000,
+            "event_type": "depth",
+            "payload": {"symbol": "btcusdt", "bids": [[bid, 10]], "asks": asks, **extra},
+        }) for ms, bid, asks, extra in records) + "\n",
+        encoding="utf-8",
+    )
+    params = {
+        "latency_ms": 100, "signal_confirmations": 1, "slippage_bps": 0, "impact_coefficient": 0,
+        "fee_rate": 0, "take_profit_pct": 1000, "stop_loss_pct": 100, "trailing_stop_pct": 0,
+        **overrides,
+    }
+    return run_l2_backtest(path, L2BacktestConfig(**params), primary_symbol="btcusdt")
+
+
+def test_replay_fills_on_eligible_observed_book_and_caps_quote_budget(tmp_path, monkeypatch):
+    res = _execution_replay(tmp_path, monkeypatch, [
+        (0, 99, [[100, 10]], {}),
+        (50, 109, [[110, 10]], {}),
+        (200, 119, [[120, 10]], {}),
+    ])
+    assert len(res.trades) == 1
+    trade = res.trades[0]
+    assert trade["decision_timestamp_ns"] == 0
+    assert trade["arrival_timestamp_ns"] == 100_000_000
+    assert trade["timestamp_ns"] == 200_000_000
+    assert trade["price"] == 120
+    assert trade["notional_usdt"] == 25
+    assert trade["quantity"] == pytest.approx(25 / 120)
+
+
+def test_replay_sell_uses_later_bid_not_trigger_bid(tmp_path, monkeypatch):
+    res = _execution_replay(tmp_path, monkeypatch, [
+        (0, 99, [[100, 10]], {}),
+        (100, 99, [[100, 10]], {}),
+        (200, 110, [[111, 10]], {}),
+        (250, 112, [[113, 10]], {}),
+        (300, 105, [[106, 10]], {}),
+    ], exit_when=lambda bid: bid >= 110)
+    assert res.closed_positions == 1
+    assert res.trades[1]["price"] == 105
+    assert res.trades[1]["decision_timestamp_ns"] == 200_000_000
+    assert res.trades[1]["timestamp_ns"] == 300_000_000
+
+
+def test_replay_does_not_invent_depth_for_thin_book(tmp_path, monkeypatch):
+    res = _execution_replay(tmp_path, monkeypatch, [
+        (0, 99, [[100, 10]], {}),
+        (100, 100, [[101, 0.001]], {}),
+    ])
+    assert res.trades[0]["quantity"] == pytest.approx(0.001)
+
+
+@pytest.mark.parametrize("second", [
+    (200, 119, [], {"best_ask": [120, 20]}),
+    (200, 119, [[120, 10]], {"synchronized": False}),
+    (200, 119, [[120, 10], [120, 10]], {}),
+    (5000, 119, [[120, 10]], {}),
+])
+def test_replay_missing_invalid_or_too_late_depth_does_not_fill(tmp_path, monkeypatch, second):
+    res = _execution_replay(tmp_path, monkeypatch, [(0, 99, [[100, 10]], {}), second])
+    assert res.trades == []
+    assert res.unfilled_orders == 1
+    assert res.pending_orders_at_end == 0
+
+
+def test_replay_ending_before_arrival_reports_pending_not_fill(tmp_path, monkeypatch):
+    res = _execution_replay(tmp_path, monkeypatch, [(0, 99, [[100, 10]], {})])
+    assert res.trades == []
+    assert res.pending_orders_at_end == 1

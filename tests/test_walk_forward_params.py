@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from scripts import walk_forward_params as wf
@@ -12,7 +13,7 @@ def test_walk_forward_selects_on_train_and_never_reranks_test(monkeypatch, tmp_p
             score = 1.0 if config.entry_min_score == 0.2 else 5.0
         else:
             score = 100.0 if config.entry_min_score == 0.2 else -20.0
-        return {"return_pct": score}
+        return {"return_pct": score, "realized_pnl": score, "closed_position_count": 2}
 
     monkeypatch.setattr(wf, "run_l2_backtest", fake_backtest)
     monkeypatch.setattr(wf, "summarize_l2_result", lambda result: result)
@@ -37,12 +38,12 @@ def test_walk_forward_selects_on_train_and_never_reranks_test(monkeypatch, tmp_p
 def test_history_split_preserves_order_and_rejects_bad_fraction(tmp_path: Path):
     source = tmp_path / "history.jsonl"
     source.write_text(
-        "".join(f'{{"n": {i}}}\n' for i in range(250)),
+        "".join(json.dumps({"n": i, "timestamp_ns": i}) + "\n" for i in range(250)),
         encoding="utf-8",
     )
-    train, test = wf._split_history(source, 0.7)
-    train_rows = [int(line.split(":")[1].strip(" }")) for line in train.read_text().splitlines()]
-    test_rows = [int(line.split(":")[1].strip(" }")) for line in test.read_text().splitlines()]
+    train, test = wf._split_history(source, 0.7, embargo_seconds=0)
+    train_rows = [json.loads(line)["n"] for line in train.read_text().splitlines()]
+    test_rows = [json.loads(line)["n"] for line in test.read_text().splitlines()]
     assert train_rows[-1] < test_rows[0]
     assert train_rows == list(range(175))
     assert test_rows == list(range(175, 250))
@@ -59,8 +60,8 @@ def test_l2_walk_forward_uses_risk_adjusted_training_selection_and_no_trade_fall
     def fake_backtest(path, config):
         if Path(path).name == "train.jsonl":
             if config.entry_min_score == 0.2:
-                return {"return_pct": 12.0, "max_drawdown_pct": 30.0}
-            return {"return_pct": 8.0, "max_drawdown_pct": 4.0}
+                return {"return_pct": 12.0, "realized_pnl": 12.0, "closed_position_count": 2, "max_drawdown_pct": 30.0}
+            return {"return_pct": 8.0, "realized_pnl": 8.0, "closed_position_count": 2, "max_drawdown_pct": 4.0}
         return {"return_pct": -1.0, "max_drawdown_pct": 2.0}
 
     monkeypatch.setattr(wf, "run_l2_backtest", fake_backtest)
@@ -73,7 +74,7 @@ def test_l2_walk_forward_uses_risk_adjusted_training_selection_and_no_trade_fall
     assert report["no_trade_fallback"] is False
 
     def losing_backtest(path, config):
-        return {"return_pct": -2.0, "max_drawdown_pct": 5.0}
+        return {"return_pct": -2.0, "realized_pnl": -2, "closed_position_count": 2, "max_drawdown_pct": 5.0}
     monkeypatch.setattr(wf, "run_l2_backtest", losing_backtest)
     report = wf.evaluate_train_then_test(
         tmp_path / "train.jsonl", tmp_path / "test.jsonl",
@@ -83,9 +84,18 @@ def test_l2_walk_forward_uses_risk_adjusted_training_selection_and_no_trade_fall
     assert report["selected_params"]["entry_min_score"] > 1.0
 
 
+def test_unrealized_training_winner_without_round_trip_is_not_selected(monkeypatch, tmp_path):
+    monkeypatch.setattr(wf, "summarize_l2_result", lambda result: result)
+    monkeypatch.setattr(wf, "run_l2_backtest", lambda path, config: {
+        "return_pct": 12.0, "realized_pnl": 0.0, "closed_position_count": 0,
+    })
+    result = wf.evaluate_train_then_test(tmp_path / "train.jsonl", tmp_path / "test.jsonl")
+    assert result["no_trade_fallback"]
+    assert result["candidate_training_metrics"][0]["metrics"]["selection_score"] is None
+
+
 def test_walk_forward_split_files_are_replayable_by_real_l2_backtest(tmp_path):
     import gzip
-    import json
     from app.l2_backtest import L2BacktestConfig, run_l2_backtest
 
     source = tmp_path / "captured.jsonl.gz"
@@ -101,7 +111,7 @@ def test_walk_forward_split_files_are_replayable_by_real_l2_backtest(tmp_path):
                 },
             }
             stream.write(json.dumps(row) + "\n")
-    train, test = wf._split_history(source, 0.7)
+    train, test = wf._split_history(source, 0.7, embargo_seconds=0)
     assert train.suffix == ".jsonl" and test.suffix == ".jsonl"
     train_result = run_l2_backtest(train, L2BacktestConfig(signal_confirmations=1))
     test_result = run_l2_backtest(test, L2BacktestConfig(signal_confirmations=1))
