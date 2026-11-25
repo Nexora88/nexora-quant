@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
+
+import pytest
 
 from app import binance_depth
 
@@ -83,7 +86,9 @@ def test_spot_depth_stream_accepts_sequential_events_without_futures_pu(monkeypa
 
     events = [
         {"e": "depthUpdate", "U": 100, "u": 102, "b": [["100", "1"]], "a": []},
-        {"e": "depthUpdate", "U": 102, "u": 104, "b": [["100", "2"]], "a": []},
+        {"e": "depthUpdate", "U": 100, "u": 102, "b": [["100", "999"]], "a": []},
+        {"e": "depthUpdate", "U": 102, "u": 104, "b": [["100", "2"]], "a": [],
+         "E": int(time.time() * 1000)},
     ]
     socket = FakeSocket(events)
     monkeypatch.setattr(binance_depth, "_snapshot", fake_snapshot)
@@ -100,8 +105,35 @@ def test_spot_depth_stream_accepts_sequential_events_without_futures_pu(monkeypa
         assert initial_id == 100
         assert first_id == 102
         assert second_id == 104
+        assert initial.best_bid == (99.0, 2.0)
+        assert first.best_bid == (100.0, 1.0)
         assert second.best_bid == (100.0, 2.0)
+        assert second.exchange_at_ms == events[-1]["E"]
+        with pytest.raises(TypeError):
+            first.bids[100.0] = 9.0
         assert snapshot_calls == ["btcusdt"]
         await stream.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_resync_does_not_publish_same_revision_again(monkeypatch):
+    replies = iter([
+        {"lastUpdateId": 100, "bids": [["99", "2"]], "asks": [["101", "2"]]},
+        {"lastUpdateId": 100, "bids": [["98", "2"]], "asks": [["101", "2"]]},
+    ])
+    resumable = {"e": "depthUpdate", "U": 101, "u": 101, "b": [["100", "1"]], "a": []}
+    sockets = iter([FakeSocket([]), FakeSocket([resumable])])
+    monkeypatch.setattr(binance_depth, "_snapshot", lambda _: next(replies))
+    monkeypatch.setattr(binance_depth.websockets, "connect", lambda *a, **k: FakeConnection(next(sockets)))
+    monkeypatch.setattr(binance_depth.random, "uniform", lambda *_: 0.0)
+
+    async def scenario():
+        stream = binance_depth.stream_synchronized_depth("btcusdt")
+        try:
+            assert (await anext(stream)).last_update_id == 100
+            assert (await anext(stream)).last_update_id == 101
+        finally:
+            await stream.aclose()
 
     asyncio.run(scenario())

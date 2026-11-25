@@ -5,8 +5,60 @@ exchange order ID; any gap or unpriced commission blocks live trading.
 """
 from __future__ import annotations
 
+import asyncio
 import math
+from copy import deepcopy
+from dataclasses import dataclass
+import time
 from typing import Any, Callable, Iterable, Mapping
+
+
+def live_trade_event_key(executor: Any, trade: Mapping[str, Any]) -> str:
+    """One key for an aggregate order, or one for each individual OCO fill."""
+    venue = "testnet" if executor.client.testnet else "mainnet"
+    order_id = int(trade.get("exchange_order_id") or 0)
+    if order_id <= 0:
+        raise ValueError("live ledger entry requires a positive exchange order ID")
+    key = f"live:{venue}:{executor.symbol.upper()}:{order_id}"
+    trade_id = trade.get("exchange_trade_id")
+    if trade_id is not None:
+        # Binance trade IDs can start at zero.
+        fill_id = int(trade_id)
+        if fill_id < 0:
+            raise ValueError("live ledger entry has an invalid exchange trade ID")
+        key += f":trade:{fill_id}"
+    return key
+
+
+@dataclass(frozen=True, slots=True)
+class LocalAccountSnapshot:
+    """Copy executor state on the engine thread before starting network I/O."""
+
+    symbol: str
+    quote_asset: str
+    base_asset: str
+    cash_usdt: float
+    base_quantity: float
+    fees_paid_usdt: float
+    protective_order_list_id: int | None
+    trades: tuple[dict[str, Any], ...]
+
+    @classmethod
+    def capture(cls, executor: Any) -> LocalAccountSnapshot:
+        return cls(
+            executor.symbol, executor.quote_asset, executor.base_asset, executor.cash_usdt,
+            executor.base_quantity, executor.fees_paid_usdt, executor.protective_order_list_id,
+            tuple(deepcopy(executor.trades)),
+        )
+
+    @staticmethod
+    def revision(executor: Any) -> tuple:
+        last = executor.trades[-1] if executor.trades else {}
+        return (
+            executor.symbol, executor.cash_usdt, executor.base_quantity, executor.fees_paid_usdt,
+            executor.protective_order_list_id, len(executor.trades),
+            last.get("exchange_order_id"), last.get("exchange_trade_id"),
+        )
 
 
 def load_local_trade_ledger(store: Any) -> list[dict[str, Any]]:
@@ -58,19 +110,29 @@ def audit_exchange_history(
             local_items.append(item)
     local_items.extend(item for item in executor_trades if isinstance(item, Mapping))
 
-    local_by_order_id: dict[int, Mapping[str, Any]] = {}
+    local_by_fill_key: dict[tuple[int, int | None], Mapping[str, Any]] = {}
     for item in local_items:
         raw_id = item.get("exchange_order_id")
         if raw_id is not None:
             order_id = int(raw_id)
             if order_id > 0:
-                local_by_order_id[order_id] = item
-    local_order_ids = set(local_by_order_id)
+                raw_trade_id = item.get("exchange_trade_id")
+                trade_id = int(raw_trade_id) if raw_trade_id is not None else None
+                local_by_fill_key[(order_id, trade_id)] = item
+    local_order_ids = {order_id for order_id, _ in local_by_fill_key}
+    local_fill_ids = {
+        (order_id, trade_id)
+        for order_id, trade_id in local_by_fill_key
+        if trade_id is not None
+    }
+    tracked_fill_orders = {order_id for order_id, _ in local_fill_ids}
+    if any((order_id, None) in local_by_fill_key for order_id in tracked_fill_orders):
+        raise RuntimeError("Live ledger has both aggregate and individual fills for one order")
 
     local_fee_by_asset: dict[str, float] = {}
     local_fee_usdt_by_asset: dict[str, float] = {}
     local_incomplete_commissions = 0
-    for item in local_by_order_id.values():
+    for item in local_by_fill_key.values():
         if item.get("accounting_complete") is False or item.get("fee_estimated") is True:
             local_incomplete_commissions += 1
         for asset, amount in (item.get("commission_by_asset") or {}).items():
@@ -99,8 +161,14 @@ def audit_exchange_history(
     if not filled_order_ids <= exchange_order_ids:
         raise RuntimeError("Binance myTrades contains fills absent from allOrders history")
 
-    missing_local = filled_order_ids - local_order_ids
-    missing_exchange = local_order_ids - exchange_order_ids
+    exchange_fill_ids = {(int(item["orderId"]), int(item["id"])) for item in unique_trades}
+    missing_local_fills = {
+        key for key in exchange_fill_ids - local_fill_ids if key[0] in tracked_fill_orders
+    }
+    missing_exchange_fills = local_fill_ids - exchange_fill_ids
+    # A known order without a matching trade is not evidence that a local fill occurred.
+    missing_local = (filled_order_ids - local_order_ids) | {key[0] for key in missing_local_fills}
+    missing_exchange = (local_order_ids - filled_order_ids) | {key[0] for key in missing_exchange_fills}
 
     exchange_fees_usdt = 0.0
     unpriced_commissions = 0
@@ -203,6 +271,8 @@ def audit_exchange_history(
             "historical_fee_asset_usdt_unit_values": fee_asset_prices,
             "missing_local_order_ids": sorted(missing_local),
             "missing_exchange_order_ids": sorted(missing_exchange),
+            "missing_local_fill_ids": [list(key) for key in sorted(missing_local_fills)],
+            "missing_exchange_fill_ids": [list(key) for key in sorted(missing_exchange_fills)],
             "unknown_open_order_ids": sorted(
                 int(item.get("orderId", 0) or 0) for item in unknown_open_orders
             ),
@@ -248,3 +318,65 @@ def fetch_exchange_audit(
         open_order_lists=client.open_order_lists(),
         ticker_price=client.ticker_price,
     )
+
+
+class RecurringExchangeAudit:
+    """Reuse history only for an unchanged local revision, with a fresh check on drift."""
+
+    def __init__(self, interval_seconds: float) -> None:
+        if not math.isfinite(interval_seconds) or interval_seconds <= 0:
+            raise ValueError("history refresh interval must be finite and positive")
+        self.interval_seconds = interval_seconds
+        self._cache: tuple[tuple, float, list, list] | None = None
+
+    def read(
+        self, *, client: Any, snapshot: LocalAccountSnapshot, local_trade_rows: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        from app.dual_account import reconciliation_differences
+
+        revision = LocalAccountSnapshot.revision(snapshot)
+        if self._cache is not None:
+            cached_revision, cached_at, orders, trades = self._cache
+            if revision == cached_revision and time.monotonic() - cached_at < self.interval_seconds:
+                result = fetch_exchange_audit(
+                    client=client, executor=snapshot, local_trade_rows=local_trade_rows,
+                    exchange_orders=orders, exchange_trades=trades,
+                )
+                if not reconciliation_differences(result["local"], result["exchange"]):
+                    result["details"]["history_refreshed"] = False
+                    return result
+        self._cache = None
+        orders = client.all_orders(snapshot.symbol, from_id=0)
+        trades = client.all_my_trades(snapshot.symbol, from_id=0)
+        result = fetch_exchange_audit(
+            client=client, executor=snapshot, local_trade_rows=local_trade_rows,
+            exchange_orders=orders, exchange_trades=trades,
+        )
+        self._cache = (revision, time.monotonic(), orders, trades)
+        result["details"]["history_refreshed"] = True
+        return result
+
+
+async def read_stable_exchange_audit(
+    *, executor: Any, store: Any, audit: RecurringExchangeAudit,
+) -> dict[str, Any]:
+    """Retry if the engine changes the local snapshot while REST is in flight."""
+    client = executor.client
+
+    def read(snapshot: LocalAccountSnapshot) -> dict[str, Any]:
+        return audit.read(
+            client=client, snapshot=snapshot, local_trade_rows=load_local_trade_ledger(store),
+        )
+
+    for _ in range(3):
+        snapshot = LocalAccountSnapshot.capture(executor)
+        revision = LocalAccountSnapshot.revision(snapshot)
+        try:
+            result = await asyncio.to_thread(read, snapshot)
+        except Exception:
+            if LocalAccountSnapshot.revision(executor) != revision:
+                continue
+            raise
+        if LocalAccountSnapshot.revision(executor) == revision:
+            return result
+    raise RuntimeError("Local account changed during consecutive reconciliation reads")

@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import random
+import time
 import urllib.parse
 import urllib.request
 from collections import deque
@@ -16,7 +17,7 @@ from typing import Any
 
 import websockets
 
-from app.depth_book import DepthBook
+from app.depth_book import DepthBook, DepthSnapshot
 
 log = logging.getLogger(__name__)
 WS_BASE = "wss://stream.binance.com:9443/ws"
@@ -57,41 +58,50 @@ async def stream_synchronized_depth(
     symbol: str,
     *,
     on_reconnect: Callable[[str, Exception], None] | None = None,
-) -> AsyncIterator[DepthBook]:
-    """Yield synchronized books and report every reconnect/resnapshot event."""
+) -> AsyncIterator[DepthSnapshot]:
+    """Publish immutable top levels; the mutable full book never leaves this stream."""
     backoff = 1.0
-    url = f"{WS_BASE}/{symbol.lower()}@depth@100ms"
+    symbol = symbol.lower()
+    url = f"{WS_BASE}/{symbol}@depth@100ms"
+    last_published_id = -1
     while True:
         try:
             async with websockets.connect(
                 url, ping_interval=20, ping_timeout=20, close_timeout=5,
                 max_size=4_000_000,
             ) as socket:
-                buffer: deque[dict[str, Any]] = deque()
+                buffer: deque[tuple[dict[str, Any], int, int]] = deque()
+                # The snapshot has no exchange timestamp; bound its age by the
+                # request start, not by the end of a potentially slow REST call.
+                received_at_ns, received_mono_ns = time.time_ns(), time.monotonic_ns()
+                exchange_at_ms = None
                 snapshot_task = asyncio.create_task(asyncio.to_thread(_snapshot, symbol))
-                # The socket is already connected while REST snapshot is fetched.
-                while not snapshot_task.done():
-                    try:
-                        raw = await asyncio.wait_for(socket.recv(), timeout=0.25)
-                    except asyncio.TimeoutError:
-                        continue
-                    event = json.loads(raw)
-                    if event.get("e") == "depthUpdate":
-                        buffer.append(event)
-                        if len(buffer) > BUFFER_LIMIT:
-                            raise RuntimeError("Depth buffer overflow; restarting synchronization")
-                snapshot = await snapshot_task
-                book = DepthBook()
+                try:
+                    while not snapshot_task.done():
+                        try:
+                            raw = await asyncio.wait_for(socket.recv(), timeout=0.25)
+                        except asyncio.TimeoutError:
+                            continue
+                        wall_ns, mono_ns = time.time_ns(), time.monotonic_ns()
+                        event = json.loads(raw)
+                        if event.get("e") == "depthUpdate":
+                            buffer.append((event, wall_ns, mono_ns))
+                            if len(buffer) > BUFFER_LIMIT:
+                                raise RuntimeError("Depth buffer overflow; restarting synchronization")
+                    snapshot = await snapshot_task
+                finally:
+                    if not snapshot_task.done():
+                        snapshot_task.cancel()
+                    await asyncio.gather(snapshot_task, return_exceptions=True)
+                book = DepthBook(symbol=symbol)
                 book.load_snapshot(
                     last_update_id=snapshot["lastUpdateId"],
                     bids=_levels(snapshot["bids"]),
                     asks=_levels(snapshot["asks"]),
                 )
                 # Binance bridge rule: first event must span lastUpdateId + 1.
-                while buffer and int(buffer[0]["u"]) <= book.last_update_id:
-                    buffer.popleft()
                 while buffer:
-                    event = buffer.popleft()
+                    event, wall_ns, mono_ns = buffer.popleft()
                     first_id, final_id = int(event["U"]), int(event["u"])
                     if final_id <= book.last_update_id:
                         continue
@@ -103,12 +113,20 @@ async def stream_synchronized_depth(
                     ):
                         book.synchronized = False
                         break
+                    received_at_ns, received_mono_ns = wall_ns, mono_ns
+                    exchange_at_ms = int(event["E"]) if "E" in event else None
                 if not book.synchronized:
                     raise RuntimeError("Depth snapshot buffer could not be bridged")
                 backoff = 1.0
                 log.info("Synchronized %s depth at update ID %s", symbol.upper(), book.last_update_id)
-                yield book
+                if book.last_update_id > last_published_id:
+                    last_published_id = book.last_update_id
+                    yield book.publish(
+                        received_at_ns=received_at_ns, received_monotonic_ns=received_mono_ns,
+                        exchange_at_ms=exchange_at_ms,
+                    )
                 async for raw in socket:
+                    wall_ns, mono_ns = time.time_ns(), time.monotonic_ns()
                     event = json.loads(raw)
                     if event.get("e") != "depthUpdate":
                         continue
@@ -120,7 +138,13 @@ async def stream_synchronized_depth(
                             f"local={previous_id} event_U={event.get('U')} event_u={event.get('u')}; "
                             "resynchronizing"
                         )
-                    yield book
+                    if book.last_update_id <= last_published_id:
+                        continue
+                    last_published_id = book.last_update_id
+                    yield book.publish(
+                        received_at_ns=wall_ns, received_monotonic_ns=mono_ns,
+                        exchange_at_ms=int(event["E"]) if "E" in event else None,
+                    )
                 raise ConnectionError("Binance depth websocket closed")
         except asyncio.CancelledError:
             raise

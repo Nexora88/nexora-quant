@@ -58,6 +58,9 @@ class SymbolRouter:
         self._board: dict[str, SymbolScore] = {}
         self.active_symbol: str | None = None
 
+    def invalidate(self, symbol: str) -> None:
+        self._board.pop(symbol.lower(), None)
+
     def _is_fresh(self, row: SymbolScore, now: datetime) -> bool:
         try:
             updated = datetime.fromisoformat(row.updated_at)

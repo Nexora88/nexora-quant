@@ -10,7 +10,11 @@ from datetime import datetime, timezone
 from app.config import settings
 from app.engine_setup import state, risk, log
 from app.storage import PaperStore
-from app.dual_account import ReconciliationMonitor
+from app.dual_account import ReconciliationMonitor, reconciliation_differences
+from app.live_reconciliation import (
+    RecurringExchangeAudit, fetch_exchange_audit, live_trade_event_key,
+    load_local_trade_ledger, read_stable_exchange_audit,
+)
 from app.paper import restore_paper_account
 from app.io_queue import AsyncIoQueue
 from app.market_history import MarketHistoryWriter
@@ -27,7 +31,7 @@ try:
     _apply_antichurn()
 except Exception:
     pass
-from app.engine_tick import handle_tick
+from app.engine_tick import handle_tick, reset_depth_confirmation
 from app.engine_setup import shadows, learner, memory, motor
 from app import engine_setup as es
 
@@ -56,9 +60,17 @@ async def run() -> None:
     today = datetime.now(timezone.utc).date().isoformat()
     saved = store.load_state(key)
 
-    def reconcile_live_startup() -> None:
+    def persist_live_fills_since(trade_count: int) -> None:
+        try:
+            for trade in es.executor.trades[trade_count:]:
+                store.append_trade(trade, event_key=live_trade_event_key(es.executor, trade))
+        except Exception:
+            risk.activate_kill_switch("Live fill could not be durably recorded")
+            state.last_error = "live_ledger_write_failed"
+            raise
+
+    def reconcile_live_account() -> None:
         es.executor.sync_balances()
-        from app.live_reconciliation import fetch_exchange_audit, load_local_trade_ledger
         local_rows = load_local_trade_ledger(store)
         audit = fetch_exchange_audit(
             client=es.executor.client,
@@ -99,6 +111,13 @@ async def run() -> None:
             ):
                 risk.activate_kill_switch("Could not restore exchange-hosted position protection")
                 raise RuntimeError("Live position protection could not be restored; refusing to start")
+
+    def reconcile_live_startup() -> None:
+        before = len(es.executor.trades)
+        try:
+            reconcile_live_account()
+        finally:
+            persist_live_fills_since(before)
 
     if saved:
         if mode == "paper":
@@ -331,10 +350,29 @@ async def run() -> None:
     store.start_session(session_id, mode)
     rollover_task = asyncio.create_task(day_rollover_loop(), name="nexora-day-rollover")
 
+    def invalidate_depth(symbol: str) -> None:
+        reset_depth_confirmation(symbol)
+        es.symbol_router.invalidate(symbol)
+        state.router_board = es.symbol_router.leaderboard()
+        state.side_books.pop(symbol, None)
+        state.symbol_diagnostics.pop(symbol, None)
+        if symbol == (state.trade_symbol or settings.symbol).lower():
+            state.last_message_at = None
+            state.latest_depth = None
+            state.last_entry_eligible = False
+
     def on_depth_reconnect(symbol: str, exc: Exception) -> None:
+        invalidate_depth(symbol)
         state.reconnect_count += 1
         state.last_error = f"depth_reconnect:{symbol}:{type(exc).__name__}"
         log.warning("Depth resynchronization symbol=%s reconnect_count=%s", symbol, state.reconnect_count)
+
+    def on_depth_drop(symbol: str, reason: str) -> None:
+        counter = f"{symbol}:{reason}"
+        state.depth_drops[counter] = state.depth_drops.get(counter, 0) + 1
+        # Old-generation frames were already invalidated at the reconnect.
+        if reason != "before_resync":
+            invalidate_depth(symbol)
 
     primary = (
         str(state.trade_symbol or settings.symbol).lower()
@@ -345,40 +383,25 @@ async def run() -> None:
     trade_tasks: list[asyncio.Task] = []
 
     if mode == "live":
-        from app.live_reconciliation import fetch_exchange_audit, load_local_trade_ledger
-
-        history_cache: dict[str, object] = {}
         history_interval = max(
             60.0, float(os.getenv("RECONCILIATION_HISTORY_INTERVAL_SECONDS", "300")),
         )
+        recurring_audit = RecurringExchangeAudit(history_interval)
 
         async def _exchange_reconciliation_snapshot():
-            def _read_snapshots():
-                client = es.executor.client
-                now = time.monotonic()
-                if (
-                    "orders" not in history_cache
-                    or now - float(history_cache.get("updated_at", 0.0)) >= history_interval
-                ):
-                    # Full symbol history is fetched periodically, while balances and
-                    # all open orders/order lists are checked on every monitor cycle.
-                    history_cache["orders"] = client.all_orders(es.executor.symbol, from_id=0)
-                    history_cache["trades"] = client.all_my_trades(es.executor.symbol, from_id=0)
-                    history_cache["updated_at"] = now
-                local_rows = load_local_trade_ledger(store)
-                audit = fetch_exchange_audit(
-                    client=client,
-                    executor=es.executor,
-                    local_trade_rows=local_rows,
-                    exchange_orders=history_cache["orders"],
-                    exchange_trades=history_cache["trades"],
-                )
-                state.exchange_reconciliation = audit["details"]
-                return audit["local"], audit["exchange"]
-
-            return await asyncio.to_thread(_read_snapshots)
+            audit = await read_stable_exchange_audit(executor=es.executor, store=store, audit=recurring_audit)
+            differences = reconciliation_differences(audit["local"], audit["exchange"])
+            state.exchange_reconciliation = {
+                **audit["details"], "status": "mismatch" if differences else "pass",
+                "differences": differences,
+            }
+            return audit["local"], audit["exchange"]
 
         def _reconciliation_mismatch(result: dict) -> None:
+            state.exchange_reconciliation = {
+                **state.exchange_reconciliation, "status": result["status"],
+                "differences": result["differences"],
+            }
             risk.activate_kill_switch("Recurring exchange/local account reconciliation failed")
             state.last_error = "exchange_local_reconciliation_mismatch"
             log.error("Live account reconciliation failed: %s", result)
@@ -453,6 +476,14 @@ async def run() -> None:
         async def _consume(depth, *, symbol: str | None = None) -> None:
             nonlocal confirmations, ticks, primary, primary_since
             sym = (symbol or primary).lower()
+            if (
+                not depth.best_bid or not depth.best_ask or depth.best_ask[0] < depth.best_bid[0]
+                or depth.age_seconds() > settings.max_data_age_seconds
+            ):
+                on_depth_drop(sym, "invalid_or_stale")
+                if sym == primary:
+                    confirmations = 0
+                return
             if sym != primary:
                 try:
                     if depth.synchronized and depth.best_bid and depth.best_ask:
@@ -468,7 +499,7 @@ async def run() -> None:
                             "ask_qty": aq,
                             "spread_bps": spread_bps,
                             "mid": mid,
-                            "updated_at": time.time(),
+                            "updated_at": depth.received_at_ns / 1e9,
                         }
                         state.side_books = board
                         imb = (bq / (bq + aq)) if (bq + aq) > 0 else 0.5
@@ -496,6 +527,9 @@ async def run() -> None:
                                 primary = best.symbol
                                 primary_since = time.monotonic()
                                 state.trade_symbol = primary
+                                state.last_message_at = None
+                                state.latest_depth = None
+                                state.last_entry_eligible = False
                                 log.info("Router switch -> %s score=%.2f after dwell", primary.upper(), best.score)
                 except Exception:
                     log.exception("side-book/router update failed for %s", sym)
@@ -511,16 +545,7 @@ async def run() -> None:
                 if mode == "live":
                     # Commit exchange-confirmed fills synchronously, even if later
                     # tick processing raises after an order was already executed.
-                    new_trades = (getattr(es.executor, "trades", []) or [])[trade_count_before:]
-                    for trade in new_trades:
-                        order_id = trade.get("exchange_order_id")
-                        venue = "testnet" if bool(getattr(es.executor.client, "testnet", False)) else "mainnet"
-                        event_key = (
-                            f"live:{venue}:{es.executor.symbol}:{order_id}"
-                            if order_id is not None
-                            else f"live:{venue}:{es.executor.symbol}:{trade.get('timestamp')}:{trade.get('side')}"
-                        )
-                        store.append_trade(trade, event_key=event_key)
+                    persist_live_fills_since(trade_count_before)
             if ticks == 1 or ticks % 200 == 0:
                 log.info(
                     "L2 live primary=%s ticks=%s mid_ok=%s",
@@ -541,15 +566,15 @@ async def run() -> None:
             try:
                 if use_multi:
                     log.info("Starting multi-depth (primary trades only): %s", ",".join(watched))
-                    async for tagged in stream_multi_depth(watched, on_reconnect=on_depth_reconnect):
-                        tagged.book.symbol = tagged.symbol
+                    async for tagged in stream_multi_depth(
+                        watched, on_reconnect=on_depth_reconnect, on_drop=on_depth_drop,
+                    ):
                         await _consume(tagged.book, symbol=tagged.symbol)
                 else:
                     log.info("Starting single-depth L2: %s", primary.upper())
                     async for depth in stream_synchronized_depth(
                         primary, on_reconnect=on_depth_reconnect,
                     ):
-                        depth.symbol = primary
                         await _consume(depth, symbol=primary)
             except asyncio.CancelledError:
                 raise

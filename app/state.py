@@ -7,6 +7,7 @@ from typing import Any
 
 from app.events import BookTicker, TradeTick
 from app.config import settings
+from app.depth_book import DepthSnapshot
 
 
 class RuntimeState:
@@ -14,6 +15,9 @@ class RuntimeState:
         self.latest_book: BookTicker | None = None
         self.trades: deque[TradeTick] = deque(maxlen=1000)
         self.last_message_at = None
+        self.latest_depth: DepthSnapshot | None = None
+        self.depth_drops: dict[str, int] = {}
+        self.exchange_reconciliation: dict[str, Any] = {}
         self.reconnect_count = 0
         self.events_seen = 0
         self.last_error = None
@@ -213,6 +217,9 @@ class RuntimeState:
     def data_age_seconds(self) -> float | None:
         if not self.last_message_at:
             return None
+        if self.latest_depth is not None:
+            age = self.latest_depth.age_seconds()
+            return age if age != float("inf") else None
         ref = self.last_message_at
         if getattr(ref, "tzinfo", None) is None:
             ref = ref.replace(tzinfo=timezone.utc)
@@ -463,6 +470,8 @@ class RuntimeState:
             "target_price": settings.target_price,
             "connected": bool(age is not None and age <= settings.max_data_age_seconds),
             "reconnect_count": self.reconnect_count,
+            "depth_drops": dict(self.depth_drops),
+            "exchange_reconciliation": dict(self.exchange_reconciliation),
             "events_seen": self.events_seen,
             "data_age_seconds": age,
             "last_error": self.last_error,
