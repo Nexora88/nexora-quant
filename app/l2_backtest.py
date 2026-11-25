@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from heapq import merge
+from math import isfinite
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,7 @@ class L2BacktestConfig:
     min_order_usdt: float = 5.0
     stop_stress_multiplier: float = 2.5
     stop_tail_bps: float = 8.0
+    max_execution_wait_ms: int = 2000
 
 
 @dataclass
@@ -64,43 +66,52 @@ class L2BacktestResult:
     blocked_candidates: int = 0
     blocker_counts: dict[str, int] = field(default_factory=dict)
     opportunity_audit: dict[str, Any] = field(default_factory=dict)
+    simulated_orders: int = 0
+    unfilled_orders: int = 0
+    pending_orders_at_end: int = 0
+    invalid_depth_frames: int = 0
     notes: str = (
         "Multi-symbol event-time replay reconstructs persistent L2 pressure, "
         "spoof persistence, aggressor trade flow, closed-candle indicators and "
         "BTC/ETH macro gates. Public depth cannot reveal true queue position, "
-        "hidden liquidity or exact historical fills; results remain simulated."
+        "hidden liquidity or exact historical fills. Orders use the first eligible "
+        "observed primary depth after sampled latency. Ending positions are marked "
+        "to the last observed bid, not liquidated."
     )
 
 
-def _best(levels: list) -> tuple[float, float] | None:
-    if not levels:
-        return None
-    row = levels[0]
-    if isinstance(row, (list, tuple)) and len(row) >= 2:
-        return float(row[0]), float(row[1])
-    return None
+@dataclass(frozen=True, slots=True)
+class _ReplayIntent:
+    side: str
+    decision_ns: int
+    latency_ms: int
+    reason: str
+    quantity: float
+    quote_budget: float = 0.0
+    stress: bool = False
+    profit_lock: bool = False
+
+    @property
+    def arrival_ns(self) -> int:
+        return self.decision_ns + self.latency_ms * 1_000_000
 
 
-def _walk_book(side: str, levels: list, quantity: float, *, impact_bps: float = 0.0) -> tuple[float, float]:
-    remaining = quantity
-    cost = 0.0
-    filled = 0.0
-    for row in levels or []:
-        if remaining <= 0:
-            break
+def _recorded_levels(payload: dict, key: str) -> list[tuple[float, float]]:
+    values = payload.get(key)
+    if not isinstance(values, list):
+        return []
+    levels: dict[float, float] = {}
+    for row in values:
         if not isinstance(row, (list, tuple)) or len(row) < 2:
-            continue
-        px, qty = float(row[0]), float(row[1])
-        if px <= 0 or qty <= 0:
-            continue
-        take = min(remaining, qty)
-        adj = px * (1.0 + impact_bps / 10_000.0) if side == "buy" else px * (1.0 - impact_bps / 10_000.0)
-        cost += adj * take
-        filled += take
-        remaining -= take
-    if filled <= 0:
-        return 0.0, 0.0
-    return cost / filled, filled
+            return []
+        try:
+            price, qty = float(row[0]), float(row[1])
+        except (TypeError, ValueError, IndexError, KeyError, OverflowError):
+            return []
+        if not isfinite(price) or not isfinite(qty) or price <= 0 or qty < 0 or price in levels:
+            return []
+        levels[price] = qty
+    return sorted(((px, qty) for px, qty in levels.items() if qty > 0), reverse=key == "bids")
 
 
 def run_l2_backtest(
@@ -113,6 +124,8 @@ def run_l2_backtest(
     if context_paths and not primary_symbol:
         raise ValueError("primary_symbol is required when replaying multiple symbol files")
     cfg = cfg or L2BacktestConfig()
+    if type(cfg.max_execution_wait_ms) is not int or cfg.max_execution_wait_ms < 0:
+        raise ValueError("max_execution_wait_ms must be a nonnegative integer")
     paper = PaperExecutor(cfg.starting_cash_usdt, cfg.fee_rate)
     sim = ExecutionSimulator(
         slippage_bps=cfg.slippage_bps,
@@ -130,7 +143,7 @@ def run_l2_backtest(
     confirmations = 0
     peak = 0.0
     last_bid: float | None = None
-    last_bid_levels: list | None = None
+    pending: _ReplayIntent | None = None
     market_context = ReplayMarketContext([primary_symbol] if primary_symbol else [])
     blocked_candidate_samples: list[dict[str, Any]] = []
     quote_samples: list[dict[str, Any]] = []
@@ -140,11 +153,54 @@ def run_l2_backtest(
         key=lambda item: int(item["timestamp_ns"]),
     )
     active_symbol = (primary_symbol or "").lower()
+    last_event_ns = -1
+
+    def execute(
+        intent: _ReplayIntent, ts: int, bids: list, asks: list,
+    ) -> None:
+        nonlocal peak
+        levels = asks if intent.side == "buy" else bids
+        if not levels or ts - intent.arrival_ns > cfg.max_execution_wait_ms * 1_000_000:
+            result.unfilled_orders += 1
+            return
+        fill = sim.fill(
+            side=intent.side, reference_price=levels[0][0], quantity=intent.quantity,
+            book_levels=levels, stress=intent.stress, sampled_latency_ms=intent.latency_ms,
+        )
+        if fill.filled_quantity <= 0 or fill.fill_price <= 0:
+            result.unfilled_orders += 1
+            return
+        label = f"{intent.reason};slippage_bps={fill.slippage_bps:.2f};latency_ms={fill.latency_ms}"
+        if intent.side == "buy":
+            notional = min(intent.quote_budget, fill.fill_price * fill.filled_quantity)
+            trade = paper.buy(notional_usdt=notional, price=fill.fill_price, reason=label)
+            result.entries += 1
+            peak = fill.fill_price
+        else:
+            trade = paper.sell_quantity(quantity=fill.filled_quantity, price=fill.fill_price, reason=label)
+            if not trade:
+                result.unfilled_orders += 1
+                return
+            result.exits += 1
+            if intent.profit_lock:
+                result.profit_lock_exits += 1
+            if paper.base_quantity <= 1e-12:
+                result.closed_positions += 1
+                peak = 0.0
+        result.trades.append({
+            **trade,
+            "timestamp_ns": ts,
+            "decision_timestamp_ns": intent.decision_ns,
+            "arrival_timestamp_ns": intent.arrival_ns,
+        })
 
     for event in events:
         result.events_seen += 1
         payload = event.get("payload") or event
-        ts = int(event.get("timestamp_ns") or payload.get("timestamp_ns") or 0)
+        ts = event["timestamp_ns"]
+        if type(ts) is not int or ts < 0 or ts < last_event_ns:
+            raise ValueError("L2 replay requires nonnegative chronological integer timestamps")
+        last_event_ns = ts
         event_time = ts / 1_000_000_000.0
         event_type = str(event.get("event_type") or "")
 
@@ -180,36 +236,26 @@ def run_l2_backtest(
             # streams are deliberately not replayed into the primary instrument.
             continue
 
-        bb = payload.get("best_bid") or payload.get("bids") or []
-        ba = payload.get("best_ask") or payload.get("asks") or []
-        if isinstance(bb, list) and bb and isinstance(bb[0], (list, tuple)):
-            best_b = _best(bb)
-        elif isinstance(bb, (list, tuple)) and len(bb) >= 2 and not isinstance(bb[0], (list, tuple)):
-            best_b = (float(bb[0]), float(bb[1]))
-        else:
-            best_b = _best(bb) if isinstance(bb, list) else None
-        if isinstance(ba, list) and ba and isinstance(ba[0], (list, tuple)):
-            best_a = _best(ba)
-        elif isinstance(ba, (list, tuple)) and len(ba) >= 2 and not isinstance(ba[0], (list, tuple)):
-            best_a = (float(ba[0]), float(ba[1]))
-        else:
-            best_a = _best(ba) if isinstance(ba, list) else None
-        if not best_b or not best_a:
+        bids = _recorded_levels(payload, "bids")
+        asks = _recorded_levels(payload, "asks")
+        if not bids or not asks or bids[0][0] >= asks[0][0] or payload.get("synchronized") is False:
+            result.invalid_depth_frames += 1
+            confirmations = 0
+            if pending is not None:
+                # A known data break invalidates the execution observation, even
+                # if the order's release would be after this damaged frame.
+                result.unfilled_orders += 1
+                pending = None
             continue
-        bid, bid_qty = best_b
-        ask, ask_qty = best_a
+        bid, bid_qty = bids[0]
+        ask, ask_qty = asks[0]
         last_bid = bid
-        if bid <= 0 or ask < bid:
-            continue
         quote_samples.append({"timestamp_ns": ts, "bid": bid, "ask": ask})
         if not result.equity_curve:
             result.equity_curve.append({
                 "timestamp_ns": ts, "equity": cfg.starting_cash_usdt,
                 "mid": (bid + ask) / 2, "score": 0.0, "phase": "initial",
             })
-        bids = payload.get("bids") if isinstance(payload.get("bids"), list) else [[bid, bid_qty]]
-        asks = payload.get("asks") if isinstance(payload.get("asks"), list) else [[ask, ask_qty]]
-        last_bid_levels = bids
         analysis = analyze_market(
             bid=bid, ask=ask, bid_qty=bid_qty, ask_qty=ask_qty,
             price_window=pw, imbalance_threshold=cfg.imbalance_threshold,
@@ -232,6 +278,16 @@ def run_l2_backtest(
         if depth_context.spoof_score >= 0.70:
             analysis.score *= max(0.20, 1.0 - depth_context.spoof_score)
             analysis.reasons.append(f"transient_depth_risk={depth_context.spoof_score:.2f}")
+
+        if pending is not None:
+            if ts >= pending.arrival_ns:
+                execute(pending, ts, bids, asks)
+                pending = None
+            result.equity_curve.append({
+                "timestamp_ns": ts, "equity": paper.snapshot(bid)["equity_usdt"],
+                "mid": (bid + ask) / 2, "score": analysis.score,
+            })
+            continue
 
         if paper.base_quantity > 0 and paper.average_entry_price > 0:
             if peak <= 0:
@@ -268,27 +324,17 @@ def run_l2_backtest(
                 )
                 if profit_lock_reason:
                     reason = profit_lock_reason
-                    result.profit_lock_exits += 1
             if reason:
-                qty = paper.base_quantity
                 stressed_exit = reason in {"stop_loss", "trailing_stop", "time_stop"}
-                fill = sim.fill(
-                    side="sell", reference_price=bid, quantity=qty,
-                    book_levels=bids or [[bid, bid_qty]], stress=stressed_exit,
+                pending = _ReplayIntent(
+                    "sell", ts, sim.sample_latency_ms(side="sell", stress=stressed_exit),
+                    f"l2_{reason}", paper.base_quantity, stress=stressed_exit,
+                    profit_lock=profit_lock_reason is not None,
                 )
-                if fill.filled_quantity <= 0:
-                    fill = sim.fill(side="sell", reference_price=bid, quantity=qty, stress=stressed_exit)
-                if fill.filled_quantity > 0:
-                    trade = paper.sell_quantity(
-                        quantity=fill.filled_quantity, price=fill.fill_price,
-                        reason=f"l2_{reason};slippage_bps={fill.slippage_bps:.2f};latency_ms={fill.latency_ms}",
-                    )
-                    if trade:
-                        result.trades.append({**trade, "timestamp_ns": ts})
-                        result.exits += 1
-                        if paper.base_quantity <= 1e-12:
-                            result.closed_positions += 1
-                        peak = 0.0
+                result.simulated_orders += 1
+                if pending.latency_ms == 0:
+                    execute(pending, ts, bids, asks)
+                    pending = None
             snap = paper.snapshot(bid)
             result.equity_curve.append({
                 "timestamp_ns": ts, "equity": snap["equity_usdt"],
@@ -323,23 +369,16 @@ def run_l2_backtest(
                 min_order_usdt=cfg.min_order_usdt,
             )
             if sizing.notional_usdt > 0:
-                qty = sizing.notional_usdt / ask
-                fill = sim.fill(
-                    side="buy", reference_price=ask, quantity=qty,
-                    book_levels=asks or [[ask, ask_qty]],
+                pending = _ReplayIntent(
+                    "buy", ts, sim.sample_latency_ms(side="buy"),
+                    f"l2_entry;score={analysis.score:.2f}",
+                    sizing.notional_usdt / ask, quote_budget=sizing.notional_usdt,
                 )
-                if fill.filled_quantity <= 0:
-                    fill = sim.fill(side="buy", reference_price=ask, quantity=qty)
-                notional = fill.filled_quantity * fill.fill_price
-                if notional > 0:
-                    trade = paper.buy(
-                        notional_usdt=notional, price=fill.fill_price,
-                        reason=f"l2_entry;score={analysis.score:.2f};slippage_bps={fill.slippage_bps:.2f};latency_ms={fill.latency_ms}",
-                    )
-                    result.trades.append({**trade, "timestamp_ns": ts})
-                    result.entries += 1
-                    peak = fill.fill_price
-                    confirmations = 0
+                result.simulated_orders += 1
+                confirmations = 0
+                if pending.latency_ms == 0:
+                    execute(pending, ts, bids, asks)
+                    pending = None
 
         snap = paper.snapshot(bid)
         result.equity_curve.append({
@@ -347,39 +386,8 @@ def run_l2_backtest(
             "mid": (bid + ask) / 2, "score": analysis.score,
         })
 
-    # Close any remaining position at the final executable bid so reported
-    # performance includes the exit fee, slippage and visible-book impact.
-    end_liquidated = False
-    if paper.base_quantity > 1e-12 and last_bid is not None and last_bid > 0:
-        final_quantity = paper.base_quantity
-        final_fill = sim.fill(
-            side="sell", reference_price=last_bid, quantity=final_quantity,
-            book_levels=last_bid_levels, stress=True,
-        )
-        if final_fill.filled_quantity > 0:
-            final_trade = paper.sell_quantity(
-                quantity=final_fill.filled_quantity,
-                price=final_fill.fill_price,
-                reason=(
-                    "l2_end_of_sample_liquidation;"
-                    f"slippage_bps={final_fill.slippage_bps:.2f};"
-                    f"latency_ms={final_fill.latency_ms}"
-                ),
-            )
-            if final_trade:
-                result.trades.append({**final_trade, "timestamp_ns": ts})
-                result.exits += 1
-                if paper.base_quantity <= 1e-12:
-                    result.closed_positions += 1
-                    end_liquidated = True
-
+    result.pending_orders_at_end = int(pending is not None)
     snap = paper.snapshot(last_bid)
-    if end_liquidated:
-        result.equity_curve.append({
-            "timestamp_ns": ts, "equity": snap["equity_usdt"],
-            "mid": last_bid, "score": 0.0,
-            "phase": "end_of_sample_liquidation",
-        })
     result.opportunity_audit = audit_blocked_candidates(
         blocked_candidate_samples,
         quote_samples,
@@ -432,6 +440,11 @@ def summarize_l2_result(result: L2BacktestResult) -> dict[str, Any]:
         "closed_position_count": result.closed_positions,
         "exit_fill_count": len(closed),
         "final_open_quantity": result.final_open_quantity,
+        "simulated_orders": result.simulated_orders,
+        "unfilled_orders": result.unfilled_orders,
+        "pending_orders_at_end": result.pending_orders_at_end,
+        "invalid_depth_frames": result.invalid_depth_frames,
+        "ending_valuation": "mark_to_observed_bid_no_forced_close",
         "win_rate_pct_per_exit_fill": (len(wins) / len(pnls) * 100) if pnls else 0.0,
         "expectancy_usdt_per_exit_fill": (sum(pnls) / len(pnls)) if pnls else 0.0,
         "profit_factor_per_exit_fill": (gross_profit / gross_loss) if gross_loss > 0 else None,
@@ -443,7 +456,10 @@ def summarize_l2_result(result: L2BacktestResult) -> dict[str, Any]:
         "trade_log": [
             {
                 key: trade.get(key)
-                for key in ("side", "price", "quantity", "pnl_usdt", "fee_usdt", "reason", "timestamp_ns")
+                for key in (
+                    "side", "price", "quantity", "pnl_usdt", "fee_usdt", "reason",
+                    "timestamp_ns", "decision_timestamp_ns", "arrival_timestamp_ns",
+                )
             }
             for trade in result.trades
         ],

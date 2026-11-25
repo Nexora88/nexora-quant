@@ -1,4 +1,8 @@
-from scripts.rolling_walk_forward import rolling_bounds
+import json
+
+import pytest
+
+from scripts.rolling_walk_forward import rolling_bounds, run_rolling_walk_forward
 
 
 def test_rolling_windows_are_chronological_and_non_overlapping():
@@ -14,7 +18,32 @@ def test_rolling_windows_are_chronological_and_non_overlapping():
 
 
 def test_rolling_windows_reject_too_short_history():
-    import pytest
-
     with pytest.raises(ValueError):
         rolling_bounds(100, 2)
+
+
+def _history(path, *, timestamps):
+    path.write_text("\n".join(json.dumps({
+        "timestamp_ns": timestamp,
+        "event_type": "depth",
+        "payload": {"symbol": "btcusdt", "bids": [[100, 5]], "asks": [[101, 5]]},
+    }) for timestamp in timestamps) + "\n", encoding="utf-8")
+
+
+def test_run_rolling_uses_event_time_embargo_and_disjoint_timestamp_groups(tmp_path):
+    path = tmp_path / "market-history-btcusdt.jsonl"
+    _history(path, timestamps=[(i // 4) * 1_000_000_000 for i in range(600)])
+    result = run_rolling_walk_forward({"btcusdt": path}, windows=2, embargo_seconds=10)
+    windows = result["assets"]["btcusdt"]["windows"]
+    for w in windows:
+        assert w["test_first_timestamp_ns"] - w["train_last_timestamp_ns"] > 10_000_000_000
+        assert w["omitted_events"] > 0
+    assert windows[0]["test_last_timestamp_ns"] < windows[1]["test_first_timestamp_ns"]
+    assert result["assets"]["btcusdt"]["positive_flat_windows"] == 0
+
+
+def test_run_rolling_refuses_split_if_embargo_purges_training_data(tmp_path):
+    path = tmp_path / "market-history-btcusdt.jsonl"
+    _history(path, timestamps=[i * 1_000_000 for i in range(600)])
+    with pytest.raises(ValueError, match="too small after time embargo"):
+        run_rolling_walk_forward({"btcusdt": path})

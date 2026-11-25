@@ -152,21 +152,9 @@ class ExecutionSimulator:
         scale = 1.0 + min(0.8, max(0.0, (self._vol_bps - 15.0) / 40.0) * 0.8)
         return self.stop_stress_multiplier * scale
 
-    def fill(
-        self,
-        *,
-        side: str,
-        reference_price: float,
-        quantity: float,
-        visible_liquidity_usdt: float | None = None,
-        book_levels: Sequence[Sequence[float]] | None = None,
-        stress: bool = False,
-    ) -> SimulatedFill:
+    def sample_latency_ms(self, *, side: str, stress: bool = False) -> int:
         if side not in {"buy", "sell"}:
             raise ValueError("side must be 'buy' or 'sell'")
-        if not math.isfinite(reference_price) or not math.isfinite(quantity) or reference_price <= 0 or quantity <= 0:
-            raise ValueError("reference_price and quantity must be finite and positive")
-
         latency = (
             max(0, round(self._random.gauss(self.latency_ms, self.latency_ms * 0.1)))
             if self.latency_ms else 0
@@ -176,6 +164,30 @@ class ExecutionSimulator:
                 latency = int(latency + self.latency_ms * 0.45 + 15)
             elif stress:
                 latency = int(max(self.latency_ms * 0.4, latency * 0.75))
+        return latency
+
+    def fill(
+        self,
+        *,
+        side: str,
+        reference_price: float,
+        quantity: float,
+        visible_liquidity_usdt: float | None = None,
+        book_levels: Sequence[Sequence[float]] | None = None,
+        stress: bool = False,
+        sampled_latency_ms: int | None = None,
+    ) -> SimulatedFill:
+        if side not in {"buy", "sell"}:
+            raise ValueError("side must be 'buy' or 'sell'")
+        if not math.isfinite(reference_price) or not math.isfinite(quantity) or reference_price <= 0 or quantity <= 0:
+            raise ValueError("reference_price and quantity must be finite and positive")
+
+        if sampled_latency_ms is not None and sampled_latency_ms < 0:
+            raise ValueError("sampled latency cannot be negative")
+        latency = (
+            self.sample_latency_ms(side=side, stress=stress)
+            if sampled_latency_ms is None else sampled_latency_ms
+        )
         base_slip = (
             max(0.0, self._random.gauss(self.slippage_bps, self.slippage_bps * 0.2))
             if self.slippage_bps else 0.0
