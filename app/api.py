@@ -470,6 +470,45 @@ def health() -> dict:
     }
 
 
+@app.get("/ready")
+def readiness() -> JSONResponse:
+    from time import monotonic
+
+    from app.config import settings as _s
+
+    current = health()
+    executor = state.executor
+    blockers: list[str] = []
+    if current["engine"] != "running" or executor is None:
+        blockers.append("engine_unavailable")
+    if not current["market_data_connected"]:
+        blockers.append("market_data_unavailable_or_stale")
+    if current["kill_switch"] or current["emergency"] or getattr(executor, "emergency", False):
+        blockers.append("safety_halt")
+    if state.paused:
+        blockers.append("engine_paused")
+    if _s.trading_mode == "live":
+        checked_at = state.exchange_reconciled_at_monotonic
+        if (
+            state.exchange_reconciliation.get("status") != "pass" or checked_at is None
+            or not 0 <= monotonic() - checked_at <= state.exchange_reconciliation_max_age_seconds
+        ):
+            blockers.append("exchange_reconciliation_unavailable_or_stale")
+        if getattr(executor, "order_state_uncertain", False):
+            blockers.append("order_state_uncertain")
+        if (
+            getattr(executor, "base_quantity", 0) > 1e-12
+            and getattr(executor, "protective_order_list_id", None) is None
+        ):
+            blockers.append("position_unprotected")
+        if not state.live_entry_cost_calibrated:
+            blockers.append("execution_cost_uncalibrated")
+    return JSONResponse(
+        status_code=503 if blockers else 200,
+        content={"ready": not blockers, "mode": _s.trading_mode, "blockers": blockers},
+    )
+
+
 @app.get("/status")
 def status() -> dict:
     from datetime import datetime, timezone

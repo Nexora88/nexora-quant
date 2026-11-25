@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 from app.config import settings
 from app.engine_setup import state, risk, log
-from app.storage import PaperStore
+from app.storage import PaperStore, exclusive_live_worker
 from app.dual_account import ReconciliationMonitor, reconciliation_differences
 from app.live_reconciliation import (
     RecurringExchangeAudit, fetch_exchange_audit, live_trade_event_key,
@@ -37,24 +37,25 @@ from app import engine_setup as es
 
 
 async def run() -> None:
+    live = settings.trading_mode == "live"
+    # Live fills synchronously commit. Also close the database if startup fails
+    # before streams and their normal cleanup handlers have started.
+    if live:
+        with exclusive_live_worker(settings.store_path):
+            with PaperStore(settings.store_path, async_writes=False) as store:
+                await _run(store)
+    else:
+        with PaperStore(settings.store_path) as store:
+            await _run(store)
+
+
+async def _run(store: PaperStore) -> None:
     es.executor = es._build_executor()
     state.executor = es.executor
-    # Live fills use synchronous SQLite commits; paper retains the async hot path.
-    store = PaperStore(
-        settings.store_path,
-        async_writes=(settings.trading_mode != "live"),
-    )
+    state.exchange_reconciliation = {}
+    state.exchange_reconciled_at_monotonic = None
+    state.live_entry_cost_calibrated = False
     io_q = AsyncIoQueue(store)
-    io_q.start()
-    hist_on = bool(getattr(settings, "market_history_enabled", False))
-    history = MarketHistoryWriter(
-        settings.market_history_path,
-        max_pending=int(getattr(settings, "history_max_pending", 4000) or 4000),
-        enabled=hist_on,
-    )
-    if not hist_on:
-        log.info("Market history disabled (set MARKET_HISTORY_ENABLED=true to record L2)")
-    features = FeatureTimeSeriesStore(getattr(settings, "features_db_path", "data/features.sqlite3"))
     mode = settings.trading_mode
     key = f"{mode}:{settings.symbol}"
     today = datetime.now(timezone.utc).date().isoformat()
@@ -90,6 +91,7 @@ async def run() -> None:
                 "Full Binance order/fill/commission reconciliation failed: "
                 + str(result["differences"])
             )
+        state.exchange_reconciled_at_monotonic = time.monotonic()
         if (
             float(getattr(es.executor, "base_quantity", 0) or 0) > 1e-12
             and getattr(es.executor, "protective_order_list_id", None) is None
@@ -113,6 +115,9 @@ async def run() -> None:
                 raise RuntimeError("Live position protection could not be restored; refusing to start")
 
     def reconcile_live_startup() -> None:
+        es.executor.attach_order_journal(store, key, verify_account=True)
+        if not es.executor.reconcile_uncertain_order():
+            raise RuntimeError("Unresolved live order intent; verify exchange order and fills before restarting")
         before = len(es.executor.trades)
         try:
             reconcile_live_account()
@@ -202,6 +207,20 @@ async def run() -> None:
             state.last_error = "live_startup_reconciliation_failed"
             log.exception("Live startup reconciliation failed; engine will not trade")
             raise RuntimeError("Live startup reconciliation failed; refusing to start") from exc
+    if mode == "live" and (store.load_state(key) or {}).get("uncheckpointed_live_order"):
+        # The trade itself is durable, but risk/session statistics may not have
+        # been applied before the process exited. Keep managing protection only.
+        risk.activate_kill_switch("Live fill recovered without a risk checkpoint; operator review required")
+    io_q.start()
+    hist_on = bool(getattr(settings, "market_history_enabled", False))
+    history = MarketHistoryWriter(
+        settings.market_history_path,
+        max_pending=int(getattr(settings, "history_max_pending", 4000) or 4000),
+        enabled=hist_on,
+    )
+    if not hist_on:
+        log.info("Market history disabled (set MARKET_HISTORY_ENABLED=true to record L2)")
+    features = FeatureTimeSeriesStore(getattr(settings, "features_db_path", "data/features.sqlite3"))
     if risk.rollover_day(today):
         state.session_fees_usdt = 0.0
         state.session_fee_day = today
@@ -323,7 +342,10 @@ async def run() -> None:
             "motor": motor.export_state(),
             "saved_at": datetime.now(timezone.utc).isoformat(),
         }
-        io_q.enqueue_state(key, payload)
+        if mode == "live":
+            store.save_state(key, payload)
+        else:
+            io_q.enqueue_state(key, payload)
 
     confirmations = 0
     ticks = 0
@@ -395,6 +417,8 @@ async def run() -> None:
                 **audit["details"], "status": "mismatch" if differences else "pass",
                 "differences": differences,
             }
+            if not differences:
+                state.exchange_reconciled_at_monotonic = time.monotonic()
             return audit["local"], audit["exchange"]
 
         def _reconciliation_mismatch(result: dict) -> None:
@@ -414,6 +438,7 @@ async def run() -> None:
             _reconciliation_mismatch,
             interval_seconds=float(os.getenv("RECONCILIATION_INTERVAL_SECONDS", "30")),
         )
+        state.exchange_reconciliation_max_age_seconds = 2 * monitor.interval_seconds + 5
         trade_tasks.append(
             asyncio.create_task(monitor.run_forever(), name="live-account-reconciliation")
         )
@@ -611,10 +636,6 @@ async def run() -> None:
             )
         except Exception:
             log.exception("Could not finalize paper session telemetry")
-        try:
-            store.close()
-        except Exception:
-            log.exception("PaperStore close failed; durable ledger flush is incomplete")
         try:
             features.close()
         except Exception:

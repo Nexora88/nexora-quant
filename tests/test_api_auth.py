@@ -62,6 +62,45 @@ def test_health_is_degraded_when_kill_switch_is_active(monkeypatch):
     assert result["kill_switch"] is True
 
 
+def test_readiness_separates_liveness_from_trade_safety(monkeypatch):
+    from dataclasses import replace
+    from time import monotonic
+    from types import SimpleNamespace
+
+    import app.api as api
+    import app.config as config
+
+    monkeypatch.setattr(config, "settings", replace(config.settings, trading_mode="live"))
+    monkeypatch.setattr(api, "_engine_task_status", lambda: "running")
+    monkeypatch.setattr(api.state, "snapshot", lambda: {
+        "connected": True,
+        "kill_switch": False,
+        "emergency": False,
+    })
+    executor = SimpleNamespace(order_state_uncertain=True, base_quantity=0.05, protective_order_list_id=None)
+    monkeypatch.setattr(api.state, "executor", executor)
+    monkeypatch.setattr(api.state, "paused", False)
+    monkeypatch.setattr(api.state, "exchange_reconciliation", {"status": "pass"})
+    monkeypatch.setattr(api.state, "exchange_reconciled_at_monotonic", None)
+    monkeypatch.setattr(api.state, "live_entry_cost_calibrated", False)
+
+    client = TestClient(app)
+    assert client.get("/health").status_code == 200
+    blocked = client.get("/ready")
+    assert blocked.status_code == 503
+    assert set(blocked.json()["blockers"]) == {
+        "exchange_reconciliation_unavailable_or_stale",
+        "order_state_uncertain", "position_unprotected", "execution_cost_uncalibrated",
+    }
+    executor.order_state_uncertain = False
+    executor.protective_order_list_id = 1
+    monkeypatch.setattr(api.state, "exchange_reconciled_at_monotonic", monotonic())
+    monkeypatch.setattr(api.state, "live_entry_cost_calibrated", True)
+    assert client.get("/ready").status_code == 200
+    monkeypatch.setattr(api.state, "exchange_reconciled_at_monotonic", monotonic() - 200)
+    assert client.get("/ready").status_code == 503
+
+
 def test_status_exposes_conservative_fee_schedule(monkeypatch):
     import app.api as api
 

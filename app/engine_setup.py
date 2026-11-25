@@ -167,7 +167,7 @@ def _build_executor():
             api_secret=settings.binance_api_secret,
             testnet=settings.binance_testnet,
         )
-        return LiveExecutor(client, settings.symbol, fee_rate=settings.effective_fee_rate())
+        return LiveExecutor(client, symbol=settings.symbol, fee_rate=settings.effective_fee_rate())
     return PaperExecutor(settings.starting_cash_usdt, settings.effective_fee_rate())
 
 
