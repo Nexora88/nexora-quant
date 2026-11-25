@@ -42,6 +42,7 @@ _EXCHANGE = {
     "CANCELED": OrderState.CANCELLED,
     "CANCELLED": OrderState.CANCELLED,
     "EXPIRED": OrderState.CANCELLED,
+    "EXPIRED_IN_MATCH": OrderState.CANCELLED,
     "REJECTED": OrderState.REJECTED,
 }
 

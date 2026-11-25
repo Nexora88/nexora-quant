@@ -18,6 +18,9 @@ class RuntimeState:
         self.latest_depth: DepthSnapshot | None = None
         self.depth_drops: dict[str, int] = {}
         self.exchange_reconciliation: dict[str, Any] = {}
+        self.exchange_reconciled_at_monotonic: float | None = None
+        self.exchange_reconciliation_max_age_seconds = 65.0
+        self.live_entry_cost_calibrated = False
         self.reconnect_count = 0
         self.events_seen = 0
         self.last_error = None

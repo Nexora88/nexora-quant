@@ -25,4 +25,5 @@ _src = _ensure_body()
 _ns: dict = {"__name__": "app.live"}
 exec(compile(_src, str(_CACHE), "exec"), _ns)
 LiveExecutor = _ns["LiveExecutor"]
+TERMINAL_ORDER_STATUSES = _ns["TERMINAL_ORDER_STATUSES"]
 __all__ = ["LiveExecutor"]

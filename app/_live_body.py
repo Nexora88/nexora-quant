@@ -4,19 +4,25 @@ Uses the paper-compatible trade dict shape so storage and risk accounting stay s
 """
 from __future__ import annotations
 
-import hashlib
 import logging
 import math
 import threading
 import time
+from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN
 from typing import Any
+from uuid import uuid4
 
 from app.binance_rest import BinanceRestClient, OrderResult
+from app.live_reconciliation import live_trade_event_key
 from app.order_state import OrderStateMachine
+from app.storage import PaperStore
 
 log = logging.getLogger(__name__)
+TERMINAL_ORDER_STATUSES = frozenset({
+    "FILLED", "CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "REJECTED",
+})
 
 
 class LiveExecutor:
@@ -61,6 +67,9 @@ class LiveExecutor:
         # Exchange trade IDs are durable idempotency keys for offline OCO recovery.
         self.processed_exchange_trade_ids: set[str] = set()
         self.processed_oco_list_ids: set[int] = set()
+        self._order_store: PaperStore | None = None
+        self._order_store_key = ""
+        self._checkpoint_trade_count = 0
 
     def sync_balances(self) -> None:
         """Reconcile OCO history before replacing the local ledger with account balances."""
@@ -384,16 +393,13 @@ class LiveExecutor:
     def buy(
         self, *, notional_usdt: float, price: float, reason: str,
         decision_mid: float | None = None,
-    ) -> dict:
+    ) -> dict | None:
         if notional_usdt <= 0 or price <= 0:
             raise ValueError("Price and notional must be positive")
         if notional_usdt < self._min_notional():
             raise ValueError(f"Notional below exchange minimum ({self._min_notional()})")
-        result = self._place_market_order_once(
-            side="BUY", reason=reason, quote_order_qty=notional_usdt,
-        )
-        return self._apply_fill(
-            result, reason=reason, fallback_price=price,
+        return self._place_market_order_once(
+            side="BUY", reason=reason, quote_order_qty=notional_usdt, price=price,
             decision_mid=decision_mid if decision_mid is not None else price,
         )
 
@@ -409,104 +415,198 @@ class LiveExecutor:
         qty = self._round_step(qty)
         if qty <= 0:
             return None
-        result = self._place_market_order_once(
-            side="SELL", reason=reason, quantity=qty,
-        )
-        return self._apply_fill(
-            result, reason=reason, fallback_price=price,
+        return self._place_market_order_once(
+            side="SELL", reason=reason, quantity=qty, price=price,
             decision_mid=decision_mid if decision_mid is not None else price,
         )
+
+    def attach_order_journal(self, store: PaperStore, key: str, *, verify_account: bool = False) -> None:
+        if verify_account or isinstance(self.client, BinanceRestClient):
+            uid = self.client.account().get("uid")
+            if type(uid) is not int or uid <= 0:
+                raise RuntimeError("Exchange did not identify the live account")
+            store.bind_live_account(symbol=self.symbol, testnet=self.client.testnet, uid=uid)
+        self._order_store = store
+        self._order_store_key = key
+        self._checkpoint_trade_count = len(self.trades)
+
+    def _uncheckpointed_trades(self) -> list[tuple[str, dict[str, Any]]]:
+        return [
+            (live_trade_event_key(self, trade), trade)
+            for trade in self.trades[self._checkpoint_trade_count:]
+        ]
+
+    def _mark_order_uncertain(self, client_id: str) -> None:
+        self.order_state_machine.force_unknown(client_id)
+        self.order_state_uncertain = True
+        self.unresolved_client_order_id = client_id
+
+    def _begin_order(self, *, side: str, kind: str, reason: str, **parameters: Any) -> dict:
+        if self.order_state_uncertain:
+            raise RuntimeError("Order state is uncertain; reconcile exchange orders before new orders")
+        if self._order_store is None and isinstance(self.client, BinanceRestClient):
+            raise RuntimeError("Live order submission requires a durable journal")
+        client_id = "nq" + uuid4().hex
+        intent = {
+            "client_id": client_id, "symbol": self.symbol, "testnet": self.client.testnet,
+            "side": side, "kind": kind, "reason": reason, **parameters,
+        }
+        self.order_state_machine.begin(client_id)
+        self._order_sequence += 1
+        # No POST, including a maker entry, can run until the intent has committed.
+        if self._order_store is not None:
+            try:
+                self._order_store.begin_live_order(
+                    self._order_store_key, intent, self.snapshot(), self._uncheckpointed_trades(),
+                )
+            except Exception:
+                self._mark_order_uncertain(client_id)
+                raise
+            self._checkpoint_trade_count = len(self.trades)
+        return intent
+
+    def _validate_order_identity(self, intent: dict, result: OrderResult) -> None:
+        exchange_id = intent.get("exchange_id")
+        if (
+            result.symbol != self.symbol or result.side != intent["side"] or result.order_id <= 0
+            or (result.order_id != exchange_id if exchange_id else result.client_order_id != intent["client_id"])
+        ):
+            raise RuntimeError("Exchange order identity does not match durable intent")
+
+    def _lookup_order(self, intent: dict) -> OrderResult:
+        if intent.get("exchange_id"):
+            return self.client.get_order(self.symbol, intent["exchange_id"])
+        return self.client.get_order_by_client_id(self.symbol, intent["client_id"])
+
+    def _checked_fills(self, result: OrderResult, *, recovering: bool) -> list[dict]:
+        fills = list(result.fills or self.client.order_trades(self.symbol, result.order_id))
+        if not fills:
+            raise RuntimeError("Exchange fill history is not yet available")
+        seen: set[int] = set()
+        quantity = quote = 0.0
+        for fill in fills:
+            qty = float(fill["qty"])
+            px = float(fill["price"])
+            commission = float(fill["commission"])
+            asset = str(fill.get("commissionAsset") or "").upper()
+            trade_id = int(fill["tradeId"] if "tradeId" in fill else fill["id"])
+            if (
+                not all(math.isfinite(value) for value in (qty, px, commission))
+                or qty <= 0 or px <= 0 or commission < 0 or not asset or trade_id < 0
+                or trade_id in seen
+                or ("orderId" in fill and int(fill["orderId"]) != result.order_id)
+                or ("isBuyer" in fill and fill["isBuyer"] is not (result.side == "BUY"))
+            ):
+                raise RuntimeError("Invalid or duplicate exchange fill evidence")
+            if recovering and commission and asset not in {self.base_asset, self.quote_asset}:
+                raise RuntimeError("Recovered commission requires historical quote valuation")
+            seen.add(trade_id)
+            quantity += qty
+            quote += qty * px
+        if not (
+            math.isclose(quantity, result.executed_qty, rel_tol=1e-9, abs_tol=1e-12)
+            and math.isclose(quote, result.cummulative_quote_qty, rel_tol=1e-9, abs_tol=1e-8)
+        ):
+            raise RuntimeError("Exchange fill totals do not reconcile with terminal order")
+        return fills
+
+    def _settle_order(self, intent: dict, result: OrderResult, *, recovering: bool = False) -> dict | None:
+        client_id = intent["client_id"]
+        before = self.snapshot()
+        trade_count = len(self.trades)
+        try:
+            self._validate_order_identity(intent, result)
+            if result.status not in TERMINAL_ORDER_STATUSES:
+                raise RuntimeError(f"Order {client_id} is not terminal ({result.status})")
+            qty, quote = result.executed_qty, result.cummulative_quote_qty
+            if (
+                not all(math.isfinite(value) for value in (qty, quote))
+                or qty < 0 or quote < 0 or (qty > 0) != (quote > 0)
+                or (result.status == "FILLED" and qty <= 0)
+                or (qty == 0 and result.fills)
+            ):
+                raise RuntimeError("Terminal order has invalid execution totals")
+            trade = None
+            if qty > 0:
+                # Use the original ID even when Binance released it during cancellation.
+                result = replace(result, client_order_id=client_id)
+                if self._order_store is not None:
+                    result = replace(result, fills=self._checked_fills(result, recovering=recovering))
+                trade = self._apply_fill(
+                    result, reason=intent["reason"], fallback_price=intent["price"],
+                    decision_mid=intent["decision_mid"],
+                )
+                if self._order_store is not None and not trade["accounting_complete"]:
+                    raise RuntimeError("Cannot finalize order without complete commission accounting")
+            self.order_state_machine.observe(result.status)
+            self.order_state_uncertain = False
+            self.unresolved_client_order_id = None
+            if self._order_store is not None:
+                self._order_store.finish_live_order(
+                    self._order_store_key, intent, self.snapshot(), self._uncheckpointed_trades(),
+                    filled=trade is not None,
+                )
+                self._checkpoint_trade_count = len(self.trades)
+            return trade
+        except Exception:
+            # A failed commit must not leave a partially-applied account in memory.
+            del self.trades[trade_count:]
+            before["trades"] = self.trades
+            self.restore(before)
+            self._mark_order_uncertain(client_id)
+            raise
 
     def _place_market_order_once(
         self, *, side: str, reason: str,
         quantity: float | None = None, quote_order_qty: float | None = None,
-    ) -> OrderResult:
-        """Use a stable client ID and fail closed if an order's outcome is unknown."""
+        price: float = 0.0, decision_mid: float = 0.0,
+    ) -> dict | None:
+        """Submit once. A lost response only permits exchange lookup, never another POST."""
         with self._order_lock:
-            if self.order_state_uncertain:
-                raise RuntimeError(
-                    "Order state is uncertain; reconcile exchange orders before new orders"
-                )
-            amount = quote_order_qty if quote_order_qty is not None else quantity
-            digest = hashlib.sha256(
-                f"{self.symbol}|{side}|{reason}|{amount:.12f}|{self._order_sequence}".encode()
-            ).hexdigest()[:18]
-            client_id = f"nq{self._order_sequence:x}{digest}"[:36]
-            # A client ID is created once per intent. No retry path may mint a
-            # second ID while the previous intent is pending or ambiguous.
-            self.order_state_machine.begin(client_id)
-            try:
-                existing = self.client.get_order_by_client_id(self.symbol, client_id)
-            except Exception as exc:
-                if "-2013" not in str(exc) and "Order does not exist" not in str(exc):
-                    self.order_state_machine.mark_unknown(client_id)
-                    self.order_state_uncertain = True
-                    self.unresolved_client_order_id = client_id
-                    raise
-            else:
-                self.order_state_machine.observe(existing.status)
-                if existing.status not in ("FILLED", "CANCELED", "EXPIRED", "REJECTED"):
-                    self.order_state_uncertain = True
-                    self.unresolved_client_order_id = client_id
-                    raise RuntimeError(
-                        f"Order {client_id} is not terminal ({existing.status}); manual reconciliation required"
-                    )
-                self._order_sequence += 1
-                self._last_order_latency_ms = 0.0
-                self._last_order_latency_measured = False
-                return existing
+            intent = self._begin_order(
+                side=side, kind="market", reason=reason, quantity=quantity,
+                quote_order_qty=quote_order_qty, price=price, decision_mid=decision_mid,
+            )
+            client_id = intent["client_id"]
             order_started = time.perf_counter()
             try:
-                result = self.client.place_market_order(
-                    symbol=self.symbol, side=side, quantity=quantity,
-                    quote_order_qty=quote_order_qty, client_order_id=client_id,
-                )
-            except Exception:
-                self._last_order_latency_ms = (time.perf_counter() - order_started) * 1000.0
-                self._last_order_latency_measured = False
                 try:
-                    result = self.client.get_order_by_client_id(self.symbol, client_id)
-                except Exception:
-                    self.order_state_machine.mark_unknown(client_id)
-                    self.order_state_uncertain = True
-                    self.unresolved_client_order_id = client_id
-                    log.exception(
-                        "Order submission outcome uncertain; blocking further orders (%s)",
-                        client_id,
+                    result = self.client.place_market_order(
+                        symbol=self.symbol, side=side, quantity=quantity,
+                        quote_order_qty=quote_order_qty, client_order_id=client_id,
                     )
-                    raise
-            self.order_state_machine.observe(result.status)
-            if result.status not in ("FILLED", "CANCELED", "EXPIRED", "REJECTED"):
-                self.order_state_uncertain = True
-                self.unresolved_client_order_id = client_id
-                raise RuntimeError(
-                    f"Order {client_id} is not terminal ({result.status}); manual reconciliation required"
-                )
-            self._order_sequence += 1
-            self._last_order_latency_ms = (time.perf_counter() - order_started) * 1000.0
-            self._last_order_latency_measured = True
-            return result
+                except Exception:
+                    self._last_order_latency_measured = False
+                    result = self._lookup_order(intent)
+                else:
+                    self._last_order_latency_measured = True
+                self._last_order_latency_ms = (time.perf_counter() - order_started) * 1000.0
+                return self._settle_order(intent, result)
+            except Exception:
+                self._mark_order_uncertain(client_id)
+                raise
 
     def reconcile_uncertain_order(self) -> bool:
-        """Resolve a timed-out submission by its client ID; never blindly resubmit."""
+        """Resolve the durable intent after restart; require terminal, accounted evidence."""
         with self._order_lock:
-            if not self.order_state_uncertain:
-                return True
-            client_id = self.unresolved_client_order_id
-            if not client_id:
+            intent = self._order_store.pending_live_order() if self._order_store is not None else None
+            if intent is None:
+                return not (self.order_state_uncertain or (
+                    self.order_state_machine.client_order_id and self.order_state_machine.blocks_new_orders
+                ))
+            client_id = intent["client_id"]
+            self._mark_order_uncertain(client_id)
+            if intent["symbol"] != self.symbol or intent["testnet"] is not self.client.testnet:
                 return False
             try:
-                order = self.client.get_order_by_client_id(self.symbol, client_id)
+                order = self._lookup_order(intent)
+                self._last_order_latency_ms = 0.0
+                self._last_order_latency_measured = False
+                self._settle_order(intent, order, recovering=True)
             except Exception:
+                log.exception("Durable order %s remains unresolved; refusing further orders", client_id)
                 return False
-            log.warning(
-                "Recovered uncertain order clientId=%s orderId=%s status=%s; "
-                "inspect/reconcile its fill before allowing strategy orders",
-                client_id, order.order_id, order.status,
-            )
-            # A recovered exchange order is not yet proof of local accounting.
-            # Keep the gate closed until a full fill/balance reconciliation occurs.
-            return False
+            return True
 
     def sell_all(self, *, price: float, reason: str = "manual_live_exit") -> dict | None:
         return self.sell_quantity(quantity=self.base_quantity, price=price, reason=reason)
@@ -531,6 +631,7 @@ class LiveExecutor:
         missing_commission_asset = False
         total_cost = 0.0
         total_qty = 0.0
+        base_fee_usdt = 0.0
         for fill in fills:
             p = float(fill.get("price", 0))
             q = float(fill.get("qty", 0))
@@ -541,6 +642,8 @@ class LiveExecutor:
             commission = float(fill.get("commission", 0))
             if commission > 0 and asset:
                 fee_by_asset[asset] = fee_by_asset.get(asset, 0.0) + commission
+                if asset == self.base_asset:
+                    base_fee_usdt += commission * p
             elif commission > 0:
                 missing_commission_asset = True
 
@@ -562,7 +665,7 @@ class LiveExecutor:
         if quote_fee:
             fee_usdt_by_asset[self.quote_asset] = quote_fee
         if base_fee:
-            fee_usdt_by_asset[self.base_asset] = base_fee * avg_price
+            fee_usdt_by_asset[self.base_asset] = base_fee_usdt
         unpriced_fees: dict[str, float] = {}
         for asset, amount in other_fees.items():
             try:

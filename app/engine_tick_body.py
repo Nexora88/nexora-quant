@@ -380,6 +380,7 @@ async def handle_tick(
         from app.intelligence.edge import EdgeReport
         edge = EdgeReport(0.0, 0.0, 0.0, -999.0, False, [f"edge_error:{type(exc).__name__}"])
     execution_costs_calibrated = mode != "live" or calibrated_latency_cost is not None
+    state.live_entry_cost_calibrated = mode == "live" and execution_costs_calibrated
     adv = adverse_filter.check(intend_long=True)
     whale_block = whale.side == "ask" and whale.strength >= 0.5
     adverse_reasons = list(adv.reasons)
@@ -574,16 +575,12 @@ async def handle_tick(
                         trade = None
                         if prefer_maker and hasattr(ex, "buy_limit"):
                             limit_px = min(float(bid), float(ask) * 0.9999)
-                            try:
-                                trade = ex.buy_limit(
-                                    notional_usdt=sizing_n, limit_price=limit_px,
-                                    reason="edge_enter; live_limit_maker", decision_mid=analysis.mid,
-                                    wait_seconds=float(getattr(settings, "maker_wait_seconds", 8.0) or 8.0),
-                                    post_only=True,
-                                )
-                            except Exception:
-                                log.exception("buy_limit failed; no market fallback this tick")
-                                trade = None
+                            trade = ex.buy_limit(
+                                notional_usdt=sizing_n, limit_price=limit_px,
+                                reason="edge_enter; live_limit_maker", decision_mid=analysis.mid,
+                                wait_seconds=float(getattr(settings, "maker_wait_seconds", 8.0) or 8.0),
+                                post_only=True,
+                            )
                         if trade is None and not prefer_maker:
                             trade = ex.buy(
                                 notional_usdt=sizing_n, price=ask,

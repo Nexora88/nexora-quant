@@ -9,12 +9,32 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from collections import deque
 from pathlib import Path
 from typing import Any
 
 from app.sqlite_util import configure_sqlite
+
+
+@contextmanager
+def exclusive_live_worker(db_path: str):
+    """Hold this local-volume lock for the whole live worker lifetime."""
+    if db_path == ":memory:":
+        raise RuntimeError("Live worker requires a persistent local database")
+    try:
+        import fcntl
+    except ImportError as exc:
+        raise RuntimeError("Live worker requires POSIX filesystem locking") from exc
+    db = Path(db_path).resolve()
+    db.parent.mkdir(parents=True, exist_ok=True)
+    with db.with_name(db.name + ".worker.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError("A live worker already owns this database") from exc
+        yield
 
 
 class PaperStore:
@@ -34,7 +54,9 @@ class PaperStore:
         self._lock = threading.RLock()
         self._db = sqlite3.connect(self.path, timeout=30.0, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
-        configure_sqlite(self._db)
+        self._journal_mode = configure_sqlite(
+            self._db, synchronous="NORMAL" if async_writes else "FULL",
+        )
         self._db.executescript(
             """
             CREATE TABLE IF NOT EXISTS paper_state (
@@ -149,6 +171,101 @@ class PaperStore:
                 "SELECT state_json FROM paper_state WHERE state_key=?", (key,)
             ).fetchone()
         return json.loads(row["state_json"]) if row else None
+
+    def pending_live_order(self) -> dict[str, Any] | None:
+        return self.load_state("live:pending_order")
+
+    def _require_live_durability(self) -> None:
+        if self._async_writes or self.path == ":memory:" or self._journal_mode != "wal":
+            raise RuntimeError("Live order journal requires a synchronous, file-backed WAL database")
+
+    def bind_live_account(self, *, symbol: str, testnet: bool, uid: int) -> None:
+        self._require_live_durability()
+        binding = json.dumps({"symbol": symbol, "testnet": testnet, "binance_uid": uid}, sort_keys=True)
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT OR IGNORE INTO paper_state(state_key,state_json) VALUES(?,?)",
+                ("live:binding", binding),
+            )
+            row = self._db.execute(
+                "SELECT state_json FROM paper_state WHERE state_key='live:binding'",
+            ).fetchone()
+            if row["state_json"] != binding:
+                raise RuntimeError("Live database is bound to a different exchange account, network or symbol")
+
+    def _write_live_account(
+        self, key: str, account: dict[str, Any],
+        fills: list[tuple[str, dict[str, Any]]], *, order_commit: str | None = None,
+    ) -> None:
+        row = self._db.execute(
+            "SELECT state_json FROM paper_state WHERE state_key=?", (key,),
+        ).fetchone()
+        payload = json.loads(row["state_json"]) if row else {}
+        payload["account"] = account
+        if order_commit is not None:
+            payload["uncheckpointed_live_order"] = order_commit
+        self._db.execute(
+            """INSERT INTO paper_state(state_key,state_json,updated_at)
+               VALUES(?,?,CURRENT_TIMESTAMP)
+               ON CONFLICT(state_key) DO UPDATE SET
+               state_json=excluded.state_json, updated_at=CURRENT_TIMESTAMP""",
+            (key, json.dumps(payload, allow_nan=False)),
+        )
+        for event_key, trade in fills:
+            cursor = self._db.execute(
+                "INSERT OR IGNORE INTO paper_trades(event_key,trade_json) VALUES(?,?)",
+                (event_key, json.dumps(trade, allow_nan=False)),
+            )
+            if cursor.rowcount != 1:
+                # A repeated checkpoint is safe only when financial evidence agrees.
+                row = self._db.execute(
+                    "SELECT trade_json FROM paper_trades WHERE event_key=?", (event_key,),
+                ).fetchone()
+                if json.loads(row["trade_json"]) != trade:
+                    raise RuntimeError(f"Live ledger conflict for {event_key}")
+
+    def begin_live_order(
+        self, key: str, intent: dict[str, Any], account: dict[str, Any],
+        fills: list[tuple[str, dict[str, Any]]],
+    ) -> None:
+        self._require_live_durability()
+        with self._lock, self._db:
+            cursor = self._db.execute(
+                "INSERT OR IGNORE INTO paper_state(state_key,state_json) VALUES(?,?)",
+                ("live:pending_order", json.dumps(intent, allow_nan=False)),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("A durable live order is already pending")
+            self._write_live_account(key, account, fills)
+
+    def identify_live_order(self, intent: dict[str, Any], exchange_id: int) -> dict[str, Any]:
+        """Remember the exchange ID before DELETE can replace the client ID."""
+        self._require_live_durability()
+        updated = {**intent, "exchange_id": exchange_id}
+        with self._lock, self._db:
+            cursor = self._db.execute(
+                "UPDATE paper_state SET state_json=? WHERE state_key=? AND state_json=?",
+                (json.dumps(updated, allow_nan=False), "live:pending_order", json.dumps(intent)),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("Pending live order changed before cancellation")
+        return updated
+
+    def finish_live_order(
+        self, key: str, intent: dict[str, Any], account: dict[str, Any],
+        fills: list[tuple[str, dict[str, Any]]], *, filled: bool,
+    ) -> None:
+        self._require_live_durability()
+        with self._lock, self._db:
+            cursor = self._db.execute(
+                "DELETE FROM paper_state WHERE state_key=? AND state_json=?",
+                ("live:pending_order", json.dumps(intent)),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("Pending live order changed before settlement")
+            self._write_live_account(
+                key, account, fills, order_commit=intent["client_id"] if filled else None,
+            )
 
     def append_trade(self, trade: dict[str, Any], *, event_key: str) -> bool:
         if not event_key:
