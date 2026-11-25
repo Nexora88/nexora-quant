@@ -371,3 +371,67 @@ def test_live_engine_startup_stops_before_balance_sync_when_order_unknown(tmp_pa
     with exclusive_live_worker(str(path)), PaperStore(path, async_writes=False) as store:
         assert store.pending_live_order()
     assert exchange.posts == 1
+
+
+def test_live_restart_with_invisible_protection_keeps_readiness_closed(tmp_path, monkeypatch):
+    from time import monotonic
+
+    from fastapi.testclient import TestClient
+
+    import app.api as api
+    import app.config as config
+    import app.engine_loop as engine
+
+    path = tmp_path / "live.sqlite3"
+
+    class ProtectionExchange(Exchange):
+        oco_posts = 0
+
+        def free_balance(self, asset):
+            return 0.1
+
+        def place_oco_order(self, **params):
+            self.oco_posts += 1
+            with PaperStore(path, async_writes=False) as observer:
+                assert observer.pending_live_order()["client_id"] == params["client_order_id"]
+            raise ProcessExit()
+
+        def get_order_list_by_client_id(self, symbol, client_order_id):
+            raise LookupError("accepted order list is not visible yet")
+
+    exchange = ProtectionExchange(path)
+    with PaperStore(path, async_writes=False) as store:
+        ex = executor(exchange, store)
+        market(ex)
+        with pytest.raises(ProcessExit):
+            ex.ensure_protective_oco(
+                current_price=100, take_profit_pct=2, stop_loss_pct=2,
+            )
+        assert exchange.posts == exchange.oco_posts == 1
+
+    ex = LiveExecutor(exchange, symbol="BTCUSDT", fee_rate=0.001)
+    state = SimpleNamespace(paused=False, exchange_reconciliation_max_age_seconds=30)
+    killed = []
+    settings = SimpleNamespace(symbol="btcusdt", trading_mode="live", store_path=str(path))
+    monkeypatch.setattr(ex, "sync_balances", lambda: pytest.fail("balance sync must not run"))
+    monkeypatch.setattr(engine.es, "_build_executor", lambda: ex)
+    monkeypatch.setattr(engine.es, "executor", None)
+    monkeypatch.setattr(engine, "state", state)
+    monkeypatch.setattr(engine, "settings", settings)
+    monkeypatch.setattr(engine, "risk", SimpleNamespace(activate_kill_switch=killed.append))
+    with pytest.raises(RuntimeError, match="refusing to start"):
+        asyncio.run(engine.run())
+    assert killed
+    # Even with otherwise fresh market/audit evidence, the API must not claim readiness.
+    state.exchange_reconciliation = {"status": "pass"}
+    state.exchange_reconciled_at_monotonic = monotonic()
+    state.live_entry_cost_calibrated = True
+    monkeypatch.setattr(api, "state", state)
+    monkeypatch.setattr(config, "settings", settings)
+    monkeypatch.setattr(api, "health", lambda: {
+        "engine": "running", "market_data_connected": True, "kill_switch": False, "emergency": False,
+    })
+    result = TestClient(api.app).get("/ready")
+    assert result.status_code == 503
+    assert set(result.json()["blockers"]) >= {"order_state_uncertain", "position_unprotected"}
+    assert exchange.posts == exchange.oco_posts == 1

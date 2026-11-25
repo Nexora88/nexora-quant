@@ -267,6 +267,18 @@ class PaperStore:
                 key, account, fills, order_commit=intent["client_id"] if filled else None,
             )
 
+    def checkpoint_live_account(
+        self, key: str, account: dict[str, Any], fills: list[tuple[str, dict[str, Any]]],
+        *, order_commit: str | None = None,
+    ) -> None:
+        self._require_live_durability()
+        with self._lock, self._db:
+            if self._db.execute(
+                "SELECT 1 FROM paper_state WHERE state_key='live:pending_order'",
+            ).fetchone():
+                raise RuntimeError("Cannot checkpoint an account with a pending live order")
+            self._write_live_account(key, account, fills, order_commit=order_commit)
+
     def append_trade(self, trade: dict[str, Any], *, event_key: str) -> bool:
         if not event_key:
             raise ValueError("event_key is required for idempotency")

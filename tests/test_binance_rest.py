@@ -31,14 +31,21 @@ def test_get_order_list_by_client_id_uses_exchange_idempotency_key(monkeypatch):
 
     def fake_request(method, path, params=None, *, signed=False):
         calls.append((method, path, params, signed))
-        return {"orderListId": 123, "listClientOrderId": "nqocoabc", "listStatusType": "EXECUTING"}
+        return {
+            "orderListId": 123, "listClientOrderId": "nqocoabc",
+            "listStatusType": "EXECUTING", "symbol": "BTCUSDT",
+        }
 
     monkeypatch.setattr(client, "_request", fake_request)
     result = client.get_order_list_by_client_id("btcusdt", "nqocoabc")
     assert result["orderListId"] == 123
     assert calls == [("GET", "/api/v3/orderList", {
-        "symbol": "BTCUSDT", "origClientOrderId": "nqocoabc",
+        "origClientOrderId": "nqocoabc",
     }, True)]
+    with pytest.raises(RuntimeError, match="Unexpected"):
+        client.get_order_list_by_client_id("ETHUSDT", "nqocoabc")
+    with pytest.raises(RuntimeError, match="Unexpected"):
+        client.get_order_list_by_client_id("BTCUSDT", "different-id")
 
 
 def test_oco_market_stop_omits_stop_limit_fields(monkeypatch):

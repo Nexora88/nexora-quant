@@ -404,10 +404,13 @@ class BinanceRestClient:
         """Resolve an OCO submission whose HTTP response was lost."""
         raw = self._request(
             "GET", "/api/v3/orderList",
-            {"symbol": symbol.upper(), "origClientOrderId": client_order_id},
+            {"origClientOrderId": client_order_id},
             signed=True,
         )
-        if not isinstance(raw, dict) or not raw.get("orderListId"):
+        if (
+            not isinstance(raw, dict) or not raw.get("orderListId")
+            or raw.get("symbol") != symbol.upper() or raw.get("listClientOrderId") != client_order_id
+        ):
             raise RuntimeError("Unexpected orderList-by-client-id response")
         return raw
 

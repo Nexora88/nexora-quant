@@ -25,13 +25,13 @@ To export a measured paper learner snapshot, prepare a scorecard from retained e
 
 ## 2. Spot Testnet before any mainnet
 
-Use dedicated Spot Testnet credentials only. Keep withdrawals disabled. Run the manual .github/workflows/spot-testnet-e2e.yml workflow and verify:
-- market order/fill handling;
-- OCO create, query, cancel and protection recovery;
-- ambiguous HTTP response / client-order-ID lookup;
-- no residual position or open OCO list after cleanup.
+Add the dedicated simulated-fund credentials as GitHub Actions secrets `BINANCE_SPOT_TESTNET_API_KEY` and `BINANCE_SPOT_TESTNET_API_SECRET`. Use an isolated Spot Testnet account with at least 20 USDT plus a fee buffer, no tradable BTC, and no open BTCUSDT orders or open order lists. Do not enter Mainnet credentials or paste secrets into a PR or log.
 
-A unit test or successful CI run is not a substitute for the live exchange Testnet workflow. Testnet is not mainnet validation.
+Run the manual `.github/workflows/spot-testnet-e2e.yml` workflow. It uses a fixed 20 USDT BTCUSDT buy and runs the production executor through SQLite order journaling, OCO creation, executor restart from the saved account, confirmed OCO cancellation, and a fee-accounted exit. The workflow checks for outstanding orders and tradable position residue. Lost-response and delayed-visibility faults are covered by offline tests; a normal signed workflow run does not reproduce a network outage.
+
+An unresolved OCO submission blocks additional orders, including an emergency market exit. Check the same list client ID on the exchange, then verify both child orders and fills before recovery. A single “order not found” response is not proof that the submission failed. Keep the SQLite database and do not manually reset the journal to force a retry. If upgrading an older deployment with a saved OCO client ID but no exchange match, reconcile it with the exchange before resuming.
+
+A unit test or successful CI run is not a substitute for the signed Spot Testnet workflow. Testnet does not validate Mainnet execution quality or profitability.
 
 ## 3. Mainnet scorecard and fail-closed gate
 
