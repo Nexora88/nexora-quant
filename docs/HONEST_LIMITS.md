@@ -11,7 +11,7 @@ erase the wall.
 ## What "ready" means here
 
 1. Paper: fee-net expectancy > 0 over enough closed trades (not one lucky fill).
-2. A durable 48h paper session, sufficient fee-complete closed trades, positive fee-net expectancy, and the `scripts/go_live_gate.py` stamp are mandatory before mainnet.
+2. A durable 168h paper session, sufficient fee-complete closed trades, positive fee-net expectancy, and the account-, configuration-, build- and artifact-bound `scripts/go_live_gate.py` stamp are mandatory before mainnet.
 3. Max drawdown and daily loss limits never disabled for live.
 4. VPS only after that — latency is secondary to fee discipline.
 

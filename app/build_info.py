@@ -6,12 +6,16 @@ from pathlib import Path
 
 
 def source_fingerprint(root: str | Path) -> str:
-    """Hash runtime Python sources and compressed engine payloads deterministically."""
+    """Hash runtime code, packaging configuration and Testnet workflow definition."""
     base = Path(root).resolve()
     digest = hashlib.sha256()
     app_dir = base / "app"
     script_dir = base / "scripts"
     paths: list[Path] = []
+    for filename in ("pyproject.toml", ".github/workflows/spot-testnet-e2e.yml"):
+        artifact = base / filename
+        if artifact.is_file():
+            paths.append(artifact)
     if app_dir.is_dir():
         paths.extend(
             path for path in app_dir.rglob("*")

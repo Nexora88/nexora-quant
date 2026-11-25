@@ -50,7 +50,7 @@ def main() -> int:
     try:
         session_start: datetime | None = None
         session_end: datetime | None = None
-        with sqlite3.connect(str(args.db)) as db:
+        with sqlite3.connect(f"{args.db.resolve().as_uri()}?mode=ro", uri=True) as db:
             db.row_factory = sqlite3.Row
             session = db.execute(
                 """SELECT * FROM paper_sessions WHERE mode='paper'
@@ -64,8 +64,10 @@ def main() -> int:
                 session_start = _parse_time(session["started_at"])
                 last_seen = _parse_time(session["last_seen_at"])
                 ended_at = _parse_time(session["ended_at"]) if session["ended_at"] else None
-                session_end = ended_at or now
+                session_end = ended_at or last_seen
                 freshness_time = ended_at or last_seen
+                if not session_start <= last_seen <= session_end <= now:
+                    failures.append("paper session has inconsistent or future telemetry")
                 duration_hours = max(0.0, (session_end - session_start).total_seconds() / 3600.0)
                 stale_minutes = max(0.0, (now - freshness_time).total_seconds() / 60.0)
                 print(
@@ -77,6 +79,8 @@ def main() -> int:
                     failures.append(f"paper session lasted {duration_hours:.2f}h; need {args.min_hours:.2f}h")
                 if int(session["ticks"]) < args.min_ticks:
                     failures.append(f"only {session['ticks']} primary ticks; need {args.min_ticks}")
+                if int(session["reconnects"]) != 0:
+                    failures.append(f"paper session recorded {session['reconnects']} depth reconnects")
                 if stale_minutes > args.max_stale_minutes:
                     failures.append(f"paper session telemetry is stale ({stale_minutes:.1f} minutes)")
                 rows = db.execute(

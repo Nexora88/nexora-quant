@@ -13,16 +13,16 @@
   PREFER_MAKER — post-only LIMIT_MAKER entry when True (live+paper)
   Scalp defaults: TP 0.55 / SL 0.18, BNB fee discount, wick stop confirmations
 """
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from dataclasses import dataclass, fields
 import json
+import math
 import os
 from pathlib import Path
 import warnings
 
 from dotenv import load_dotenv
 
-from app.build_info import source_fingerprint
+from app.live_approval import read_mainnet_approval
 
 load_dotenv()
 
@@ -142,7 +142,33 @@ class Settings:
     host: str = os.getenv("HOST", "0.0.0.0")
     port: int = int(os.getenv("PORT", "8000"))
 
-    def validate(self) -> "Settings":
+    def approval_profile(self) -> dict:
+        """The effective non-secret policy, generated without a client or trading access."""
+        excluded = {"binance_api_key", "binance_api_secret", "jwt_secret", "live_confirm"}
+        profile = {field.name: getattr(self, field.name) for field in fields(self) if field.name not in excluded}
+        profile["effective_fee_rate"] = self.effective_fee_rate()
+        profile["runtime"] = {
+            "account_id": os.getenv("ACCOUNT_ID", "live-main"),
+            "dual_account_db_path": str(Path(os.getenv("DUAL_ACCOUNT_DB_PATH", "data/dual-account.sqlite3")).resolve()),
+            "learner_frozen": _bool("LEARNER_FROZEN"),
+            "learner_min_trades": int(os.getenv("LEARNER_MIN_TRADES", "25")),
+            "reconciliation_interval_seconds": _float("RECONCILIATION_INTERVAL_SECONDS", 30.0),
+            "reconciliation_history_interval_seconds": _float("RECONCILIATION_HISTORY_INTERVAL_SECONDS", 300.0),
+        }
+        profile["store_path"] = str(Path(self.store_path).resolve())
+        return profile
+
+    def mainnet_approval_account(self) -> str:
+        return read_mainnet_approval(
+            Path(os.getenv("GO_LIVE_STAMP_PATH", "data/GO_LIVE_OK")),
+            root=Path(__file__).resolve().parents[1], profile=self.approval_profile(),
+        )
+
+    def _validate_policy(self) -> None:
+        for field in fields(self):
+            value = getattr(self, field.name)
+            if isinstance(value, float) and not math.isfinite(value):
+                raise ValueError(f"{field.name} must be finite")
         if self.trading_mode not in ("paper", "live"):
             raise ValueError("TRADING_MODE must be 'paper' or 'live'.")
         if not self.symbol or not self.symbol.isalnum():
@@ -237,6 +263,9 @@ class Settings:
                 raise ValueError("Live MAX_DAILY_LOSS_USDT cannot exceed 10% of starting cash.")
             if self.min_edge_over_fees < 2.0:
                 raise ValueError("Live mode requires MIN_EDGE_OVER_FEES >= 2.0.")
+    def validate(self) -> "Settings":
+        self._validate_policy()
+        if self.trading_mode == "live":
             if not self.binance_api_key or not self.binance_api_secret:
                 raise ValueError("Live mode requires BINANCE_API_KEY and BINANCE_API_SECRET.")
             if not self.binance_testnet:
@@ -244,32 +273,7 @@ class Settings:
                     raise ValueError(
                         "Mainnet live requires LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY."
                     )
-                stamp = Path(os.getenv("GO_LIVE_STAMP_PATH", "data/GO_LIVE_OK"))
-                if not stamp.is_file():
-                    raise ValueError(
-                        "Mainnet live blocked: run scripts/go_live_gate.py after the "
-                        f"required paper validation (missing stamp {stamp})."
-                    )
-                try:
-                    approval = json.loads(stamp.read_text(encoding="utf-8"))
-                    approved_at = datetime.fromisoformat(
-                        str(approval.get("ts", "")).replace("Z", "+00:00")
-                    )
-                    if approved_at.tzinfo is None:
-                        approved_at = approved_at.replace(tzinfo=timezone.utc)
-                    age_seconds = (datetime.now(timezone.utc) - approved_at).total_seconds()
-                except Exception as exc:
-                    raise ValueError("Mainnet live blocked: GO_LIVE stamp is invalid") from exc
-                if approval.get("ok") is not True:
-                    raise ValueError("Mainnet live blocked: GO_LIVE stamp is not approved")
-                if age_seconds < -300 or age_seconds > 7 * 24 * 3600:
-                    raise ValueError("Mainnet live blocked: GO_LIVE stamp is expired or from the future")
-                current_fingerprint = source_fingerprint(Path(__file__).resolve().parents[1])
-                if approval.get("source_fingerprint") != current_fingerprint:
-                    raise ValueError(
-                        "Mainnet live blocked: source changed since approval; rerun paper "
-                        "validation and scripts/go_live_gate.py"
-                    )
+                self.mainnet_approval_account()
         return self
 
     def watch_symbols(self) -> tuple[str, ...]:
@@ -291,4 +295,16 @@ class Settings:
         )
 
 
-settings = Settings().validate()
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Describe a candidate Mainnet profile without opening an account")
+    parser.add_argument("--describe-mainnet-profile", action="store_true", required=True)
+    parser.parse_args()
+    candidate = Settings()
+    if candidate.trading_mode != "live" or candidate.binance_testnet:
+        parser.error("requires a live Mainnet candidate configuration; this command does not start the engine")
+    candidate._validate_policy()
+    print(json.dumps(candidate.approval_profile(), indent=2, sort_keys=True, allow_nan=False))
+else:
+    settings = Settings().validate()

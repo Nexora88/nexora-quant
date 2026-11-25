@@ -1,4 +1,5 @@
 import json
+from hashlib import sha256
 
 import pytest
 
@@ -47,3 +48,23 @@ def test_run_rolling_refuses_split_if_embargo_purges_training_data(tmp_path):
     _history(path, timestamps=[i * 1_000_000 for i in range(600)])
     with pytest.raises(ValueError, match="too small after time embargo"):
         run_rolling_walk_forward({"btcusdt": path})
+
+
+def test_verified_walk_forward_binds_capture_to_symbol_and_archive(tmp_path):
+    path = tmp_path / "btcusdt.jsonl"
+    _history(path, timestamps=[i * 1_000_000_000 for i in range(600)])
+    manifest = tmp_path / "manifest.json"
+    digest = sha256(path.read_bytes()).hexdigest()
+    manifest.write_text(json.dumps({
+        "schema_version": 1, "source": "binance_spot_public", "research_only": True, "coverage_ok": True,
+        "captures": [{"file": path.name, "coverage_ok": True, "symbol": "BTCUSDT", "sha256": digest}],
+    }))
+    report = run_rolling_walk_forward({"btcusdt": path}, capture_manifests={"btcusdt": manifest}, embargo_seconds=10)
+    assert report["assets"]["btcusdt"]["verified_capture_sha256"] == digest
+    assert len(report["source_fingerprint"]) == 64
+    with pytest.raises(ValueError, match="symbol does not match"):
+        run_rolling_walk_forward({"ethusdt": path}, capture_manifests={"ethusdt": manifest}, embargo_seconds=10)
+    with path.open("ab") as output:
+        output.write(b"\n")
+    with pytest.raises(ValueError, match="hash"):
+        run_rolling_walk_forward({"btcusdt": path}, capture_manifests={"btcusdt": manifest}, embargo_seconds=10)

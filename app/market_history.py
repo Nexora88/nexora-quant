@@ -138,7 +138,7 @@ def replay_market_history(path: str | Path) -> Iterator[dict[str, Any]]:
             yield record
 
 
-def verify_capture_archive(path: str | Path, manifest_path: str | Path) -> str:
+def verify_capture_archive(path: str | Path, manifest_path: str | Path, *, symbol: str | None = None) -> str:
     """Require a complete bounded capture and return its verified archive hash."""
     archive = Path(path).resolve()
     manifest = Path(manifest_path).resolve()
@@ -155,6 +155,8 @@ def verify_capture_archive(path: str | Path, manifest_path: str | Path) -> str:
     matches = [item for item in payload["captures"] if isinstance(item, dict) and item.get("file") == archive.name]
     if len(matches) != 1 or matches[0].get("coverage_ok") is not True:
         raise ValueError("Archive has no passing capture in this manifest")
+    if symbol is not None and matches[0].get("symbol") != symbol.upper():
+        raise ValueError("Capture symbol does not match the requested report symbol")
     with archive.open("rb") as stream:
         digest = file_digest(stream, "sha256").hexdigest()
     if matches[0].get("sha256") != digest:

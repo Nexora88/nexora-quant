@@ -131,7 +131,10 @@ async def _run(store: PaperStore) -> None:
                 raise RuntimeError("Live position protection could not be restored; refusing to start")
 
     def reconcile_live_startup() -> None:
-        es.executor.attach_order_journal(store, key, verify_account=True)
+        if es.executor.client.testnet is not settings.binance_testnet:
+            raise RuntimeError("Live order client network does not match the configured network")
+        expected_binding = None if settings.binance_testnet else settings.mainnet_approval_account()
+        es.executor.attach_order_journal(store, key, verify_account=True, expected_account_binding=expected_binding)
         if not es.executor.reconcile_uncertain_order():
             raise RuntimeError("Unresolved live order intent; verify exchange order and fills before restarting")
         before = len(es.executor.trades)

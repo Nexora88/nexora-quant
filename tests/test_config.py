@@ -1,10 +1,6 @@
-import json
-from datetime import datetime, timezone
-from pathlib import Path
-
 import pytest
-from app.build_info import source_fingerprint
 from app.config import Settings
+from tests._approval_fixtures import write_approval_stamp
 
 
 def test_invalid_mode_is_rejected():
@@ -46,11 +42,6 @@ def test_testnet_live_accepted_with_keys():
 
 def test_mainnet_live_accepted_only_with_confirmation_and_go_live_stamp(tmp_path, monkeypatch):
     stamp = tmp_path / "GO_LIVE_OK"
-    stamp.write_text(json.dumps({
-        "ok": True,
-        "ts": datetime.now(timezone.utc).isoformat(),
-        "source_fingerprint": source_fingerprint(Path(__file__).resolve().parents[1]),
-    }), encoding="utf-8")
     monkeypatch.setenv("GO_LIVE_STAMP_PATH", str(stamp))
     s = Settings(
         trading_mode="live",
@@ -58,9 +49,16 @@ def test_mainnet_live_accepted_only_with_confirmation_and_go_live_stamp(tmp_path
         binance_api_secret="s",
         binance_testnet=False,
         live_confirm="I_UNDERSTAND_REAL_MONEY",
-    ).validate()
+    )
+    write_approval_stamp(stamp, s.approval_profile())
+    s.validate()
     assert s.trading_mode == "live"
     assert s.binance_testnet is False
+
+
+def test_nonfinite_risk_policy_is_rejected():
+    with pytest.raises(ValueError, match="must be finite"):
+        Settings(max_daily_loss_usdt=float("nan")).validate()
 
 
 def test_mainnet_live_rejects_missing_stamp_even_if_old_bypass_env_is_set(tmp_path, monkeypatch):
