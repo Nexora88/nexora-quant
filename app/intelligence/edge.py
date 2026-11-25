@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 import os
-from typing import Sequence
+from typing import Literal, Sequence
 
 from app.decision import FeatureVote
 
@@ -57,8 +57,9 @@ def score_edge(
     min_net_edge_bps: float = 2.0,
     min_cost_multiple: float = 2.0,
     paper_soft_gates: bool = False,
+    side: Literal["long", "short"] | None = None,
 ) -> EdgeReport:
-    """Estimate net edge and require gross edge >= N times all-in round-trip costs."""
+    """Score alignment separately; require gross edge >= N times round-trip costs."""
     numeric = (
         spread_bps, impact_bps, fee_bps, latency_bps, expected_alpha_bps,
         min_quality, min_net_edge_bps, min_cost_multiple,
@@ -82,10 +83,6 @@ def score_edge(
     min_net_edge_bps = float(min_net_edge_bps)
     min_cost_multiple = float(min_cost_multiple)
 
-    if not paper_soft_gates:
-        env_soft = os.getenv("PAPER_SOFT_GATES", "false").strip().lower()
-        mode = os.getenv("TRADING_MODE", "paper").strip().lower()
-        paper_soft_gates = mode == "paper" and env_soft in {"1", "true", "yes", "on"}
     if paper_soft_gates:
         min_quality = min(min_quality, 0.24)
         min_net_edge_bps = min(min_net_edge_bps, 0.35)
@@ -98,11 +95,13 @@ def score_edge(
     long_w = sum(v.weight for v in votes if v.direction == "long")
     short_w = sum(v.weight for v in votes if v.direction == "short")
     total = long_w + short_w + sum(v.weight for v in votes if v.direction == "flat")
-    majority = max(long_w, short_w)
-    agreement = majority / total if total > 0 else 0.0
+    aligned = long_w if side == "long" else short_w if side == "short" else max(long_w, short_w)
+    agreement = aligned / total if total > 0 else 0.0
     gross = agreement * expected_alpha_bps
     net = gross - total_cost
-    quality = max(0.0, min(1.0, agreement * (1.0 - min(0.7, total_cost / 30.0))))
+    # Costs already affect both the net edge and the cost multiple. Penalizing
+    # agreement again made the quality threshold unreachable at common fees.
+    quality = max(0.0, min(1.0, agreement))
     multiple_ok = total_cost <= 0.0 or gross >= total_cost * min_cost_multiple
     tradeable = quality >= min_quality and net >= min_net_edge_bps and multiple_ok
     if not multiple_ok:
@@ -157,6 +156,7 @@ def score_edge_for_desk(
             min_net_edge_bps=0.25 if soft else 1.0,
             min_cost_multiple=min_cost_multiple,
             paper_soft_gates=soft,
+            side="long",
         )
     return score_edge(
         votes=votes, spread_bps=spread_bps, impact_bps=impact_bps,
@@ -164,4 +164,5 @@ def score_edge_for_desk(
         expected_alpha_bps=alpha,
         min_cost_multiple=min_cost_multiple,
         paper_soft_gates=False,
+        side="long",
     )

@@ -1,5 +1,5 @@
 from app.decision import FeatureVote
-from app.intelligence.edge import estimate_alpha_bps, score_edge
+from app.intelligence.edge import estimate_alpha_bps, score_edge, score_edge_for_desk
 
 
 def test_round_trip_fees_and_impact_can_block_trade():
@@ -73,3 +73,37 @@ def test_estimate_alpha_scales_with_tp_and_regime():
     assert trend >= quiet * 0.99
     wide = estimate_alpha_bps(take_profit_pct=1.2, atr_pct=0.01, regime="breakout")
     assert wide > quiet
+
+
+def test_directional_quality_is_not_capped_by_fees_but_hard_economic_gate_remains():
+    votes = [FeatureVote("obi", "long", 1.0, 0.8, "aligned")]
+    enough = score_edge(votes=votes, spread_bps=0, fee_bps=20, expected_alpha_bps=41)
+    not_enough = score_edge(votes=votes, spread_bps=0, fee_bps=20, expected_alpha_bps=39)
+    assert enough.quality == not_enough.quality == 1.0
+    assert enough.tradeable
+    assert not_enough.net_edge_bps == 19
+    assert not not_enough.tradeable
+
+
+def test_spot_long_desk_does_not_count_short_agreement_as_long_alpha():
+    votes = [FeatureVote("obi", "short", 1.0, -0.8, "opposed")]
+    report = score_edge_for_desk(
+        votes=votes, spread_bps=0, fee_bps=20, take_profit_pct=1.0, mode="live",
+    )
+    assert report.quality == 0
+    assert report.net_edge_bps == -20
+    assert not report.tradeable
+
+
+def test_explicit_modes_do_not_inherit_paper_environment_override(monkeypatch):
+    monkeypatch.setenv("TRADING_MODE", "paper")
+    monkeypatch.setenv("PAPER_SOFT_GATES", "true")
+    votes = [FeatureVote("obi", "long", 0.3, 0.8, "minority"),
+             FeatureVote("flow", "short", 0.7, -0.8, "majority")]
+    for mode in ("live", "paper"):
+        report = score_edge_for_desk(
+            votes=votes, spread_bps=0, fee_bps=0, take_profit_pct=1.0, mode=mode,
+            entry_min_score=0.45, paper_soft_gates=False,
+        )
+        assert not report.tradeable
+        assert "paper_soft_gates" not in report.notes

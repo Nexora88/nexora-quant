@@ -4,8 +4,48 @@ The caller must fetch a REST snapshot and pass buffered websocket updates in ord
 A gap invalidates the book; fetch a fresh snapshot before accepting more diffs.
 """
 from dataclasses import dataclass, field
+from heapq import nlargest, nsmallest
+from operator import itemgetter
 from math import isfinite
-from typing import Iterable
+from types import MappingProxyType
+from typing import Iterable, Mapping
+import time
+
+
+@dataclass(frozen=True, slots=True)
+class DepthSnapshot:
+    """Read-only top levels and source clocks for one published book revision."""
+
+    symbol: str
+    last_update_id: int
+    bids: Mapping[float, float]
+    asks: Mapping[float, float]
+    received_at_ns: int
+    received_monotonic_ns: int
+    exchange_at_ms: int | None = None
+
+    @property
+    def synchronized(self) -> bool:
+        return True
+
+    @property
+    def best_bid(self) -> tuple[float, float] | None:
+        return next(iter(self.bids.items()), None)
+
+    @property
+    def best_ask(self) -> tuple[float, float] | None:
+        return next(iter(self.asks.items()), None)
+
+    def age_seconds(self) -> float:
+        local_age = (time.monotonic_ns() - self.received_monotonic_ns) / 1e9
+        # Use ingress clock skew only once; wall-clock jumps after ingress must
+        # not make a queued or delayed exchange event appear fresh again.
+        source_delay = 0.0
+        if self.exchange_at_ms is not None:
+            source_delay = (self.received_at_ns - self.exchange_at_ms * 1_000_000) / 1e9
+            if source_delay < -5.0:
+                return float("inf")
+        return max(0.0, local_age) + max(0.0, source_delay)
 
 
 @dataclass(slots=True)
@@ -15,6 +55,19 @@ class DepthBook:
     bids: dict[float, float] = field(default_factory=dict)
     asks: dict[float, float] = field(default_factory=dict)
     synchronized: bool = False
+
+    def publish(
+        self, *, received_at_ns: int, received_monotonic_ns: int,
+        exchange_at_ms: int | None = None, levels: int = 20,
+    ) -> DepthSnapshot:
+        if not self.synchronized or self.last_update_id is None or not self.symbol:
+            raise ValueError("only synchronized books with a symbol can be published")
+        return DepthSnapshot(
+            self.symbol, self.last_update_id,
+            MappingProxyType(dict(nlargest(levels, self.bids.items(), key=itemgetter(0)))),
+            MappingProxyType(dict(nsmallest(levels, self.asks.items(), key=itemgetter(0)))),
+            received_at_ns, received_monotonic_ns, exchange_at_ms,
+        )
 
     def load_snapshot(
         self, *, last_update_id: int,

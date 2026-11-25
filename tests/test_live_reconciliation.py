@@ -1,6 +1,13 @@
+import asyncio
+from types import SimpleNamespace
+
 import pytest
 
-from app.live_reconciliation import audit_exchange_history, load_local_trade_ledger
+from app.live_reconciliation import (
+    LocalAccountSnapshot, RecurringExchangeAudit, audit_exchange_history,
+    live_trade_event_key, load_local_trade_ledger, read_stable_exchange_audit,
+)
+from app.storage import PaperStore
 
 
 def audit(**overrides):
@@ -160,3 +167,123 @@ def test_native_commission_asset_delta_is_detected_even_when_order_ids_match():
         "accounting_complete": True,
     }}], local_fees_usdt=0.11)
     assert result["exchange"]["fee_asset_mismatch_count"] == 1
+
+
+def test_recovered_oco_fills_are_counted_once_per_fill_not_once_per_order():
+    fills = [{"orderId": 11, "id": idx, "commission": "0.06", "commissionAsset": "USDT"} for idx in (1, 2)]
+    local = [
+        {"exchange_order_id": 11, "exchange_trade_id": idx, "commission_by_asset": {"USDT": 0.06}}
+        for idx in (1, 2)
+    ]
+    complete = audit(local_trade_rows=local, executor_trades=local, exchange_trades=fills)
+    assert complete["local"] == complete["exchange"]
+    missing = audit(local_trade_rows=local[:1], exchange_trades=fills)
+    assert missing["details"]["missing_local_fill_ids"] == [[11, 2]]
+    assert missing["exchange"]["unmatched_exchange_order_count"] == 1
+
+
+def test_existing_order_without_exchange_fill_is_a_mismatch_even_when_fees_are_zero():
+    result = audit(local_trade_rows=[{"exchange_order_id": 11}], local_fees_usdt=0, exchange_trades=[])
+    assert result["details"]["missing_exchange_order_ids"] == [11]
+
+
+def test_live_keys_are_idempotent_and_distinguish_oco_partial_fills(tmp_path):
+    executor = SimpleNamespace(symbol="BTCUSDT", client=SimpleNamespace(testnet=True))
+    orders = [{"exchange_order_id": 11}] + [
+        {"exchange_order_id": 12, "exchange_trade_id": idx} for idx in (0, 1)
+    ]
+    with PaperStore(tmp_path / "live.sqlite3", async_writes=False) as store:
+        for trade in orders:
+            assert store.append_trade(trade, event_key=live_trade_event_key(executor, trade))
+            assert not store.append_trade(trade, event_key=live_trade_event_key(executor, trade))
+        assert len(store.list_trades()) == 3
+    assert live_trade_event_key(executor, orders[0]) == "live:testnet:BTCUSDT:11"
+    with pytest.raises(ValueError, match="positive exchange order ID"):
+        live_trade_event_key(executor, {})
+
+
+class FakeExchange:
+    def __init__(self):
+        self.order_calls = 0
+        self.orders = []
+        self.trades = []
+        self.open_order_rows = []
+        self.cash = 100
+        self.base = 0
+
+    def all_orders(self, symbol, *, from_id):
+        self.order_calls += 1
+        return list(self.orders)
+
+    def all_my_trades(self, symbol, *, from_id):
+        return list(self.trades)
+
+    def account(self):
+        return {"balances": [{"asset": "USDT", "free": self.cash}, {"asset": "BTC", "free": self.base}]}
+
+    def open_orders(self, symbol):
+        return self.open_order_rows
+
+    def open_order_lists(self):
+        return []
+
+    def ticker_price(self, symbol):
+        return 100
+
+
+def test_recurring_audit_refreshes_cache_after_new_local_fill_and_checks_real_drift():
+    client = FakeExchange()
+    executor = SimpleNamespace(
+        symbol="BTCUSDT", quote_asset="USDT", base_asset="BTC", cash_usdt=100, base_quantity=0,
+        fees_paid_usdt=0, protective_order_list_id=None, trades=[],
+    )
+    recurring = RecurringExchangeAudit(300)
+
+    def read():
+        return recurring.read(client=client, snapshot=LocalAccountSnapshot.capture(executor), local_trade_rows=[])
+
+    assert read()["details"]["history_refreshed"]
+    assert not read()["details"]["history_refreshed"]
+    assert client.order_calls == 1
+    # Local fill landed before the periodic history expiry.
+    executor.cash_usdt = client.cash = 90
+    executor.base_quantity = client.base = 0.1
+    executor.trades.append({"exchange_order_id": 11})
+    client.orders = [{"orderId": 11}]
+    client.trades = [{"orderId": 11, "id": 1}]
+    current = read()
+    assert current["details"]["history_refreshed"]
+    assert current["local"] == current["exchange"]
+    assert client.order_calls == 2
+    # An unexplained external order triggers a fresh read but is not ignored.
+    client.open_order_rows = [{"orderId": 99}]
+    mismatch = read()
+    assert mismatch["details"]["history_refreshed"]
+    assert mismatch["details"]["unknown_open_order_ids"] == [99]
+    assert client.order_calls == 3
+
+
+@pytest.mark.asyncio
+async def test_snapshot_changed_during_rest_read_is_retried(monkeypatch, tmp_path):
+    observed = []
+    executor = SimpleNamespace(
+        symbol="BTCUSDT", quote_asset="USDT", base_asset="BTC", cash_usdt=100,
+        base_quantity=0, fees_paid_usdt=0, protective_order_list_id=None, trades=[],
+        client=FakeExchange(),
+    )
+
+    async def fake_to_thread(reader, snapshot):
+        observed.append(snapshot)
+        if len(observed) == 1:
+            executor.cash_usdt = 90
+            executor.trades.append({"exchange_order_id": 11})
+        return {"cash": snapshot.cash_usdt}
+
+    monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
+    with PaperStore(tmp_path / "live.sqlite3", async_writes=False) as store:
+        result = await read_stable_exchange_audit(
+            executor=executor, store=store, audit=RecurringExchangeAudit(300),
+        )
+    assert result == {"cash": 90}
+    assert len(observed) == 2
+    assert not observed[0].trades

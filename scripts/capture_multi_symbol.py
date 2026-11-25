@@ -76,6 +76,8 @@ async def _one(symbol: str, path: str) -> None:
                 "best_bid": [bid, bid_qty],
                 "best_ask": [ask, ask_qty],
                 "update_id": getattr(depth, "last_update_id", None),
+                "exchange_at_ms": depth.exchange_at_ms,
+                "received_at_ns": depth.received_at_ns,
                 "bids": sorted(getattr(depth, "bids", {}).items(), reverse=True)[:20],
                 "asks": sorted(getattr(depth, "asks", {}).items())[:20],
             })

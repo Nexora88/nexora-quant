@@ -334,6 +334,14 @@ def _activate_symbol_context(symbol: str) -> None:
     _ns["order_flow"] = _symbol_order_flows[key]
 
 
+def reset_depth_confirmation(symbol: str) -> None:
+    """Do not count confirmations accumulated across missing depth events."""
+    ctx = _symbol_contexts.get(symbol.lower())
+    if ctx is not None:
+        ctx["sustained"].reset()
+        ctx["order_flow"].reset()
+
+
 async def handle_tick(depth, store, history, features, mode, key, persist, confirmations, ticks):
     """Core tick + soft equity goal halt (new entries only; exits still run)."""
     from app.config import settings as _settings

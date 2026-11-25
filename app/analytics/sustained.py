@@ -32,12 +32,15 @@ class SustainedSignalGate:
         self.min_score = min_score
         self._scores: deque[tuple[float, float]] = deque(maxlen=200)
 
+    def reset(self) -> None:
+        self._scores.clear()
+
     def update(self, score: float) -> SustainedDecision:
         now = time.monotonic()
         if score >= self.min_score:
             self._scores.append((now, score))
         else:
-            self._scores.clear()
+            self.reset()
             return SustainedDecision(False, 0.0, 0, 0.0, "score_below_threshold")
         consecutive = 0
         for ts, sc in reversed(self._scores):

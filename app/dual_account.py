@@ -280,27 +280,7 @@ class DualAccountStore:
         account = self.account(account_id)
         if account["mode"] != "live":
             raise ValueError("exchange reconciliation applies only to the live account")
-        tolerances = dict(tolerances or {
-            "cash_usdt": 0.01,
-            "base_quantity": 1e-8,
-            "fees_usdt": 0.01,
-            "open_order_count": 0.0,
-            "unmatched_exchange_order_count": 0.0,
-            "unmatched_local_order_count": 0.0,
-            "unknown_open_order_count": 0.0,
-            "unpriced_commission_count": 0.0,
-            "fee_asset_mismatch_count": 0.0,
-        })
-        differences: dict[str, dict[str, float]] = {}
-        for key, tolerance in tolerances.items():
-            left = _finite(local.get(key, 0), f"local.{key}")
-            right = _finite(exchange.get(key, 0), f"exchange.{key}")
-            delta = left - right
-            if abs(delta) > float(tolerance):
-                differences[key] = {
-                    "local": left, "exchange": right, "delta": delta,
-                    "tolerance": float(tolerance),
-                }
+        differences = reconciliation_differences(local, exchange, tolerances=tolerances)
         status = "pass" if not differences else "mismatch"
         with self.db:
             self.db.execute(
@@ -312,6 +292,33 @@ class DualAccountStore:
 
     def close(self) -> None:
         self.db.close()
+
+
+def reconciliation_differences(
+    local: Mapping[str, Any], exchange: Mapping[str, Any],
+    *, tolerances: Mapping[str, float] | None = None,
+) -> dict[str, dict[str, float]]:
+    tolerances = tolerances or {
+        "cash_usdt": 0.01,
+        "base_quantity": 1e-8,
+        "fees_usdt": 0.01,
+        "open_order_count": 0.0,
+        "unmatched_exchange_order_count": 0.0,
+        "unmatched_local_order_count": 0.0,
+        "unknown_open_order_count": 0.0,
+        "unpriced_commission_count": 0.0,
+        "fee_asset_mismatch_count": 0.0,
+    }
+    differences = {}
+    for key, tolerance in tolerances.items():
+        left = _finite(local.get(key, 0), f"local.{key}")
+        right = _finite(exchange.get(key, 0), f"exchange.{key}")
+        delta = left - right
+        if abs(delta) > float(tolerance):
+            differences[key] = {
+                "local": left, "exchange": right, "delta": delta, "tolerance": float(tolerance),
+            }
+    return differences
 
 
 class ReconciliationMonitor:

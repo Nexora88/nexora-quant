@@ -84,3 +84,10 @@ python scripts/run_l2_backtest.py data/market-history.jsonl.gz --min-score 0.55
 - Keep at least 5 USDT uncommitted as a fee, partial-fill and recovery reserve in the initial paper/Testnet profile.
 - Scan multiple symbols, but rank only candidates with conservative fee-net edge; no-trade is a valid outcome.
 - The future portfolio ceiling is three concurrent positions, not unlimited. Live remains one position until shared cash reservation, per-symbol protection and full account reconciliation are implemented and proven.
+
+## Depth, ledger and edge checks
+
+- **Depth integrity:** `/status` exposes `depth_drops` counters by symbol and reason (`queue_overflow`, `before_resync`, `invalid_or_stale`). A gap or dropped frame clears consecutive signal confirmation; stale frames are not used for new decisions. Depth recordings retain source `exchange_at_ms` (when supplied) and local `received_at_ns` separately from the recording timestamp.
+- **Live ledger:** Confirmed orders use a canonical venue/symbol/order key. Recovered OCO executions also include the individual exchange trade ID so two fills for the same child order do not overwrite one another. Existing SQLite files are not rewritten by this change; preserve a backup and review historical raw duplicates before using old exports as evidence.
+- **Reconciliation:** A changed local account or an apparent discrepancy against cached history forces a fresh history read. An unresolved mismatch still activates the existing kill switch. These REST reads are not an atomic exchange snapshot; this does not replace private-stream recovery, durable pre-submit intent, or Testnet validation.
+- **Edge:** Quality measures alignment for the intended Spot long entry; affordability is checked separately through net edge and the hard gross-to-cost multiple. The alpha estimate is still heuristic. Live entries still require observed execution-cost calibration; this change does not supply initial calibration evidence or authorize Mainnet.

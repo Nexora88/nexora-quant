@@ -13,15 +13,16 @@ from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 
 from app.binance_depth import stream_synchronized_depth
-from app.depth_book import DepthBook
+from app.depth_book import DepthSnapshot
 
 log = logging.getLogger(__name__)
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class TaggedDepth:
     symbol: str
-    book: DepthBook
+    book: DepthSnapshot
+    generation: int = 0
 
 
 async def _pump(
@@ -29,33 +30,38 @@ async def _pump(
     out: asyncio.Queue[TaggedDepth],
     stop: asyncio.Event,
     on_reconnect: Callable[[str, Exception], None] | None = None,
+    *,
+    generations: dict[str, int],
+    on_drop: Callable[[str, str], None] | None = None,
 ) -> None:
     """Keep a single-symbol depth pump alive across transient WS failures."""
     sym = symbol.lower()
     backoff = 1.0
+
+    def reconnect(_symbol: str, exc: Exception) -> None:
+        generations[sym] = generations.get(sym, 0) + 1
+        if on_reconnect is not None:
+            on_reconnect(sym, exc)
+
     while not stop.is_set():
         try:
-            async for book in stream_synchronized_depth(sym, on_reconnect=on_reconnect):
+            async for book in stream_synchronized_depth(sym, on_reconnect=reconnect):
                 if stop.is_set():
                     return
-                if not book.synchronized:
-                    continue
                 backoff = 1.0
+                item = TaggedDepth(sym, book, generations.get(sym, 0))
                 try:
-                    out.put_nowait(TaggedDepth(sym, book))
+                    out.put_nowait(item)
                 except asyncio.QueueFull:
-                    try:
-                        out.get_nowait()
-                    except asyncio.QueueEmpty:
-                        pass
-                    try:
-                        out.put_nowait(TaggedDepth(sym, book))
-                    except asyncio.QueueFull:
-                        pass
+                    dropped = out.get_nowait()
+                    out.put_nowait(item)
+                    if on_drop is not None:
+                        on_drop(dropped.symbol, "queue_overflow")
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
             log.exception("depth pump crashed symbol=%s; reconnect in %.1fs", sym.upper(), backoff)
+            reconnect(sym, exc)
             await asyncio.sleep(backoff)
             backoff = min(30.0, backoff * 1.5)
 
@@ -77,20 +83,31 @@ async def stream_multi_depth(
     *,
     max_queue: int = 2000,
     on_reconnect: Callable[[str, Exception], None] | None = None,
+    on_drop: Callable[[str, str], None] | None = None,
 ) -> AsyncIterator[TaggedDepth]:
     """Yield TaggedDepth from all symbols concurrently until cancelled."""
     if not symbols:
         raise ValueError("symbols required")
+    if max_queue < 1:
+        raise ValueError("max_queue must be positive")
     q: asyncio.Queue[TaggedDepth] = asyncio.Queue(maxsize=max_queue)
     stop = asyncio.Event()
+    generations: dict[str, int] = {}
     tasks = [
-        asyncio.create_task(_pump(sym, q, stop, on_reconnect), name=f"depth-{sym}")
-        for sym in symbols
+        asyncio.create_task(
+            _pump(sym, q, stop, on_reconnect, generations=generations, on_drop=on_drop),
+            name=f"depth-{sym}",
+        )
+        for sym in dict.fromkeys(symbol.lower() for symbol in symbols)
     ]
     log.info("Multi-depth pumps started: %s", ",".join(s.upper() for s in symbols))
     try:
         while True:
             item = await q.get()
+            if item.generation != generations.get(item.symbol, 0):
+                if on_drop is not None:
+                    on_drop(item.symbol, "before_resync")
+                continue
             yield item
     finally:
         stop.set()

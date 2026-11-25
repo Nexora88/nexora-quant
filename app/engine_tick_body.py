@@ -8,6 +8,7 @@ from app import engine_setup as es
 from app.config import settings
 from app.execution_policy import maker_route_enabled
 from app.decision import build_decision
+from app.depth_book import DepthSnapshot
 from app.engine_setup import (
     _event_key,
     _paper_fill,
@@ -37,10 +38,11 @@ from app.autonomous_policy import regime_targets, vol_adjusted_notional, impact_
 from app.simulation import market_impact_bps
 from app.strategy import analyze_market, entry_signal_from_analysis, exit_reason
 from app.expectancy import expectancy_probe_policy
+from app.live_reconciliation import live_trade_event_key
 
 
 async def handle_tick(
-    depth,
+    depth: DepthSnapshot,
     store,
     history,
     features,
@@ -50,13 +52,14 @@ async def handle_tick(
     confirmations: int,
     ticks: int,
 ) -> tuple[int, int]:
-    if not depth.synchronized or not depth.best_bid or not depth.best_ask:
+    if not depth.best_bid or not depth.best_ask or depth.age_seconds() > settings.max_data_age_seconds:
         return confirmations, ticks
     if getattr(state, "paused", False):
         return confirmations, ticks
     bid, bid_qty = depth.best_bid
     ask, ask_qty = depth.best_ask
     history.append(
+        # Keep the delivered order replayable across symbols and REST seeds.
         timestamp_ns=time.time_ns(),
         event_type="depth",
         payload={
@@ -64,6 +67,8 @@ async def handle_tick(
             "best_bid": [bid, bid_qty],
             "best_ask": [ask, ask_qty],
             "update_id": getattr(depth, "last_update_id", None),
+            "exchange_at_ms": depth.exchange_at_ms,
+            "received_at_ns": depth.received_at_ns,
             "bids": sorted(getattr(depth, "bids", {}).items(), reverse=True)[:20],
             "asks": sorted(getattr(depth, "asks", {}).items())[:20],
         },
@@ -72,8 +77,10 @@ async def handle_tick(
         return confirmations, ticks
     trade_sym = (getattr(state, "trade_symbol", None) or settings.symbol).lower()
     risk.rollover_day(datetime.now(timezone.utc).date().isoformat())
+    state.latest_depth = depth
     state.update_book(
-        BookTicker(trade_sym, bid, bid_qty, ask, ask_qty, datetime.now(timezone.utc))
+        BookTicker(trade_sym, bid, bid_qty, ask, ask_qty,
+                   datetime.fromtimestamp(depth.received_at_ns / 1e9, timezone.utc))
     )
 
     depth_bids = sorted(getattr(depth, "bids", {}).items(), reverse=True)[:15] or [(bid, bid_qty)]
@@ -223,7 +230,8 @@ async def handle_tick(
                             latency_ms=float(trade["execution_latency_ms"]),
                             filled_at_ms=int(time.time() * 1000),
                         )
-                    store.append_trade(trade, event_key=_event_key(key, trade))
+                    event_key = live_trade_event_key(ex, trade) if mode == "live" else _event_key(key, trade)
+                    store.append_trade(trade, event_key=event_key)
                     state.record_fill(trade)
                     pnl_v = float(trade.get("pnl_usdt") or 0.0) if accounting_complete else 0.0
                     if accounting_complete:
@@ -530,7 +538,7 @@ async def handle_tick(
         if sizing_n > 0:
             risk_dec = risk.evaluate_entry(
                 notional_usdt=sizing_n, available_cash=free_cash, bid=bid, ask=ask,
-                data_age_seconds=state.data_age_seconds(),
+                data_age_seconds=depth.age_seconds(),
             )
             if risk_dec.allowed:
                 state.last_entry_eligible = True
@@ -593,7 +601,7 @@ async def handle_tick(
                                 if not protected:
                                     risk.activate_kill_switch("Exchange-hosted TP/SL OCO unavailable — emergency flatten")
                                     state.last_error = "oco_install_failed"
-                            store.append_trade(trade, event_key=_event_key(key, trade))
+                            store.append_trade(trade, event_key=live_trade_event_key(ex, trade))
                             state.record_fill(trade)
                             state.peak_price = ask
                             state.position_tp_pct = active_tp
