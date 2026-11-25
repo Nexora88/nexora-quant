@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import aclosing
 import json
 import time
 
 import pytest
 
-from app import binance_depth
+from app import binance_depth, binance_ws, market_indicators
 
 
 class FakeSocket:
@@ -33,6 +34,57 @@ class FakeConnection:
 
     async def __aexit__(self, *_):
         return False
+
+
+@pytest.mark.parametrize("testnet", [False, True])
+def test_public_depth_trades_and_candles_stay_on_the_selected_network(monkeypatch, testnet):
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self):
+            return json.dumps(self.payload).encode()
+
+    http_urls = []
+    ws_urls = []
+
+    def urlopen(request, *, timeout):
+        http_urls.append(request.full_url)
+        if "/depth?" in request.full_url:
+            return Response({"lastUpdateId": 100, "bids": [["99", "2"]], "asks": [["101", "2"]]})
+        return Response([])
+
+    def connect(url, **_):
+        ws_urls.append(url)
+        events = ([{"stream": "btcusdt@trade", "data": {
+            "e": "trade", "s": "BTCUSDT", "p": "100", "q": "1", "m": False,
+        }}] if "streams=" in url else [])
+        return FakeConnection(FakeSocket(events))
+
+    monkeypatch.setattr(binance_depth.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(binance_depth.websockets, "connect", connect)
+    monkeypatch.setattr(binance_ws.websockets, "connect", connect)
+
+    async def scenario():
+        async with aclosing(binance_depth.stream_synchronized_depth("btcusdt", testnet=testnet)) as stream:
+            depth = await anext(stream)
+            assert depth.testnet is testnet
+            assert depth.best_bid == (99.0, 2.0)
+        async with aclosing(binance_ws.stream_events("btcusdt", testnet=testnet)) as stream:
+            assert (await anext(stream)).price == 100.0
+
+    asyncio.run(scenario())
+    assert market_indicators.fetch_recent_candles("btcusdt", "1m", testnet=testnet) == []
+    rest = "https://testnet.binance.vision" if testnet else "https://api.binance.com"
+    ws = "wss://stream.testnet.binance.vision" if testnet else "wss://stream.binance.com:9443"
+    assert [url.split("?")[0] for url in http_urls] == [f"{rest}/api/v3/depth", f"{rest}/api/v3/klines"]
+    assert [url.split("?")[0] for url in ws_urls] == [f"{ws}/ws/btcusdt@depth@100ms", f"{ws}/stream"]
 
 
 def test_depth_stream_takes_new_snapshot_after_sequence_gap(monkeypatch):

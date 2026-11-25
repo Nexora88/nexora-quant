@@ -33,6 +33,7 @@ async def _pump(
     *,
     generations: dict[str, int],
     on_drop: Callable[[str, str], None] | None = None,
+    testnet: bool = False,
 ) -> None:
     """Keep a single-symbol depth pump alive across transient WS failures."""
     sym = symbol.lower()
@@ -45,7 +46,8 @@ async def _pump(
 
     while not stop.is_set():
         try:
-            async for book in stream_synchronized_depth(sym, on_reconnect=reconnect):
+            options = {"testnet": True} if testnet else {}
+            async for book in stream_synchronized_depth(sym, on_reconnect=reconnect, **options):
                 if stop.is_set():
                     return
                 backoff = 1.0
@@ -84,6 +86,7 @@ async def stream_multi_depth(
     max_queue: int = 2000,
     on_reconnect: Callable[[str, Exception], None] | None = None,
     on_drop: Callable[[str, str], None] | None = None,
+    testnet: bool = False,
 ) -> AsyncIterator[TaggedDepth]:
     """Yield TaggedDepth from all symbols concurrently until cancelled."""
     if not symbols:
@@ -95,7 +98,7 @@ async def stream_multi_depth(
     generations: dict[str, int] = {}
     tasks = [
         asyncio.create_task(
-            _pump(sym, q, stop, on_reconnect, generations=generations, on_drop=on_drop),
+            _pump(sym, q, stop, on_reconnect, generations=generations, on_drop=on_drop, testnet=testnet),
             name=f"depth-{sym}",
         )
         for sym in dict.fromkeys(symbol.lower() for symbol in symbols)

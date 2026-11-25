@@ -39,6 +39,7 @@ from app.simulation import market_impact_bps
 from app.strategy import analyze_market, entry_signal_from_analysis, exit_reason
 from app.expectancy import expectancy_probe_policy
 from app.live_reconciliation import live_trade_event_key
+from app.live_execution_evidence import live_audit_blockers
 
 
 async def handle_tick(
@@ -52,6 +53,14 @@ async def handle_tick(
     confirmations: int,
     ticks: int,
 ) -> tuple[int, int]:
+    if mode == "live" and (
+        depth.testnet is not settings.binance_testnet or depth.symbol.upper() != settings.symbol.upper()
+    ):
+        state.last_message_at = None
+        state.latest_depth = None
+        state.last_error = "live_depth_network_or_symbol_mismatch"
+        state.last_entry_eligible = False
+        return 0, ticks
     if not depth.best_bid or not depth.best_ask or depth.age_seconds() > settings.max_data_age_seconds:
         return confirmations, ticks
     if getattr(state, "paused", False):
@@ -69,6 +78,7 @@ async def handle_tick(
             "update_id": getattr(depth, "last_update_id", None),
             "exchange_at_ms": depth.exchange_at_ms,
             "received_at_ns": depth.received_at_ns,
+            "testnet": depth.testnet,
             "bids": sorted(getattr(depth, "bids", {}).items(), reverse=True)[:20],
             "asks": sorted(getattr(depth, "asks", {}).items())[:20],
         },
@@ -111,9 +121,6 @@ async def handle_tick(
     except Exception:
         pass
     atr_now = atr_tracker.update(analysis.mid) if analysis.mid and analysis.mid > 0 else float(atr_tracker.atr_pct or 0.0)
-    now_ms = int(time.time() * 1000)
-    if hasattr(es, "execution_costs"):
-        es.execution_costs.observe_mid(analysis.mid, now_ms)
     try:
         features.append(
             ts_ns=time.time_ns(), symbol=trade_sym, mid=analysis.mid,
@@ -219,17 +226,6 @@ async def handle_tick(
                         trade["pnl_usdt"] = None
                         risk.activate_kill_switch("Exchange commission accounting incomplete")
                         state.last_error = "commission_accounting_incomplete"
-                    if (
-                        mode == "live" and trade.get("decision_mid")
-                        and trade.get("execution_latency_measured", False)
-                        and hasattr(es, "execution_costs")
-                    ):
-                        es.execution_costs.record_fill(
-                            side=trade["side"], decision_mid=float(trade["decision_mid"]),
-                            fill_price=float(trade["price"]),
-                            latency_ms=float(trade["execution_latency_ms"]),
-                            filled_at_ms=int(time.time() * 1000),
-                        )
                     event_key = live_trade_event_key(ex, trade) if mode == "live" else _event_key(key, trade)
                     store.append_trade(trade, event_key=event_key)
                     state.record_fill(trade)
@@ -314,19 +310,22 @@ async def handle_tick(
         visible_liquidity_usdt=max(ask * max(ask_qty, 1e-9), 1.0),
         coefficient=getattr(settings, "impact_coefficient", 0.1),
     )
-    estimated_latency_ms = (
-        es.execution_costs.estimate_latency_ms() if mode == "live" and hasattr(es, "execution_costs") else None
+    live_buy_route = "limit_maker" if maker_route_enabled("live", settings.prefer_maker) else "market"
+    cost_model = getattr(state, "live_cost_model", None)
+    cost_evidence = (
+        cost_model.estimate(now=time.time(), notional=float(settings.max_order_size_usdt), buy_route=live_buy_route)
+        if mode == "live" and cost_model is not None else None
     )
-    calibrated_latency_cost = (
-        es.execution_costs.estimate_cost_bps(latency_ms=estimated_latency_ms)
-        if mode == "live" and estimated_latency_ms is not None and hasattr(es, "execution_costs") else None
-    )
+    observed_shortfall_bps = cost_evidence.round_trip_shortfall_bps if cost_evidence is not None else None
+    state.live_execution_cost = cost_evidence.public_status() if cost_evidence is not None else {}
     try:
         from app.intelligence.edge import score_edge_for_desk
         atr_now = float(getattr(atr_tracker, "atr_pct", 0.0) or 0.0)
         soft = mode == "paper" and bool(getattr(settings, "paper_soft_gates", True))
         rt_impact = max(0.0, 2.0 * float(impact_est or 0.0))
         rt_fee_bps = max(0.0, 2.0 * float(settings.effective_fee_rate()) * 10_000)
+        if cost_evidence is not None and cost_evidence.round_trip_fee_bps is not None:
+            rt_fee_bps = max(rt_fee_bps, cost_evidence.round_trip_fee_bps)
         # Estimate alpha from the same dynamic target that will actually manage the position.
         # Include both-side fees, quoted spread, expected entry/exit slippage and impact.
         dynamic_targets_preview = None
@@ -361,12 +360,15 @@ async def handle_tick(
                 min_cost_multiple=float(settings.min_edge_over_fees),
             )
         else:
+            spread_bps = max(0.0, float(analysis.spread_bps or 0.0))
             edge = score_edge_for_desk(
                 votes=_pre.votes,
-                spread_bps=max(0.0, float(analysis.spread_bps or 0.0)),
+                spread_bps=spread_bps,
                 impact_bps=rt_impact,
                 fee_bps=rt_fee_bps,
-                latency_bps=max(0.0, float(calibrated_latency_cost or 0.0)),
+                # Measured decision-to-fill shortfall already includes spread
+                # and impact. Only charge the excess over the modeled floor.
+                latency_bps=max(0.0, float(observed_shortfall_bps or 0.0) - spread_bps - rt_impact),
                 take_profit_pct=edge_tp_pct,
                 atr_pct=atr_now,
                 regime=str(getattr(analysis, "regime", "unknown") or "unknown"),
@@ -379,7 +381,7 @@ async def handle_tick(
         log.exception("score_edge failed; non-tradeable: %s", exc)
         from app.intelligence.edge import EdgeReport
         edge = EdgeReport(0.0, 0.0, 0.0, -999.0, False, [f"edge_error:{type(exc).__name__}"])
-    execution_costs_calibrated = mode != "live" or calibrated_latency_cost is not None
+    execution_costs_calibrated = mode != "live" or observed_shortfall_bps is not None
     state.live_entry_cost_calibrated = mode == "live" and execution_costs_calibrated
     adv = adverse_filter.check(intend_long=True)
     whale_block = whale.side == "ask" and whale.strength >= 0.5
@@ -441,6 +443,7 @@ async def handle_tick(
 
     # Negative rolling expectancy activates a cautious probe, not a permanent
     # no-trade lock. New fee-complete outcomes can prove recovery or deepen the halt.
+    audit_blockers = live_audit_blockers(state, ex, now=time.monotonic()) if mode == "live" else []
     can_enter = (
         decision.action == "enter_long"
 
@@ -452,6 +455,8 @@ async def handle_tick(
         and flow_ok
         and churn_block is None
         and cb_allow
+        and not audit_blockers
+        and execution_costs_calibrated
     )
     state.last_entry_eligible = False
     try:
@@ -460,22 +465,12 @@ async def handle_tick(
             bl = [str(churn_block)] + bl
         if not cb_allow:
             bl = ["circuit_breaker_sleep"] + bl
-        state.blockers_live = bl[:12]
+        state.blockers_live = (audit_blockers + bl)[:12]
     except Exception:
         pass
 
     if can_enter:
         free_cash = ex.cash_usdt
-        if mode == "live":
-            try:
-                ex.sync_balances()
-                free_cash = ex.cash_usdt
-            except Exception:
-                log.exception("Balance sync failed")
-                risk.activate_kill_switch("Exchange balance sync failed")
-                state.last_error = "exchange_balance_sync_failed"
-                persist()
-                return confirmations, ticks
         atr_now = float(atr_tracker.atr_pct or 0.0)
         if bool(getattr(settings, "use_atr_targets", True)):
             dyn = dynamic_targets_preview or compute_dynamic_targets(
@@ -537,10 +532,36 @@ async def handle_tick(
             equity_usdt=equity, stop_loss_pct=active_sl, desired_usdt=desired, symbol=trade_sym,
         )
         if sizing_n > 0:
+            if mode == "live":
+                sizing_evidence = cost_model.estimate(now=time.time(), notional=sizing_n, buy_route=live_buy_route)
+                exact_cost = sizing_evidence.round_trip_shortfall_bps
+                if (
+                    exact_cost is None or exact_cost > observed_shortfall_bps
+                    or sizing_evidence.round_trip_fee_bps is None
+                    or sizing_evidence.round_trip_fee_bps > rt_fee_bps
+                ):
+                    state.blockers_live = ["execution_cost_unverified_at_order_size"] + state.blockers_live[:11]
+                    persist()
+                    return confirmations, ticks
+                try:
+                    preflight_blocker = ex.entry_preflight(
+                        notional=sizing_n, bid=bid, ask=ask, stop_loss_pct=active_sl,
+                    )
+                except Exception:
+                    log.exception("Live entry preflight failed; no order submitted")
+                    preflight_blocker = "entry_exchange_preflight_failed"
+                post_read_blockers = live_audit_blockers(state, ex, now=time.monotonic())
+                if preflight_blocker or post_read_blockers:
+                    blockers = ([preflight_blocker] if preflight_blocker else []) + post_read_blockers
+                    state.blockers_live = (blockers + state.blockers_live)[:12]
+                    persist()
+                    return confirmations, ticks
             risk_dec = risk.evaluate_entry(
                 notional_usdt=sizing_n, available_cash=free_cash, bid=bid, ask=ask,
                 data_age_seconds=depth.age_seconds(),
             )
+            if mode == "live" and not risk_dec.allowed:
+                state.blockers_live = [risk_dec.reason] + state.blockers_live[:11]
             if risk_dec.allowed:
                 state.last_entry_eligible = True
                 try:

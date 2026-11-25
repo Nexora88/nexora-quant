@@ -19,8 +19,11 @@ class RuntimeState:
         self.depth_drops: dict[str, int] = {}
         self.exchange_reconciliation: dict[str, Any] = {}
         self.exchange_reconciled_at_monotonic: float | None = None
+        self.exchange_reconciled_revision: tuple | None = None
         self.exchange_reconciliation_max_age_seconds = 65.0
         self.live_entry_cost_calibrated = False
+        self.live_cost_model = None
+        self.live_execution_cost: dict[str, Any] = {}
         self.reconnect_count = 0
         self.events_seen = 0
         self.last_error = None
@@ -475,6 +478,7 @@ class RuntimeState:
             "reconnect_count": self.reconnect_count,
             "depth_drops": dict(self.depth_drops),
             "exchange_reconciliation": dict(self.exchange_reconciliation),
+            "execution_cost_evidence": dict(self.live_execution_cost),
             "events_seen": self.events_seen,
             "data_age_seconds": age,
             "last_error": self.last_error,

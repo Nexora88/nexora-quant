@@ -17,18 +17,21 @@ from typing import Any
 
 import websockets
 
+from app.binance_rest import TESTNET_REST
 from app.depth_book import DepthBook, DepthSnapshot
 
 log = logging.getLogger(__name__)
 WS_BASE = "wss://stream.binance.com:9443/ws"
+TESTNET_WS_BASE = "wss://stream.testnet.binance.vision/ws"
 REST_BASE = "https://api.binance.com/api/v3/depth"
 SNAPSHOT_LIMIT = 1000
 BUFFER_LIMIT = 20_000
 
 
-def _snapshot(symbol: str) -> dict[str, Any]:
+def _snapshot(symbol: str, *, testnet: bool = False) -> dict[str, Any]:
     query = urllib.parse.urlencode({"symbol": symbol.upper(), "limit": SNAPSHOT_LIMIT})
-    request = urllib.request.Request(f"{REST_BASE}?{query}", headers={"User-Agent": "NexoraQuant/0.1"})
+    endpoint = f"{TESTNET_REST}/api/v3/depth" if testnet else REST_BASE
+    request = urllib.request.Request(f"{endpoint}?{query}", headers={"User-Agent": "NexoraQuant/0.1"})
     with urllib.request.urlopen(request, timeout=10) as response:
         data = json.loads(response.read().decode("utf-8"))
     if not isinstance(data.get("lastUpdateId"), int):
@@ -58,11 +61,12 @@ async def stream_synchronized_depth(
     symbol: str,
     *,
     on_reconnect: Callable[[str, Exception], None] | None = None,
+    testnet: bool = False,
 ) -> AsyncIterator[DepthSnapshot]:
     """Publish immutable top levels; the mutable full book never leaves this stream."""
     backoff = 1.0
     symbol = symbol.lower()
-    url = f"{WS_BASE}/{symbol}@depth@100ms"
+    url = f"{TESTNET_WS_BASE if testnet else WS_BASE}/{symbol}@depth@100ms"
     last_published_id = -1
     while True:
         try:
@@ -75,7 +79,8 @@ async def stream_synchronized_depth(
                 # request start, not by the end of a potentially slow REST call.
                 received_at_ns, received_mono_ns = time.time_ns(), time.monotonic_ns()
                 exchange_at_ms = None
-                snapshot_task = asyncio.create_task(asyncio.to_thread(_snapshot, symbol))
+                rest_options = {"testnet": True} if testnet else {}
+                snapshot_task = asyncio.create_task(asyncio.to_thread(_snapshot, symbol, **rest_options))
                 try:
                     while not snapshot_task.done():
                         try:
@@ -123,7 +128,7 @@ async def stream_synchronized_depth(
                     last_published_id = book.last_update_id
                     yield book.publish(
                         received_at_ns=received_at_ns, received_monotonic_ns=received_mono_ns,
-                        exchange_at_ms=exchange_at_ms,
+                        exchange_at_ms=exchange_at_ms, testnet=testnet,
                     )
                 async for raw in socket:
                     wall_ns, mono_ns = time.time_ns(), time.monotonic_ns()
@@ -144,6 +149,7 @@ async def stream_synchronized_depth(
                     yield book.publish(
                         received_at_ns=wall_ns, received_monotonic_ns=mono_ns,
                         exchange_at_ms=int(event["E"]) if "E" in event else None,
+                        testnet=testnet,
                     )
                 raise ConnectionError("Binance depth websocket closed")
         except asyncio.CancelledError:

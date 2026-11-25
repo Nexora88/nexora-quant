@@ -10,16 +10,24 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.l2_backtest import L2BacktestConfig, run_l2_backtest, summarize_l2_result
+from app.market_history import verify_capture_archive
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description="L2 event-driven backtest")
     p.add_argument("history", type=Path, help="path to market-history.jsonl.gz")
+    p.add_argument("--capture-manifest", type=Path, help="require coverage and matching archive hash")
     p.add_argument("--cash", type=float, default=1000.0)
     p.add_argument("--order-size", type=float, default=25.0)
     p.add_argument("--min-score", type=float, default=0.55)
     p.add_argument("--impact", type=float, default=0.1)
     args = p.parse_args()
+    digest = None
+    if args.capture_manifest is not None:
+        try:
+            digest = verify_capture_archive(args.history, args.capture_manifest)
+        except (OSError, ValueError) as exc:
+            p.error(str(exc))
     cfg = L2BacktestConfig(
         starting_cash_usdt=args.cash,
         order_size_usdt=args.order_size,
@@ -27,7 +35,9 @@ def main() -> None:
         impact_coefficient=args.impact,
     )
     result = run_l2_backtest(args.history, cfg)
-    print(json.dumps(summarize_l2_result(result), indent=2))
+    summary = summarize_l2_result(result)
+    summary["verified_capture_sha256"] = digest
+    print(json.dumps(summary, indent=2))
 
 
 if __name__ == "__main__":
