@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from app.binance_rest import BinanceRestClient, OrderResult
 from app.live_reconciliation import live_trade_event_key
+from app.live_execution_evidence import SpotEvidenceScope
 from app.order_state import OrderStateMachine
 from app.storage import PaperStore
 
@@ -74,6 +75,7 @@ class LiveExecutor:
         self._order_store: PaperStore | None = None
         self._order_store_key = ""
         self._checkpoint_trade_count = 0
+        self.execution_evidence_scope: SpotEvidenceScope | None = None
 
     def sync_balances(self) -> None:
         """Reconcile OCO history before replacing the local ledger with account balances."""
@@ -541,6 +543,55 @@ class LiveExecutor:
         mn = filters.get("NOTIONAL") or filters.get("MIN_NOTIONAL") or {}
         return float(mn.get("minNotional") or mn.get("notional") or 5.0)
 
+    def entry_preflight(
+        self, *, notional: float, bid: float, ask: float, stop_loss_pct: float,
+    ) -> str | None:
+        """Reject obvious sizing/exit failures and check, but never overwrite, audited balances."""
+        if not (
+            all(math.isfinite(v) and v > 0 for v in (notional, bid, ask, stop_loss_pct))
+            and ask >= bid and stop_loss_pct < 100
+        ):
+            return "invalid_entry_preflight_inputs"
+        with self._order_lock:
+            if (
+                self.order_state_uncertain or not self.order_lists_reconciled
+                or self.protective_order_list_id is not None or self.protective_order_client_id is not None
+                or self._order_store is None or self.execution_evidence_scope is None
+                or self.base_quantity > 0 or self._order_store.pending_live_order() is not None
+            ):
+                return "entry_account_not_flat_or_unreconciled"
+            filters = self._load_filters()
+            lot = filters.get("LOT_SIZE") or {}
+            qty = self._round_step((notional / ask) * (1.0 - self.fee_rate))
+            stop_px = self._round_price(bid * (1.0 - stop_loss_pct / 100), round_up=False)
+            min_qty = float(lot.get("minQty") or 0)
+            minimum = self._min_notional()
+            if not (qty > 0 and qty >= min_qty and qty * stop_px > minimum):
+                # A buy exactly at minNotional can leave insufficient rounded base
+                # for the protective leg or an exit after a fee or price decline.
+                return "protection_notional_below_exchange_floor"
+            account = self.client.account()
+            if account.get("uid") != self.execution_evidence_scope.binance_uid:
+                return "entry_exchange_account_changed"
+            balances = {row["asset"]: row for row in account["balances"]}
+            quote = balances.get(self.quote_asset, {})
+            base = balances.get(self.base_asset, {})
+            cash = float(quote.get("free", 0))
+            held = float(base.get("free", 0)) + float(base.get("locked", 0))
+            if (
+                not math.isclose(cash, self.cash_usdt, rel_tol=0, abs_tol=1e-8)
+                or not math.isclose(held, self.base_quantity, rel_tol=0, abs_tol=1e-12)
+                or float(quote.get("locked", 0)) != 0
+            ):
+                return "entry_exchange_balance_changed"
+            if cash < notional * (1.0 + self.fee_rate):
+                return "entry_cash_fee_reserve_missing"
+            if self.client.open_orders(self.symbol) or any(
+                item.get("symbol") == self.symbol for item in self.client.open_order_lists()
+            ):
+                return "entry_unexpected_open_orders"
+            return None
+
     def buy(
         self, *, notional_usdt: float, price: float, reason: str,
         decision_mid: float | None = None,
@@ -552,6 +603,7 @@ class LiveExecutor:
         return self._place_market_order_once(
             side="BUY", reason=reason, quote_order_qty=notional_usdt, price=price,
             decision_mid=decision_mid if decision_mid is not None else price,
+            decision_mid_observed=decision_mid is not None,
         )
 
     def sell_quantity(
@@ -569,6 +621,7 @@ class LiveExecutor:
         return self._place_market_order_once(
             side="SELL", reason=reason, quantity=qty, price=price,
             decision_mid=decision_mid if decision_mid is not None else price,
+            decision_mid_observed=decision_mid is not None,
         )
 
     def attach_order_journal(self, store: PaperStore, key: str, *, verify_account: bool = False) -> None:
@@ -577,6 +630,7 @@ class LiveExecutor:
             if type(uid) is not int or uid <= 0:
                 raise RuntimeError("Exchange did not identify the live account")
             store.bind_live_account(symbol=self.symbol, testnet=self.client.testnet, uid=uid)
+            self.execution_evidence_scope = SpotEvidenceScope(uid, self.client.testnet, self.symbol)
         self._order_store = store
         self._order_store_key = key
         self._checkpoint_trade_count = len(self.trades)
@@ -708,6 +762,13 @@ class LiveExecutor:
                 )
                 if self._order_store is not None and not trade["accounting_complete"]:
                     raise RuntimeError("Cannot finalize order without complete commission accounting")
+                trade["execution_style"] = intent["kind"]
+                if (
+                    self.execution_evidence_scope is not None and not recovering and intent["kind"] == "market"
+                    and intent.get("decision_mid_observed") is True and result.status == "FILLED"
+                    and trade["execution_latency_measured"] and trade["accounting_complete"]
+                ):
+                    trade["execution_evidence_scope"] = self.execution_evidence_scope.stamp()
             self.order_state_machine.observe(result.status)
             self.order_state_uncertain = False
             self.unresolved_client_order_id = None
@@ -721,13 +782,14 @@ class LiveExecutor:
     def _place_market_order_once(
         self, *, side: str, reason: str,
         quantity: float | None = None, quote_order_qty: float | None = None,
-        price: float = 0.0, decision_mid: float = 0.0,
+        price: float = 0.0, decision_mid: float = 0.0, decision_mid_observed: bool = False,
     ) -> dict | None:
         """Submit once. A lost response only permits exchange lookup, never another POST."""
         with self._order_lock:
             intent = self._begin_order(
                 side=side, kind="market", reason=reason, quantity=quantity,
                 quote_order_qty=quote_order_qty, price=price, decision_mid=decision_mid,
+                decision_mid_observed=decision_mid_observed,
             )
             client_id = intent["client_id"]
             order_started = time.perf_counter()

@@ -12,9 +12,10 @@ from app.engine_setup import state, risk, log
 from app.storage import PaperStore, exclusive_live_worker
 from app.dual_account import ReconciliationMonitor, reconciliation_differences
 from app.live_reconciliation import (
-    RecurringExchangeAudit, fetch_exchange_audit, live_trade_event_key,
+    LocalAccountSnapshot, RecurringExchangeAudit, fetch_exchange_audit, live_trade_event_key,
     load_local_trade_ledger, read_stable_exchange_audit,
 )
+from app.live_execution_evidence import JournalExecutionCosts
 from app.paper import restore_paper_account
 from app.io_queue import AsyncIoQueue
 from app.market_history import MarketHistoryWriter
@@ -54,12 +55,27 @@ async def _run(store: PaperStore) -> None:
     state.executor = es.executor
     state.exchange_reconciliation = {}
     state.exchange_reconciled_at_monotonic = None
+    state.exchange_reconciled_revision = None
     state.live_entry_cost_calibrated = False
+    state.live_cost_model = None
+    state.live_execution_cost = {}
     io_q = AsyncIoQueue(store)
     mode = settings.trading_mode
     key = f"{mode}:{settings.symbol}"
     today = datetime.now(timezone.utc).date().isoformat()
     saved = store.load_state(key)
+
+    def record_clean_audit(*, trade_rows=None) -> None:
+        executor = es.executor
+        revision = LocalAccountSnapshot.revision(executor)
+        if state.exchange_reconciled_revision != revision or state.live_cost_model is None:
+            scope = executor.execution_evidence_scope
+            state.live_cost_model = (
+                JournalExecutionCosts(scope, trade_rows if trade_rows is not None else load_local_trade_ledger(store))
+                if scope is not None else None
+            )
+        state.exchange_reconciled_revision = revision
+        state.exchange_reconciled_at_monotonic = time.monotonic()
 
     def persist_live_fills_since(trade_count: int) -> None:
         try:
@@ -91,7 +107,7 @@ async def _run(store: PaperStore) -> None:
                 "Full Binance order/fill/commission reconciliation failed: "
                 + str(result["differences"])
             )
-        state.exchange_reconciled_at_monotonic = time.monotonic()
+        record_clean_audit(trade_rows=local_rows)
         if (
             float(getattr(es.executor, "base_quantity", 0) or 0) > 1e-12
             and getattr(es.executor, "protective_order_list_id", None) is None
@@ -266,8 +282,10 @@ async def _run(store: PaperStore) -> None:
     except Exception as exc:
         log.warning("Memory restore skipped: %s", exc)
 
+    testnet_feed = mode == "live" and es.executor.client.testnet
+    public_feed_options = {"testnet": True} if testnet_feed else {}
     watched = watch_list(settings.symbol, settings.watch_symbols())
-    if getattr(settings, "universe_auto", False):
+    if getattr(settings, "universe_auto", False) and not testnet_feed:
         try:
             screened = screen_universe(
                 candidates=default_universe(),
@@ -418,7 +436,7 @@ async def _run(store: PaperStore) -> None:
                 "differences": differences,
             }
             if not differences:
-                state.exchange_reconciled_at_monotonic = time.monotonic()
+                record_clean_audit()
             return audit["local"], audit["exchange"]
 
         def _reconciliation_mismatch(result: dict) -> None:
@@ -459,8 +477,8 @@ async def _run(store: PaperStore) -> None:
         # Seed EMA200/RSI/MACD and 5m context from closed public candles.
         try:
             one_minute, five_minute = await asyncio.gather(
-                asyncio.to_thread(fetch_recent_candles, symbol, "1m", limit=250),
-                asyncio.to_thread(fetch_recent_candles, symbol, "5m", limit=100),
+                asyncio.to_thread(fetch_recent_candles, symbol, "1m", limit=250, **public_feed_options),
+                asyncio.to_thread(fetch_recent_candles, symbol, "5m", limit=100, **public_feed_options),
             )
             indicators.seed(one_minute + five_minute)
             log.info(
@@ -471,7 +489,7 @@ async def _run(store: PaperStore) -> None:
             log.warning("Indicator history unavailable symbol=%s: %s; entries remain gated", symbol.upper(), exc)
         while True:
             try:
-                async for event in stream_events(symbol):
+                async for event in stream_events(symbol, **public_feed_options):
                     if isinstance(event, TradeTick):
                         tracker.update(event)
                     elif isinstance(event, KlineTick) and event.closed:
@@ -593,12 +611,13 @@ async def _run(store: PaperStore) -> None:
                     log.info("Starting multi-depth (primary trades only): %s", ",".join(watched))
                     async for tagged in stream_multi_depth(
                         watched, on_reconnect=on_depth_reconnect, on_drop=on_depth_drop,
+                        **public_feed_options,
                     ):
                         await _consume(tagged.book, symbol=tagged.symbol)
                 else:
                     log.info("Starting single-depth L2: %s", primary.upper())
                     async for depth in stream_synchronized_depth(
-                        primary, on_reconnect=on_depth_reconnect,
+                        primary, on_reconnect=on_depth_reconnect, **public_feed_options,
                     ):
                         await _consume(depth, symbol=primary)
             except asyncio.CancelledError:

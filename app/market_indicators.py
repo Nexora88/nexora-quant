@@ -9,6 +9,8 @@ import time
 import urllib.parse
 import urllib.request
 
+from app.binance_rest import MAINNET_REST, TESTNET_REST
+
 
 @dataclass(frozen=True, slots=True)
 class Candle:
@@ -244,7 +246,7 @@ class MarketIndicatorTracker:
         )
 
 
-def fetch_recent_candles(symbol: str, interval: str, *, limit: int = 250) -> list[Candle]:
+def fetch_recent_candles(symbol: str, interval: str, *, limit: int = 250, testnet: bool = False) -> list[Candle]:
     """Fetch only fully closed public Spot klines for indicator warm-up."""
     if interval not in {"1m", "5m"}:
         raise ValueError("supported indicator intervals are 1m and 5m")
@@ -253,8 +255,9 @@ def fetch_recent_candles(symbol: str, interval: str, *, limit: int = 250) -> lis
     query = urllib.parse.urlencode({
         "symbol": symbol.upper(), "interval": interval, "limit": int(limit),
     })
+    base = TESTNET_REST if testnet else MAINNET_REST
     request = urllib.request.Request(
-        f"https://api.binance.com/api/v3/klines?{query}",
+        f"{base}/api/v3/klines?{query}",
         headers={"User-Agent": "NexoraQuant/0.1"},
     )
     with urllib.request.urlopen(request, timeout=8) as response:

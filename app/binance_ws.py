@@ -3,12 +3,13 @@ import asyncio
 import json
 import logging
 import random
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 import websockets
 from app.events import BookTicker, TradeTick, KlineTick, utc_now
 
 log = logging.getLogger(__name__)
 BASE_URL = "wss://stream.binance.com:9443/stream?streams="
+TESTNET_URL = "wss://stream.testnet.binance.vision/stream?streams="
 
 def parse_message(message: str) -> BookTicker | TradeTick | KlineTick:
     envelope = json.loads(message)
@@ -26,9 +27,11 @@ def parse_message(message: str) -> BookTicker | TradeTick | KlineTick:
         )
     raise ValueError("Unsupported Binance stream event")
 
-async def stream_events(symbol: str) -> AsyncIterator[BookTicker | TradeTick | KlineTick]:
+async def stream_events(
+    symbol: str, *, on_reconnect: Callable[[str, Exception], None] | None = None, testnet: bool = False,
+) -> AsyncIterator[BookTicker | TradeTick | KlineTick]:
     streams = f"{symbol.lower()}@bookTicker/{symbol.lower()}@trade/{symbol.lower()}@kline_1m/{symbol.lower()}@kline_5m"
-    url = BASE_URL + streams
+    url = (TESTNET_URL if testnet else BASE_URL) + streams
     backoff = 1.0
     while True:
         try:
@@ -46,5 +49,10 @@ async def stream_events(symbol: str) -> AsyncIterator[BookTicker | TradeTick | K
         except Exception as exc:
             delay = min(backoff, 60.0) + random.uniform(0, 0.25)
             log.warning("Market stream disconnected (%s); reconnecting in %.2fs", exc, delay)
+            if on_reconnect is not None:
+                try:
+                    on_reconnect(symbol.lower(), exc)
+                except Exception:
+                    log.exception("Market reconnect callback failed symbol=%s", symbol.upper())
             await asyncio.sleep(delay)
             backoff = min(backoff * 2, 60.0)

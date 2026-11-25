@@ -23,6 +23,7 @@ class DepthSnapshot:
     received_at_ns: int
     received_monotonic_ns: int
     exchange_at_ms: int | None = None
+    testnet: bool = False
 
     @property
     def synchronized(self) -> bool:
@@ -58,7 +59,7 @@ class DepthBook:
 
     def publish(
         self, *, received_at_ns: int, received_monotonic_ns: int,
-        exchange_at_ms: int | None = None, levels: int = 20,
+        exchange_at_ms: int | None = None, levels: int = 20, testnet: bool = False,
     ) -> DepthSnapshot:
         if not self.synchronized or self.last_update_id is None or not self.symbol:
             raise ValueError("only synchronized books with a symbol can be published")
@@ -66,7 +67,7 @@ class DepthBook:
             self.symbol, self.last_update_id,
             MappingProxyType(dict(nlargest(levels, self.bids.items(), key=itemgetter(0)))),
             MappingProxyType(dict(nsmallest(levels, self.asks.items(), key=itemgetter(0)))),
-            received_at_ns, received_monotonic_ns, exchange_at_ms,
+            received_at_ns, received_monotonic_ns, exchange_at_ms, testnet,
         )
 
     def load_snapshot(

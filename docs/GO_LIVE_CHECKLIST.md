@@ -33,6 +33,8 @@ An unresolved OCO submission blocks additional orders, including an emergency ma
 
 A unit test or successful CI run is not a substitute for the signed Spot Testnet workflow. Testnet does not validate Mainnet execution quality or profitability.
 
+The live engine uses public depth snapshots, depth streams, trades and candles from the same network as its order client. Testnet uses the [official Spot Testnet endpoints](https://developers.binance.com/en/docs/products/spot/testnet/web-socket-streams); it neither falls back to Mainnet market data nor runs the Mainnet auto-universe screen. The bounded signed workflow tests the executor, not automatic strategy entry.
+
 ## 3. Mainnet scorecard and fail-closed gate
 
 Create an operator-reviewed JSON scorecard from retained paper, OOS, Testnet and reconciliation artifacts. Do not guess or fabricate values.
@@ -63,14 +65,19 @@ Use measured values and preserve the underlying reports. The gate checks at leas
 
 The gate removes any prior approval stamp before checking and does not change trading mode or submit orders. It writes a source-fingerprinted approval only when all checks pass. A passing gate is not a profitability guarantee. The final mainnet switch still requires the operator's explicit decision and a separately reviewed 20 USDT configuration.
 
+Even an approved installation will not enter a new trade unless it has a current exchange audit of the same local account revision and a successful read-only preflight for the proposed order. The preflight checks exchange account identity, balances, existing orders, fee reserve and whether the rounded position can support a protective exit. It does not override either balances or caps.
+
+The execution cost gate also requires 30 fee-complete, directly measured market fills per side from the same exchange account, network and symbol, in a comparable notional range over the prior seven days. `/status` exposes counts and `/ready` reports missing calibration. Paper, replay, Testnet and synthetic fills cannot stand in for Mainnet measurements; maker and OCO execution are not calibrated by this model. A fresh live journal therefore blocks automatic entry. No automatic calibration or Mainnet bootstrap is authorized by this procedure.
+
 ## 4. 20 USDT live-account constraints
 
 - Keep one symbol and one open position only.
 - Use exchange-reported free balance and symbol filters; never force a trade to satisfy minimum notional.
+- A 5 USDT order can meet the buy minimum but still fail the protective-exit preflight after fees, size rounding and a lower stop price. Treat that as an untradeable configuration rather than increasing a risk cap to force entry.
 - Keep API withdrawals disabled and restrict keys by IP.
 - Use a conservative order cap, daily loss cap and fee cap appropriate to 20 USDT. The existing 20 USDT candidate profile is not a claim that all symbols can trade at its minimum notional.
 - Startup exchange reconciliation and OCO protection must fail closed. Any balance, fill, commission, open-order or local-ledger mismatch blocks new entries.
-- Live outcome learning must be account-scoped and accept only exchange-confirmed, fee-complete closed trades. The new storage primitives support this isolation, but engine integration is still pending. Neither learner may mutate hard risk limits.
+- Live outcome learning is account-scoped and accepts only exchange-confirmed, fee-complete closed trades. Neither learner may mutate hard risk limits.
 
 ## 5. Known limitations (must not be represented as closed)
 
@@ -78,9 +85,20 @@ The gate removes any prior approval stamp before checking and does not change tr
 - Public L2 does not expose hidden liquidity or matching-engine ordering.
 - Historical replay is not a complete exchange simulator.
 - The live executor remains single-symbol/single-position.
-- Paper and live are now intended to run as separate engine processes with distinct default SQLite ledgers and account-scoped learner state; `app/dual_account.py` provides the shared strategy registry, explicit candidate promotion/rollback and a periodic reconciliation monitor primitive. The live close hook records only exchange-confirmed, fee-complete outcomes. The reconciliation monitor is not yet connected to the live executor's recurring exchange snapshot adapter, so continuous exchange/local reconciliation remains unfinished.
+- The live executor performs startup and periodic REST reconciliation. This is not a private order stream, and it does not make external account activity atomic with an order submission. Use a dedicated account and do not trade in it from another process.
 - The 20 USDT live account has not been proven profitable or safe merely by configuration. Testnet and real account reconciliation remain mandatory.
 
 ## 6. Data retention
 
 Keep the paper SQLite database, market-history captures, overnight reports, OOS reports, Testnet artifacts and operator scorecard together. Snapshot before host migration. Never copy paper account rows into a live ledger.
+
+Use a new directory for each timed, credential-free public Mainnet research capture:
+
+```bash
+TRADING_MODE=paper python scripts/capture_multi_symbol.py \
+  --symbol btcusdt --seconds 3600 --output-dir data/capture-run-btc-01
+python scripts/run_l2_backtest.py data/capture-run-btc-01/btcusdt.jsonl.gz \
+  --capture-manifest data/capture-run-btc-01/manifest.json
+```
+
+Keep the manifest with the gzip files. `coverage_ok` requires no observed disconnects, depth and trade coverage, an acceptable depth gap, and an archive hash. Insufficient coverage exits with code 2 and does not qualify for manifest-verified replay. A matching hash detects archive changes, not the provenance or statistical quality of the research. Review data quality and retain separate chronological evaluation windows; one capture or one replay is not OOS evidence.

@@ -475,6 +475,7 @@ def readiness() -> JSONResponse:
     from time import monotonic
 
     from app.config import settings as _s
+    from app.live_execution_evidence import live_audit_blockers
 
     current = health()
     executor = state.executor
@@ -488,16 +489,7 @@ def readiness() -> JSONResponse:
     if state.paused:
         blockers.append("engine_paused")
     if _s.trading_mode == "live":
-        checked_at = state.exchange_reconciled_at_monotonic
-        if (
-            state.exchange_reconciliation.get("status") != "pass" or checked_at is None
-            or not 0 <= monotonic() - checked_at <= state.exchange_reconciliation_max_age_seconds
-        ):
-            blockers.append("exchange_reconciliation_unavailable_or_stale")
-        if getattr(executor, "order_state_uncertain", False):
-            blockers.append("order_state_uncertain")
-        if not getattr(executor, "order_lists_reconciled", False):
-            blockers.append("order_lists_unreconciled")
+        blockers.extend(live_audit_blockers(state, executor, now=monotonic()))
         if (
             getattr(executor, "base_quantity", 0) > 1e-12
             and getattr(executor, "protective_order_list_id", None) is None
