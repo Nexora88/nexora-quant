@@ -3,9 +3,7 @@ import pytest
 
 from app.binance_rest import OrderResult
 from app.live import LiveExecutor
-from app.live_hardening import harden_live_executor
-
-harden_live_executor()
+from app.storage import PaperStore
 
 
 class FakeClient:
@@ -23,8 +21,11 @@ class FakeClient:
         return {
             "symbol": "BTCUSDT", "orderListId": list_id,
             "listStatusType": self.status,
-            "orderReports": [{"orderId": 41}, {"orderId": 42}],
+            "orders": [{"orderId": 41}, {"orderId": 42}],
         }
+
+    def exchange_info_symbol(self, symbol):
+        return {"filters": [{"filterType": "LOT_SIZE", "stepSize": "0.00001"}]}
 
     def get_order(self, symbol, order_id):
         qty = sum(float(x["qty"]) for x in self.fills) if order_id == 41 else 0.0
@@ -35,7 +36,7 @@ class FakeClient:
             fills=[], raw={},
         )
 
-    def order_list_trades(self, symbol, order_id):
+    def order_trades(self, symbol, order_id):
         return list(self.fills)
 
 
@@ -77,7 +78,7 @@ def test_unpriced_commission_fails_closed_without_partial_accounting():
     }])
     executor = make_executor(client)
     assert executor.reconcile_protective_oco() is False
-    assert executor.order_state_uncertain is True
+    assert executor.protective_order_list_id == 9
     assert executor.order_lists_reconciled is False
     assert executor.base_quantity == 1.0
     assert executor.cash_usdt == 0.0
@@ -90,6 +91,57 @@ def test_active_oco_is_not_misbooked_as_a_fill():
     assert executor.base_quantity == 1.0
     assert executor.trades == []
     assert executor.protective_order_list_id == 9
+
+
+def test_cancel_and_late_fill_are_atomic_even_if_checkpoint_fails(tmp_path, monkeypatch):
+    class LateFill(FakeClient):
+        def cancel_order_list(self, **params):
+            assert params["order_list_id"] == 9
+            raise TimeoutError("late fill happened before cancellation response")
+
+    client = LateFill()
+    path = str(tmp_path / "oco.sqlite")
+    key = "live:btcusdt"
+    with PaperStore(path, async_writes=False) as store:
+        ex = make_executor(client)
+        ex.attach_order_journal(store, key)
+        store.checkpoint_live_account(key, ex.snapshot(), [])
+        with monkeypatch.context() as patch:
+            def broken_write(*args, **kwargs):
+                raise OSError("SQLite checkpoint unavailable")
+
+            patch.setattr(store, "checkpoint_live_account", broken_write)
+            assert not ex.cancel_protective_oco()
+            assert ex.base_quantity == 1.0
+            assert ex.protective_order_list_id == 9
+            assert not ex.order_lists_reconciled
+            assert ex.trades == []
+            assert store.list_trades() == []
+            with pytest.raises(RuntimeError, match="Protective order"):
+                ex.sell_all(price=110, reason="must_not_compete")
+
+    with PaperStore(path, async_writes=False) as store:
+        ex = make_executor(client)
+        ex.restore(store.load_state(key)["account"])
+        ex.attach_order_journal(store, key)
+        assert ex.cancel_protective_oco()
+        assert ex.reconcile_protective_oco()
+        assert ex.base_quantity == 0.0
+        assert ex.protective_order_list_id is None
+        assert store.load_state(key)["account"]["realized_pnl_usdt"] == pytest.approx(9.89)
+        assert len(store.list_trades()) == len(ex.trades) == 1
+
+
+def test_duplicate_child_ids_do_not_clear_protection():
+    class DuplicateChild(FakeClient):
+        def get_order_list(self, list_id):
+            return {**super().get_order_list(list_id), "orders": [{"orderId": 41}, {"orderId": 41}]}
+
+    ex = make_executor(DuplicateChild())
+    assert not ex.reconcile_protective_oco()
+    assert ex.base_quantity == 1.0
+    assert ex.protective_order_list_id == 9
+    assert not ex.trades
 
 
 def test_live_snapshot_persists_oco_client_id_for_restart_reconciliation():
@@ -108,7 +160,10 @@ def test_terminal_cancelled_oco_rotates_id_and_reprotects_remaining_quantity():
             self.placed = None
 
         def get_order_list_by_client_id(self, symbol, client_order_id):
-            return {"orderListId": 12, "symbol": symbol, "listStatusType": "ALL_DONE"}
+            return {
+                "orderListId": 12, "symbol": symbol, "listStatusType": "ALL_DONE",
+                "listClientOrderId": client_order_id,
+            }
 
         def get_order_list(self, list_id):
             return {
@@ -138,7 +193,10 @@ def test_terminal_cancelled_oco_rotates_id_and_reprotects_remaining_quantity():
 
         def place_oco_order(self, **kwargs):
             self.placed = kwargs
-            return {"orderListId": 13, "listStatusType": "EXEC_STARTED"}
+            return {
+                "orderListId": 13, "listStatusType": "EXEC_STARTED",
+                "listClientOrderId": kwargs["client_order_id"], "symbol": kwargs["symbol"],
+            }
 
     client = RotatingClient()
     executor = LiveExecutor(client, symbol="BTCUSDT", fee_rate=0.001)

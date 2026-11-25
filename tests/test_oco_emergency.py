@@ -1,15 +1,14 @@
-"""OCO install retries + emergency flatten contract (mocked client)."""
+"""Protective OCO single submission and emergency-exit contract."""
 from __future__ import annotations
 
 import asyncio
 from unittest.mock import MagicMock
 
-from app.live import LiveExecutor
-from app.live_hardening import harden_live_executor
-from app.io_queue import AsyncIoQueue
+import pytest
 
-# Patch LiveExecutor methods after import (idempotent).
-harden_live_executor()
+from app.live import LiveExecutor
+from app.io_queue import AsyncIoQueue
+from app.storage import PaperStore
 
 
 class _Boom(Exception):
@@ -20,7 +19,7 @@ class _NotFound(Exception):
     binance_body = '{"code":-2013,"msg":"Order does not exist."}'
 
 
-def test_ensure_protective_oco_retries_then_succeeds():
+def test_ensure_protective_oco_never_reposts_after_not_found():
     client = MagicMock()
     client.free_balance.return_value = 0.01
     client.exchange_info_symbol.return_value = {
@@ -29,15 +28,7 @@ def test_ensure_protective_oco_retries_then_succeeds():
             {"filterType": "PRICE_FILTER", "tickSize": "0.01"},
         ]
     }
-    calls = {"n": 0}
-
-    def place_oco(**kwargs):
-        calls["n"] += 1
-        if calls["n"] < 3:
-            raise _Boom("HTTP 502")
-        return {"orderListId": 42, "listStatusType": "EXEC_STARTED"}
-
-    client.place_oco_order.side_effect = place_oco
+    client.place_oco_order.side_effect = _Boom("HTTP 502")
     client.get_order_list_by_client_id.side_effect = _NotFound()
     ex = LiveExecutor(client, symbol="btcusdt", fee_rate=0.001)
     ex.base_quantity = 0.01
@@ -45,17 +36,17 @@ def test_ensure_protective_oco_retries_then_succeeds():
     ok = ex.ensure_protective_oco(
         current_price=100.0, take_profit_pct=1.0, stop_loss_pct=0.5, retries=3, retry_delay_s=0.0,
     )
-    assert ok is True
-    assert ex.protective_order_list_id == 42
-    assert calls["n"] == 3
-    ids = [call.kwargs["client_order_id"] for call in client.place_oco_order.call_args_list]
-    assert len(set(ids)) == 1  # retries reuse one exchange idempotency key
+    assert ok is False
+    assert ex.order_state_uncertain
+    assert ex.protective_order_list_id is None
+    client.place_oco_order.assert_called_once()
+    assert client.get_order_list_by_client_id.call_args.args[1] == ex.unresolved_client_order_id
     assert client.place_oco_order.call_args.kwargs["stop_loss_market"] is True
 
 
-def test_ensure_protective_oco_fails_after_retries():
+def test_ensure_protective_oco_refuses_partial_coverage():
     client = MagicMock()
-    client.free_balance.return_value = 0.01
+    client.free_balance.return_value = 0.009
     client.exchange_info_symbol.return_value = {
         "filters": [
             {"filterType": "LOT_SIZE", "stepSize": "0.00001"},
@@ -71,6 +62,7 @@ def test_ensure_protective_oco_fails_after_retries():
         current_price=100.0, take_profit_pct=1.0, stop_loss_pct=0.5, retries=2, retry_delay_s=0.0,
     )
     assert ok is False
+    client.place_oco_order.assert_not_called()
 
 
 def test_install_protection_or_flatten_triggers_emergency():
@@ -101,6 +93,7 @@ def test_install_protection_or_flatten_triggers_emergency():
     assert ok is False
     assert ex.emergency is True
     assert ex.emergency_reason == "oco_install_failed"
+    client.place_market_order.assert_not_called()
 
 
 def test_io_queue_stats_and_drop_state():
@@ -158,9 +151,10 @@ def test_accepted_oco_with_lost_http_response_is_reconciled_without_retry():
             {"filterType": "PRICE_FILTER", "tickSize": "0.01"},
         ]
     }
-    client.get_order_list_by_client_id.side_effect = [
-        _NotFound(), {"orderListId": 77, "listStatusType": "EXECUTING"},
-    ]
+    client.get_order_list_by_client_id.side_effect = lambda symbol, client_id: {
+        "orderListId": 77, "listStatusType": "EXEC_STARTED", "symbol": symbol,
+        "listClientOrderId": client_id,
+    }
     client.place_oco_order.side_effect = _Boom("read timeout after exchange acceptance")
     ex = LiveExecutor(client, symbol="btcusdt", fee_rate=0.001)
     ex.base_quantity = 0.01
@@ -187,16 +181,16 @@ def test_emergency_flatten_never_sells_if_oco_cancel_is_not_confirmed():
     assert ex.order_state_uncertain is True
 
 
-def test_cancel_oco_requires_exchange_resync_to_show_no_active_list():
+def test_cancel_oco_requires_terminal_order_list_not_just_delete_ack():
     client = MagicMock()
     ex = LiveExecutor(client, symbol="btcusdt", fee_rate=0.001)
     ex.protective_order_list_id = 91
     ex.order_lists_reconciled = True
-    # The mocked sync deliberately reports that the OCO remains active.
-    def still_active():
-        ex.protective_order_list_id = 91
-    ex.sync_balances = still_active
+    client.get_order_list.return_value = {
+        "symbol": "BTCUSDT", "orderListId": 91, "listStatusType": "EXEC_STARTED",
+    }
     assert ex.cancel_protective_oco() is False
+    assert ex.protective_order_list_id == 91
 
 
 def test_unknown_oco_status_fails_closed_without_new_order():
@@ -207,9 +201,73 @@ def test_unknown_oco_status_fails_closed_without_new_order():
     ex = LiveExecutor(client, symbol="btcusdt", fee_rate=0.001)
     ex.base_quantity = 0.01
     ex.average_entry_price = 100
+    ex.protective_order_client_id = "nqoco-legacy"
     assert ex.ensure_protective_oco(
         current_price=100, take_profit_pct=1.0, stop_loss_pct=0.5,
         retries=2, retry_delay_s=0,
     ) is False
     assert ex.order_state_uncertain is True
     client.place_oco_order.assert_not_called()
+
+
+def test_oco_intent_survives_restart_and_delayed_visibility(tmp_path):
+    client = MagicMock(testnet=True)
+    client.free_balance.return_value = 5.0
+    client.exchange_info_symbol.return_value = {"filters": [
+        {"filterType": "LOT_SIZE", "stepSize": "0.001"},
+        {"filterType": "PRICE_FILTER", "tickSize": "0.01"},
+    ]}
+    db = str(tmp_path / "oco.sqlite")
+    key = "live:BTCUSDT"
+
+    with PaperStore(db, async_writes=False) as store:
+        ex = LiveExecutor(client, symbol="BTCUSDT", fee_rate=0.001)
+        ex.base_quantity, ex.average_entry_price = 0.1234, 100.0
+        ex.attach_order_journal(store, key)
+
+        def accepts_but_http_times_out(**kwargs):
+            pending = store.pending_live_order()
+            assert pending["kind"] == "protective_oco"
+            assert pending["client_id"] == kwargs["client_order_id"]
+            assert pending["quantity"] == kwargs["quantity"] == 0.123
+            raise TimeoutError("lost POST response")
+
+        client.place_oco_order.side_effect = accepts_but_http_times_out
+        client.get_order_list_by_client_id.side_effect = _NotFound()
+        assert not ex.install_protection_or_flatten(
+            current_price=100.0, take_profit_pct=2.0, stop_loss_pct=2.0,
+        )
+        client.place_market_order.assert_not_called()
+        client_id = store.pending_live_order()["client_id"]
+
+    with PaperStore(db, async_writes=False) as store:
+        ex = LiveExecutor(client, symbol="BTCUSDT", fee_rate=0.001)
+        ex.restore(store.load_state(key)["account"])
+        ex.attach_order_journal(store, key)
+        assert not ex.reconcile_uncertain_order()
+        assert store.pending_live_order()["client_id"] == client_id
+        assert ex.emergency_flatten(mark_price=100) is None
+        client.get_order_list_by_client_id.side_effect = None
+        client.get_order_list_by_client_id.return_value = {
+            "orderListId": 201, "listStatusType": "EXEC_STARTED", "symbol": "BTCUSDT",
+            "listClientOrderId": client_id,
+        }
+        assert ex.reconcile_uncertain_order()
+        assert store.pending_live_order() is None
+        assert store.load_state(key)["account"]["protective_order_list_id"] == 201
+        assert ex.protective_order_list_id == 201
+        assert ex.reconcile_uncertain_order()
+        client.place_oco_order.assert_called_once()
+        client.place_market_order.assert_not_called()
+
+
+def test_legacy_client_id_not_found_cannot_be_replaced_by_unrelated_history():
+    client = MagicMock(testnet=True)
+    client.get_order_list_by_client_id.side_effect = _NotFound()
+    ex = LiveExecutor(client, symbol="BTCUSDT", fee_rate=0.001)
+    ex.protective_order_client_id = "nqoco-legacy"
+    with pytest.raises(RuntimeError, match="Saved protective client ID"):
+        ex.sync_balances()
+    assert ex.protective_order_client_id == "nqoco-legacy"
+    assert not ex.order_lists_reconciled
+    client.open_order_lists.assert_not_called()

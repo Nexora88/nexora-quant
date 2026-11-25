@@ -496,6 +496,8 @@ def readiness() -> JSONResponse:
             blockers.append("exchange_reconciliation_unavailable_or_stale")
         if getattr(executor, "order_state_uncertain", False):
             blockers.append("order_state_uncertain")
+        if not getattr(executor, "order_lists_reconciled", False):
+            blockers.append("order_lists_unreconciled")
         if (
             getattr(executor, "base_quantity", 0) > 1e-12
             and getattr(executor, "protective_order_list_id", None) is None

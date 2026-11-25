@@ -32,9 +32,7 @@ from app.circuit_breaker import DrawdownCircuitBreaker
 from app.atr_stops import AtrTracker
 from app.portfolio_risk import PortfolioRiskGate
 from app.strategy import PriceWindow
-from app.live_hardening import harden_live_executor
 
-harden_live_executor()
 
 log = logging.getLogger(__name__)
 state = RuntimeState()

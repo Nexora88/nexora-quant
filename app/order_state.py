@@ -12,14 +12,15 @@ class OrderState(str, Enum):
     FILLED = "FILLED"
     CANCELLED = "CANCELLED"
     REJECTED = "REJECTED"
+    HANDED_OFF = "HANDED_OFF"
     UNKNOWN = "UNKNOWN"
 
 
-_TERMINAL = {OrderState.FILLED, OrderState.CANCELLED, OrderState.REJECTED}
+_TERMINAL = {OrderState.FILLED, OrderState.CANCELLED, OrderState.REJECTED, OrderState.HANDED_OFF}
 _ALLOWED = {
     OrderState.PENDING: {
         OrderState.PENDING, OrderState.OPEN, OrderState.PARTIALLY_FILLED, OrderState.FILLED,
-        OrderState.CANCELLED, OrderState.REJECTED, OrderState.UNKNOWN,
+        OrderState.CANCELLED, OrderState.REJECTED, OrderState.HANDED_OFF, OrderState.UNKNOWN,
     },
     OrderState.OPEN: {
         OrderState.PARTIALLY_FILLED, OrderState.FILLED,
@@ -33,6 +34,7 @@ _ALLOWED = {
     OrderState.FILLED: {OrderState.FILLED},
     OrderState.CANCELLED: {OrderState.CANCELLED},
     OrderState.REJECTED: {OrderState.REJECTED},
+    OrderState.HANDED_OFF: {OrderState.HANDED_OFF},
 }
 _EXCHANGE = {
     "PENDING_NEW": OrderState.PENDING,
@@ -44,6 +46,7 @@ _EXCHANGE = {
     "EXPIRED": OrderState.CANCELLED,
     "EXPIRED_IN_MATCH": OrderState.CANCELLED,
     "REJECTED": OrderState.REJECTED,
+    "OCO_HANDOFF": OrderState.HANDED_OFF,
 }
 
 

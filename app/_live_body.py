@@ -23,6 +23,8 @@ log = logging.getLogger(__name__)
 TERMINAL_ORDER_STATUSES = frozenset({
     "FILLED", "CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "REJECTED",
 })
+ACTIVE_OCO_STATUSES = frozenset({"EXEC_STARTED", "EXECUTING"})
+TERMINAL_OCO_STATUSES = frozenset({"ALL_DONE", "REJECT", "EXPIRED"})
 
 
 class LiveExecutor:
@@ -64,6 +66,8 @@ class LiveExecutor:
         self.protective_order_list_id: int | None = None
         self.protective_order_client_id: str | None = None
         self.order_lists_reconciled = False
+        self.emergency = False
+        self.emergency_reason: str | None = None
         # Exchange trade IDs are durable idempotency keys for offline OCO recovery.
         self.processed_exchange_trade_ids: set[str] = set()
         self.processed_oco_list_ids: set[int] = set()
@@ -73,8 +77,28 @@ class LiveExecutor:
 
     def sync_balances(self) -> None:
         """Reconcile OCO history before replacing the local ledger with account balances."""
-        account = self.client.account()
-        balances = {str(b.get("asset", "")).upper(): b for b in account.get("balances", [])}
+        with self._order_lock:
+            try:
+                self._sync_balances()
+            except Exception:
+                self.order_lists_reconciled = False
+                raise
+
+    def _sync_balances(self) -> None:
+        self.order_lists_reconciled = False
+        if self.order_state_uncertain:
+            raise RuntimeError("Cannot sync balances with uncertain live orders")
+        if self.protective_order_client_id is not None and self.protective_order_list_id is None:
+            # Legacy snapshots may know only the client ID. Never clear it by
+            # adopting an unrelated list or trusting a negative lookup.
+            try:
+                detail = self.client.get_order_list_by_client_id(self.symbol, self.protective_order_client_id)
+                self.protective_order_list_id, _ = self._protective_list_identity(
+                    self.protective_order_client_id, detail,
+                )
+            except Exception as exc:
+                self.order_lists_reconciled = False
+                raise RuntimeError("Saved protective client ID could not be reconciled") from exc
         open_orders = self.client.open_orders(self.symbol)
         try:
             open_lists = self.client.open_order_lists()
@@ -96,10 +120,18 @@ class LiveExecutor:
                 or int(item.get("orderListId", 0)) == self.protective_order_list_id
             )
         ]
+        if len(active_lists) > 1:
+            self.order_lists_reconciled = False
+            raise RuntimeError("Multiple active protective lists; refusing to choose one")
         if active_lists:
-            self.protective_order_list_id = int(active_lists[-1]["orderListId"])
+            active = active_lists[0]
+            active_id = int(active["orderListId"])
+            if self.protective_order_list_id not in {None, active_id}:
+                self.order_lists_reconciled = False
+                raise RuntimeError("Known protective list differs from the active exchange list")
+            self.protective_order_list_id = active_id
+            self.protective_order_client_id = active.get("listClientOrderId")
         else:
-            self.protective_order_list_id = None
             # Recover the crash window where an OCO was accepted/completed but its
             # ID was not included in the last local snapshot.
             candidates = [
@@ -109,11 +141,18 @@ class LiveExecutor:
                 and int(item.get("orderListId", 0)) not in self.processed_oco_list_ids
                 and item.get("listStatusType") in {"ALL_DONE", "REJECT", "EXPIRED"}
             ]
-            if candidates:
-                self.protective_order_list_id = int(candidates[-1]["orderListId"])
-                if not self.reconcile_protective_oco():
-                    raise RuntimeError("Historical OCO fills could not be reconciled; live actions blocked")
+            if self.protective_order_list_id is None and len(candidates) > 1:
+                self.order_lists_reconciled = False
+                raise RuntimeError("Multiple historical protective lists require operator reconciliation")
+            if self.protective_order_list_id is None and candidates:
+                self.protective_order_list_id = int(candidates[0]["orderListId"])
+                self.protective_order_client_id = candidates[0].get("listClientOrderId")
+            if self.protective_order_list_id is not None:
+                if not self.reconcile_protective_oco() or self.protective_order_list_id is not None:
+                    raise RuntimeError("Protective list terminal state could not be reconciled")
 
+        account = self.client.account()
+        balances = {str(b.get("asset", "")).upper(): b for b in account.get("balances", [])}
         quote = balances.get(self.quote_asset, {})
         base = balances.get(self.base_asset, {})
         self.cash_usdt = float(quote.get("free", 0))
@@ -132,7 +171,11 @@ class LiveExecutor:
                 "Existing base-asset position has no restored cost basis; "
                 "reconcile exchange trades and accounting before resuming"
             )
-        if open_orders and self.protective_order_list_id is None:
+        if any(
+            self.protective_order_list_id is None
+            or item.get("orderListId") != self.protective_order_list_id
+            for item in open_orders
+        ):
             raise RuntimeError("Unmanaged exchange open orders found; live trading blocked")
         if self.starting_cash_usdt <= 0:
             self.starting_cash_usdt = self.cash_usdt + self.locked_quote_balance
@@ -180,6 +223,8 @@ class LiveExecutor:
             int(item) for item in snapshot.get("processed_oco_list_ids", [])
         }
         self.protective_order_client_id = snapshot.get("protective_order_client_id")
+        self.protective_order_list_id = snapshot.get("protective_order_list_id")
+        self.order_lists_reconciled = bool(snapshot.get("order_lists_reconciled", False))
 
     def _load_filters(self) -> dict[str, Any]:
         if self._filters is not None:
@@ -212,106 +257,208 @@ class LiveExecutor:
         precision = max(0, len(f"{tick:.12f}".rstrip("0").split(".")[-1]) if "." in f"{tick:.12f}" else 0)
         return round(rounded * tick, precision)
 
+    def _protective_list_identity(self, client_id: str, detail: dict) -> tuple[int, str]:
+        list_id = int(detail.get("orderListId") or 0)
+        status = str(detail.get("listStatusType") or "")
+        if (
+            list_id <= 0 or status not in ACTIVE_OCO_STATUSES | TERMINAL_OCO_STATUSES
+            or detail.get("symbol") != self.symbol or detail.get("listClientOrderId") != client_id
+            or detail.get("contingencyType", "OCO") != "OCO"
+        ):
+            raise RuntimeError("Exchange did not confirm the expected protective order list")
+        return list_id, status
+
+    def _settle_protective_intent(self, intent: dict, detail: dict) -> bool:
+        """Atomically hand off to a proven OCO, or commit terminal child fills."""
+        before = self.snapshot()
+        trade_count = len(self.trades)
+        client_id = intent["client_id"]
+        try:
+            list_id, status = self._protective_list_identity(client_id, detail)
+            self.protective_order_list_id = list_id
+            self.protective_order_client_id = client_id
+            self.order_lists_reconciled = True
+            self.order_state_uncertain = False
+            self.unresolved_client_order_id = None
+            if status in TERMINAL_OCO_STATUSES:
+                if not self._reconcile_protective_oco(checkpoint=False):
+                    raise RuntimeError("Protective OCO completed without reconciled child fills")
+                if self.protective_order_list_id is not None:
+                    raise RuntimeError("Protective OCO terminal state was not confirmed")
+            self.order_state_machine.observe("OCO_HANDOFF")
+            self._finish_intent(intent, filled=len(self.trades) > trade_count)
+            return self.protective_order_list_id is not None or self.base_quantity <= 1e-12
+        except Exception:
+            self._restore_order_checkpoint(before, trade_count, client_id)
+            raise
+
     def ensure_protective_oco(
         self, *, current_price: float, take_profit_pct: float, stop_loss_pct: float,
+        retries: int = 1, retry_delay_s: float = 0.0,
     ) -> bool:
-        """Place exchange-hosted sell OCO; protection remains on exchange if app stops."""
-        if current_price <= 0 or not 0 < take_profit_pct < 100 or not 0 < stop_loss_pct < 100:
+        """Submit at most one OCO POST; unknown results stay journaled and block sales."""
+        # Keep old call sites compatible; these settings never permit another POST.
+        del retries, retry_delay_s
+        if not (math.isfinite(current_price) and current_price > 0
+                and 0 < take_profit_pct < 100 and 0 < stop_loss_pct < 100):
             return False
-        if self.order_state_uncertain:
-            return False
-        if self.protective_order_list_id is not None:
-            return True
-        try:
-            available = self._round_step(self.client.free_balance(self.base_asset))
-            if available <= 0:
+        with self._order_lock:
+            if self.order_state_uncertain:
                 return False
-            take_profit = self._round_price(
-                self.average_entry_price * (1 + take_profit_pct / 100), round_up=True,
-            )
-            stop_price = self._round_price(
-                self.average_entry_price * (1 - stop_loss_pct / 100), round_up=False,
-            )
-            stop_limit = self._round_price(stop_price * 0.999, round_up=False)
-            if take_profit <= current_price or stop_price >= current_price or stop_limit <= 0:
-                log.error("OCO prices invalid relative to current market; protection not installed")
-                return False
-            response = self.client.place_oco_order(
-                symbol=self.symbol, side="SELL", quantity=available,
-                take_profit_price=take_profit, stop_price=stop_price,
-                stop_limit_price=stop_limit,
-                client_order_id=f"nqoco{time.time_ns():x}"[:36],
-            )
-            self.protective_order_list_id = int(response.get("orderListId", 0)) or None
-            self.open_order_lists_snapshot.append(response)
             if self.protective_order_list_id is not None:
-                self._order_sequence += 1
-            if self.protective_order_list_id is None:
+                return self.order_lists_reconciled
+            if self.base_quantity <= 1e-12:
+                return True
+            known_client_id = self.protective_order_client_id
+            client_id = known_client_id or "nqoco" + uuid4().hex[:28]
+            try:
+                if known_client_id is not None:
+                    detail = self.client.get_order_list_by_client_id(self.symbol, client_id)
+                    list_id, status = self._protective_list_identity(client_id, detail)
+                    self.protective_order_list_id = list_id
+                    self.protective_order_client_id = client_id
+                    self.order_lists_reconciled = True
+                    if status in ACTIVE_OCO_STATUSES:
+                        return True
+                    if not self.reconcile_protective_oco() or self.protective_order_list_id is not None:
+                        raise RuntimeError("Existing protective OCO did not reconcile as terminal")
+                    if self.base_quantity <= 1e-12:
+                        return True
+                    client_id = "nqoco" + uuid4().hex[:28]
+                target = self._round_step(self.base_quantity)
+                free = self._round_step(self.client.free_balance(self.base_asset))
+                if not math.isfinite(free) or free < target:
+                    raise RuntimeError("Exchange free base cannot cover the tracked position")
+                if target <= 0:
+                    return False
+                take_profit = self._round_price(
+                    self.average_entry_price * (1 + take_profit_pct / 100), round_up=True,
+                )
+                stop = self._round_price(
+                    self.average_entry_price * (1 - stop_loss_pct / 100), round_up=False,
+                )
+                if take_profit <= current_price or stop >= current_price or stop <= 0:
+                    return False
+                self.protective_order_client_id = client_id
+                intent = self._begin_order(
+                    side="SELL", kind="protective_oco", reason="protect_position", client_id=client_id,
+                    quantity=target, take_profit_price=take_profit, stop_price=stop,
+                )
+                try:
+                    detail = self.client.place_oco_order(
+                        symbol=self.symbol, side="SELL", quantity=target,
+                        take_profit_price=take_profit, stop_price=stop,
+                        stop_limit_price=self._round_price(stop * 0.999, round_up=False),
+                        client_order_id=client_id, stop_loss_market=True,
+                    )
+                    self._protective_list_identity(client_id, detail)
+                except Exception:
+                    detail = self.client.get_order_list_by_client_id(self.symbol, client_id)
+                return self._settle_protective_intent(intent, detail)
+            except Exception:
+                self._mark_order_uncertain(client_id)
+                log.exception("Protective OCO is unresolved; no competing sell (clientId=%s)", client_id)
                 return False
-            log.info(
-                "Exchange OCO installed listId=%s qty=%.8f TP=%.8f stop=%.8f",
-                self.protective_order_list_id, available, take_profit, stop_price,
-            )
+
+    def emergency_flatten(self, *, reason: str = "oco_failed", mark_price: float = 0.0) -> dict | None:
+        """Try flattening only when protection and order state allow a competing exit."""
+        self.emergency = True
+        self.emergency_reason = reason
+        with self._order_lock:
+            try:
+                if self.order_state_uncertain:
+                    raise RuntimeError("Exchange order state is uncertain; refusing competing market exit")
+                if self.protective_order_list_id is not None and not self.cancel_protective_oco():
+                    raise RuntimeError("Protective cancellation was not confirmed")
+                if self.base_quantity <= 1e-12:
+                    return None
+                price = mark_price or self.average_entry_price
+                if not math.isfinite(price) or price <= 0:
+                    raise RuntimeError("Cannot emergency flatten without a valid price")
+                return self.sell_all(price=price, reason=f"EMERGENCY_FLATTEN:{reason}")
+            except Exception:
+                log.exception("Emergency flatten blocked: %s", reason)
+                self.order_state_uncertain = True
+                return None
+
+    def install_protection_or_flatten(
+        self, *, current_price: float, take_profit_pct: float, stop_loss_pct: float,
+        mark_price: float | None = None,
+    ) -> bool:
+        """An ambiguous protection response must not trigger a competing market order."""
+        if self.ensure_protective_oco(
+            current_price=current_price, take_profit_pct=take_profit_pct, stop_loss_pct=stop_loss_pct,
+        ):
             return True
-        except Exception:
-            log.exception("Failed to install exchange-hosted TP/SL OCO")
-            return False
+        self.emergency_flatten(reason="oco_install_failed", mark_price=mark_price or current_price)
+        return False
 
     def reconcile_protective_oco(self) -> bool:
         """Recover completed OCO fills after downtime; refuse incomplete history.
 
-        The caller must persist snapshot() immediately after a successful return.
-        Repeated calls are idempotent by exchange trade ID.
+        When attached to a journal, commit the account and recovered fills together.
         """
+        with self._order_lock:
+            return self._reconcile_protective_oco(checkpoint=True)
+
+    def _reconcile_protective_oco(self, *, checkpoint: bool) -> bool:
         list_id = self.protective_order_list_id
-        if self.order_state_uncertain and self.unresolved_client_order_id:
+        if self.order_state_uncertain:
             return False
         if list_id is None:
             return self.order_lists_reconciled
+        before = self.snapshot()
+        trade_count = len(self.trades)
         try:
             order_list = self.client.get_order_list(list_id)
-            if str(order_list.get("symbol", "")).upper() != self.symbol:
-                raise RuntimeError("OCO history symbol mismatch")
+            if (
+                order_list.get("symbol") != self.symbol or int(order_list.get("orderListId") or 0) != list_id
+                or order_list.get("contingencyType", "OCO") != "OCO"
+            ):
+                raise RuntimeError("OCO history identity mismatch")
             status = str(order_list.get("listStatusType", ""))
-            if status in {"EXEC_STARTED", "EXECUTING"}:
+            if status in ACTIVE_OCO_STATUSES:
                 # Active lists are still protecting the position; do not account them as fills.
                 self.order_lists_reconciled = True
                 return True
-            if status not in {"ALL_DONE", "REJECT", "EXPIRED"}:
+            if status not in TERMINAL_OCO_STATUSES:
                 raise RuntimeError(f"Unknown OCO list status: {status or 'missing'}")
-            reports = order_list.get("orderReports")
+            reports = order_list.get("orders", order_list.get("orderReports"))
             if not isinstance(reports, list) or len(reports) != 2:
-                raise RuntimeError("OCO history must contain both child order reports")
+                raise RuntimeError("OCO history must contain both child order IDs")
             recovered: list[dict[str, Any]] = []
+            order_ids: set[int] = set()
             for report in reports:
                 order_id = int(report.get("orderId", 0))
-                if order_id <= 0:
+                if order_id <= 0 or order_id in order_ids:
                     raise RuntimeError("OCO child order has no exchange order ID")
+                order_ids.add(order_id)
                 child = self.client.get_order(self.symbol, order_id)
-                if child.status not in {"FILLED", "CANCELED", "EXPIRED", "REJECTED"}:
-                    raise RuntimeError("OCO child order is not terminal")
-                fills = self.client.order_list_trades(self.symbol, order_id)
+                if (
+                    child.order_id != order_id or child.symbol != self.symbol or child.side != "SELL"
+                    or child.status not in TERMINAL_ORDER_STATUSES
+                    or child.raw.get("orderListId", list_id) != list_id
+                    or not all(math.isfinite(v) and v >= 0 for v in (
+                        child.executed_qty, child.cummulative_quote_qty,
+                    ))
+                    or (child.executed_qty > 0) != (child.cummulative_quote_qty > 0)
+                    or (child.status == "FILLED" and child.executed_qty == 0)
+                ):
+                    raise RuntimeError("OCO child order identity, terminal state or execution totals are invalid")
                 if child.executed_qty > 0:
-                    if not fills or len(fills) >= 1000:
-                        raise RuntimeError("OCO child trade history is missing or may be truncated")
-                    filled_qty = sum(float(t.get("qty", 0)) for t in fills)
-                    if not math.isclose(filled_qty, child.executed_qty, rel_tol=1e-8, abs_tol=1e-10):
-                        raise RuntimeError("OCO trade quantities do not reconcile with child order")
+                    fills = self._checked_fills(child, recovering=True)
                     for fill in fills:
-                        if str(fill.get("isBuyer", "false")).lower() == "true":
-                            raise RuntimeError("Unexpected BUY fill in protective SELL OCO")
-                        recovered.append(fill)
-            # Validate every commission before mutating local accounting, avoiding partial recovery.
-            for fill in recovered:
-                asset = str(fill.get("commissionAsset", "")).upper()
-                commission = float(fill.get("commission", 0))
-                if asset and commission and asset not in (self.base_asset, self.quote_asset):
-                    raise RuntimeError(f"Cannot value commission asset {asset} from quote-only accounting")
+                        quote = float(fill.get("quoteQty", float(fill["qty"]) * float(fill["price"])))
+                        if not math.isclose(quote, float(fill["qty"]) * float(fill["price"]), abs_tol=1e-8):
+                            raise RuntimeError("OCO fill quote does not match its price and quantity")
+                        recovered.append({**fill, "orderId": order_id, "quoteQty": quote})
+            seen: set[str] = set()
             recovered.sort(key=lambda t: (int(t.get("time", 0)), int(t.get("id", 0))))
             for fill in recovered:
-                trade_id = str(fill.get("id", ""))
-                if not trade_id:
-                    raise RuntimeError("Exchange trade is missing its trade ID")
+                trade_id = str(int(fill["id"] if "id" in fill else fill["tradeId"]))
+                if trade_id in seen:
+                    raise RuntimeError("Duplicate exchange trade across OCO child orders")
+                seen.add(trade_id)
                 if trade_id in self.processed_exchange_trade_ids:
                     continue
                 qty = float(fill.get("qty", 0))
@@ -324,6 +471,8 @@ class LiveExecutor:
                 fee_by_asset = {asset: commission} if asset and commission else {}
                 base_fee = fee_by_asset.get(self.base_asset, 0.0)
                 quote_fee = fee_by_asset.get(self.quote_asset, 0.0)
+                if qty + base_fee > self.base_quantity + 1e-12:
+                    raise RuntimeError("OCO fill exceeds the locally tracked position")
                 fee_usdt = base_fee * price + quote_fee
                 fee_usdt_by_asset = {}
                 if base_fee:
@@ -345,7 +494,8 @@ class LiveExecutor:
                     "commission_usdt_by_asset": fee_usdt_by_asset,
                     "unpriced_commission_by_asset": {},
                     "accounting_complete": True, "fee_estimated": False,
-                    "reason": "recovered_oco_fill", "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "reason": "recovered_oco_fill",
+                    "timestamp": datetime.fromtimestamp(int(fill["time"]) / 1000, timezone.utc).isoformat(),
                     "exchange_order_id": int(fill.get("orderId", 0)),
                     "exchange_trade_id": trade_id, "exchange_order_list_id": list_id,
                     "status": "FILLED", "testnet": self.client.testnet,
@@ -354,36 +504,37 @@ class LiveExecutor:
                 self.processed_exchange_trade_ids.add(trade_id)
             self.processed_oco_list_ids.add(list_id)
             self.protective_order_list_id = None
+            self.protective_order_client_id = None
             self.order_lists_reconciled = True
+            if checkpoint and self._order_store is not None:
+                self._order_store.checkpoint_live_account(
+                    self._order_store_key, self.snapshot(), self._uncheckpointed_trades(),
+                    order_commit=f"oco:{list_id}" if len(self.trades) > trade_count else None,
+                )
+                self._checkpoint_trade_count = len(self.trades)
             return True
         except Exception:
-            self.order_state_uncertain = True
+            del self.trades[trade_count:]
+            before["trades"] = self.trades
+            self.restore(before)
+            # This is a known exchange list, not a second pending submission.
             self.order_lists_reconciled = False
             log.exception("OCO offline recovery incomplete; blocking live actions (listId=%s)", list_id)
             return False
 
     def cancel_protective_oco(self) -> bool:
-        """Cancel the protective order list and reconcile balances before market exit."""
-        if not self.order_lists_reconciled:
-            return False
-        if self.protective_order_list_id is None:
-            return True
-        order_list_id = self.protective_order_list_id
-        try:
-            self.client.cancel_order_list(symbol=self.symbol, order_list_id=order_list_id)
-        except Exception:
-            log.exception("Could not cancel protective OCO listId=%s", order_list_id)
-            try:
-                self.sync_balances()
-            except Exception:
+        """Allow a competing exit only after positive terminal and child-fill evidence."""
+        with self._order_lock:
+            if self.order_state_uncertain or not self.order_lists_reconciled:
                 return False
-            # If it remains open, never submit a competing market sell.
-            return self.protective_order_list_id is None
-        self.protective_order_list_id = None
-        self.sync_balances()
-        # A successful DELETE response is not enough: verify the exchange no
-        # longer reports an active protective list before any competing exit.
-        return self.protective_order_list_id is None
+            order_list_id = self.protective_order_list_id
+            if order_list_id is None:
+                return self.protective_order_client_id is None
+            try:
+                self.client.cancel_order_list(symbol=self.symbol, order_list_id=order_list_id)
+            except Exception:
+                log.warning("OCO cancellation response is uncertain (listId=%s)", order_list_id, exc_info=True)
+            return self.reconcile_protective_oco() and self.protective_order_list_id is None
 
     def _min_notional(self) -> float:
         filters = self._load_filters()
@@ -441,12 +592,18 @@ class LiveExecutor:
         self.order_state_uncertain = True
         self.unresolved_client_order_id = client_id
 
-    def _begin_order(self, *, side: str, kind: str, reason: str, **parameters: Any) -> dict:
+    def _begin_order(
+        self, *, side: str, kind: str, reason: str, client_id: str | None = None, **parameters: Any,
+    ) -> dict:
         if self.order_state_uncertain:
             raise RuntimeError("Order state is uncertain; reconcile exchange orders before new orders")
+        if kind != "protective_oco" and (
+            self.protective_order_list_id is not None or self.protective_order_client_id is not None
+        ):
+            raise RuntimeError("Protective order must be reconciled before a competing order")
         if self._order_store is None and isinstance(self.client, BinanceRestClient):
             raise RuntimeError("Live order submission requires a durable journal")
-        client_id = "nq" + uuid4().hex
+        client_id = client_id or "nq" + uuid4().hex
         intent = {
             "client_id": client_id, "symbol": self.symbol, "testnet": self.client.testnet,
             "side": side, "kind": kind, "reason": reason, **parameters,
@@ -464,6 +621,19 @@ class LiveExecutor:
                 raise
             self._checkpoint_trade_count = len(self.trades)
         return intent
+
+    def _finish_intent(self, intent: dict, *, filled: bool) -> None:
+        if self._order_store is not None:
+            self._order_store.finish_live_order(
+                self._order_store_key, intent, self.snapshot(), self._uncheckpointed_trades(), filled=filled,
+            )
+            self._checkpoint_trade_count = len(self.trades)
+
+    def _restore_order_checkpoint(self, before: dict, trade_count: int, client_id: str) -> None:
+        del self.trades[trade_count:]
+        before["trades"] = self.trades
+        self.restore(before)
+        self._mark_order_uncertain(client_id)
 
     def _validate_order_identity(self, intent: dict, result: OrderResult) -> None:
         exchange_id = intent.get("exchange_id")
@@ -541,19 +711,11 @@ class LiveExecutor:
             self.order_state_machine.observe(result.status)
             self.order_state_uncertain = False
             self.unresolved_client_order_id = None
-            if self._order_store is not None:
-                self._order_store.finish_live_order(
-                    self._order_store_key, intent, self.snapshot(), self._uncheckpointed_trades(),
-                    filled=trade is not None,
-                )
-                self._checkpoint_trade_count = len(self.trades)
+            self._finish_intent(intent, filled=trade is not None)
             return trade
         except Exception:
             # A failed commit must not leave a partially-applied account in memory.
-            del self.trades[trade_count:]
-            before["trades"] = self.trades
-            self.restore(before)
-            self._mark_order_uncertain(client_id)
+            self._restore_order_checkpoint(before, trade_count, client_id)
             raise
 
     def _place_market_order_once(
@@ -599,10 +761,14 @@ class LiveExecutor:
             if intent["symbol"] != self.symbol or intent["testnet"] is not self.client.testnet:
                 return False
             try:
-                order = self._lookup_order(intent)
-                self._last_order_latency_ms = 0.0
-                self._last_order_latency_measured = False
-                self._settle_order(intent, order, recovering=True)
+                if intent["kind"] == "protective_oco":
+                    detail = self.client.get_order_list_by_client_id(self.symbol, client_id)
+                    self._settle_protective_intent(intent, detail)
+                else:
+                    order = self._lookup_order(intent)
+                    self._last_order_latency_ms = 0.0
+                    self._last_order_latency_measured = False
+                    self._settle_order(intent, order, recovering=True)
             except Exception:
                 log.exception("Durable order %s remains unresolved; refusing further orders", client_id)
                 return False
@@ -709,8 +875,6 @@ class LiveExecutor:
             "execution_latency_measured": getattr(self, "_last_order_latency_measured", False),
         }
         if side == "buy":
-            # Stable exchange-derived ID makes OCO retries idempotent after a lost HTTP response.
-            self.protective_order_client_id = f"nqoco{int(result.order_id):x}"[:36]
             net_base = max(0.0, executed_qty - base_fee)
             old_cost = self.base_quantity * self.average_entry_price
             self.base_quantity += net_base

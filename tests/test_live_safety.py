@@ -2,10 +2,7 @@ import pytest
 
 from app.binance_rest import OrderResult
 from app.live import LiveExecutor
-from app.live_hardening import harden_live_executor
 from app.risk import RiskManager
-
-harden_live_executor()
 
 
 class FakeClient:
@@ -55,7 +52,10 @@ class FakeClient:
 
     def place_oco_order(self, **kwargs):
         self.oco = kwargs
-        return {"orderListId": 77, "symbol": kwargs["symbol"], "listStatusType": "EXECUTING"}
+        return {
+            "orderListId": 77, "symbol": kwargs["symbol"], "listStatusType": "EXEC_STARTED",
+            "listClientOrderId": kwargs["client_order_id"],
+        }
 
     def account(self):
         return {"balances": [
