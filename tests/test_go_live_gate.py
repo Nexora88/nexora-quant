@@ -27,6 +27,16 @@ def run_gate(
     profile_path = tmp_path / "profile.json"
     oos_path = tmp_path / "out-of-sample.json"
     testnet_path = tmp_path / "signed-testnet.xml"
+    capture_path = tmp_path / "btcusdt.jsonl"
+    manifest_path = tmp_path / "manifest.json"
+    capture_path.write_text("{}\\n", encoding="utf-8")
+    capture_digest = __import__("hashlib").sha256(capture_path.read_bytes()).hexdigest()
+    manifest_path.write_text(json.dumps({
+        "schema_version": 1, "source": "binance_spot_public", "research_only": True,
+        "coverage_ok": True,
+        "captures": [{"file": capture_path.name, "coverage_ok": True,
+                      "symbol": "BTCUSDT", "sha256": capture_digest}],
+    }), encoding="utf-8")
     if "OVERNIGHT_CHECK_PASS" in log_text and "checked_at" not in log_text:
         log_text = (
             "INFO session=mock duration=168.10h ticks=2000 reconnects=0 stale=0.0m\n"
@@ -80,7 +90,11 @@ def run_gate(
         "source_fingerprint": source_fingerprint(ROOT), "windows_requested": 4,
         "starting_cash_per_asset_usdt": profile["starting_cash_usdt"],
         "order_size_usdt": profile["order_size_usdt"], "fee_rate": profile["effective_fee_rate"],
-        "assets": {"btcusdt": {"windows": windows, "verified_capture_sha256": "a" * 64}},
+        "assets": {"btcusdt": {
+            "windows": windows, "verified_capture_sha256": capture_digest,
+            "source": str(capture_path.resolve()),
+            "verified_capture_manifest": str(manifest_path.resolve()),
+        }},
     }), encoding="utf-8")
     testnet_path.write_text(
         f'<testsuite tests="1" skipped="{int(testnet_skipped)}">'
