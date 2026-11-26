@@ -61,6 +61,8 @@ def test_verified_walk_forward_binds_capture_to_symbol_and_archive(tmp_path):
     }))
     report = run_rolling_walk_forward({"btcusdt": path}, capture_manifests={"btcusdt": manifest}, embargo_seconds=10)
     assert report["assets"]["btcusdt"]["verified_capture_sha256"] == digest
+    assert report["assets"]["btcusdt"]["source"] == str(path.resolve())
+    assert report["assets"]["btcusdt"]["verified_capture_manifest"] == str(manifest.resolve())
     assert len(report["source_fingerprint"]) == 64
     with pytest.raises(ValueError, match="symbol does not match"):
         run_rolling_walk_forward({"ethusdt": path}, capture_manifests={"ethusdt": manifest}, embargo_seconds=10)
