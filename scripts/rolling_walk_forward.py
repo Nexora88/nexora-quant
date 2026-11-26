@@ -136,8 +136,11 @@ def run_rolling_walk_forward(
                 })
             returns = [w["unseen_test_metrics"]["return_pct"] for w in asset_windows]
             report["assets"][symbol] = {
-                "source": str(source),
+                "source": str(source.resolve()),
                 "verified_capture_sha256": digest,
+                "verified_capture_manifest": (
+                    str(capture_manifests[symbol].resolve()) if capture_manifests is not None else None
+                ),
                 "events": len(rows),
                 "windows": asset_windows,
                 "window_return_median_pct": median(returns) if returns else None,
