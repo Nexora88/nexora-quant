@@ -29,6 +29,7 @@ from app.build_info import source_fingerprint  # noqa: E402
 from app.history_windows import DEFAULT_EMBARGO_SECONDS  # noqa: E402
 from app.live_approval import APPROVAL_VERSION, digest_json, is_digest  # noqa: E402
 from app.live_execution_evidence import SpotEvidenceScope  # noqa: E402
+from app.market_history import verify_capture_archive  # noqa: E402
 
 load_dotenv()
 
@@ -69,8 +70,17 @@ def check_oos(report: dict, *, profile: dict, fingerprint: str) -> tuple[int, in
     ):
         raise ValueError("OOS cash, order size or fee assumptions do not match the approved profile")
     asset = report["assets"][profile["symbol"]]
-    if not is_digest(asset.get("verified_capture_sha256")):
-        raise ValueError("OOS report has no verified capture for the approved symbol")
+    expected_capture = asset.get("verified_capture_sha256")
+    archive_path = asset.get("source")
+    manifest_path = asset.get("verified_capture_manifest")
+    if not is_digest(expected_capture) or not isinstance(archive_path, str) or not isinstance(manifest_path, str):
+        raise ValueError("OOS report has no verifiable capture archive and manifest for the approved symbol")
+    try:
+        actual_capture = verify_capture_archive(archive_path, manifest_path, symbol=profile["symbol"])
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"OOS capture archive/manifest verification failed: {exc}") from exc
+    if actual_capture != expected_capture:
+        raise ValueError("OOS capture digest does not match the reverified archive")
     embargo = report["embargo_seconds"]
     if type(embargo) not in (int, float) or not math.isfinite(embargo) or embargo < DEFAULT_EMBARGO_SECONDS:
         raise ValueError(f"OOS embargo must be at least {DEFAULT_EMBARGO_SECONDS:.0f}s")
