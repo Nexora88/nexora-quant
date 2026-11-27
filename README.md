@@ -94,7 +94,7 @@ Compare saved NBA moneyline snapshots with no-vig sportsbook references, size-aw
 
 ### Spot Testnet integration
 
-The normal test suite deliberately skips real network orders. For the isolated, bounded Spot Testnet lifecycle test, add dedicated Testnet-only GitHub Actions secrets and manually run `.github/workflows/spot-testnet-e2e.yml`. The test caps the test order at 25 USDT and will refuse a competing cleanup sell unless the OCO is confirmed terminal. Do not use mainnet keys.
+The normal test suite deliberately skips real network orders. For the isolated, bounded Spot Testnet lifecycle test, add dedicated Testnet-only GitHub Actions secrets and manually run `.github/workflows/spot-testnet-e2e.yml` from `main`. The workflow signs the exact JUnit report with GitHub artifact provenance; the local approval gate verifies that signature, workflow identity, branch and source commit via `gh attestation verify`. The test uses a 20 USDT buy and refuses a competing cleanup sell unless the OCO is confirmed terminal. Do not use mainnet keys.
 
 
 Fee assumptions are conservative by default: VIP 0 taker fees are used and the BNB discount is **off** unless you explicitly enable it and your account has sufficient BNB and eligible fee payment enabled. Paper maker fills still use the configured fee rate conservatively; verify actual maker/taker commissions from Binance fills before any live use.
@@ -153,6 +153,7 @@ Capital discipline (recommended): small float on exchange (e.g. 100 USDT), compo
 |-----|-------|
 | [docs/HONEST_LIMITS.md](docs/HONEST_LIMITS.md) | Overfit, fees, what this is not |
 | [docs/GO_LIVE_CHECKLIST.md](docs/GO_LIVE_CHECKLIST.md) | Paper → live |
+| [docs/SPOT_TESTNET_SETUP.md](docs/SPOT_TESTNET_SETUP.md) | Testnet account, Actions secrets and signed E2E run |
 | [docs/AWS_TOKYO.md](docs/AWS_TOKYO.md) | Low-latency host |
 | [docs/DEPLOY_24_7.md](docs/DEPLOY_24_7.md) | Docker / VPS |
 | [docs/SCALP_MODE.md](docs/SCALP_MODE.md) | Scalp band notes |

@@ -5,6 +5,8 @@ on:
 
 permissions:
   contents: read
+  attestations: write
+  id-token: write
 
 concurrency:
   group: spot-testnet-e2e
@@ -31,6 +33,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+            echo "::error::Run the signed Testnet workflow from the protected default branch main only."
+            exit 1
+          fi
           if [[ -z "${BINANCE_API_KEY}" || -z "${BINANCE_API_SECRET}" ]]; then
             echo "::error::Add BINANCE_SPOT_TESTNET_API_KEY and BINANCE_SPOT_TESTNET_API_SECRET as repository Actions secrets."
             exit 1
@@ -45,6 +51,11 @@ jobs:
         run: |
           pytest -q tests/test_spot_testnet_e2e.py --junitxml=testnet-e2e-results.xml
           python -c 'from pathlib import Path; from scripts.go_live_gate import check_testnet_xml; check_testnet_xml(Path("testnet-e2e-results.xml").read_bytes())'
+      - name: Sign Testnet lifecycle report provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: testnet-e2e-results.xml
+
       - name: Upload sanitized test result
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
