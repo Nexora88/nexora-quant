@@ -31,7 +31,7 @@ Run the manual `.github/workflows/spot-testnet-e2e.yml` workflow. It uses a fixe
 
 An unresolved OCO submission blocks additional orders, including an emergency market exit. Check the same list client ID on the exchange, then verify both child orders and fills before recovery. A single “order not found” response is not proof that the submission failed. Keep the SQLite database and do not manually reset the journal to force a retry. If upgrading an older deployment with a saved OCO client ID but no exchange match, reconcile it with the exchange before resuming.
 
-A unit test or successful CI run is not a substitute for the signed Spot Testnet workflow. Testnet does not validate Mainnet execution quality or profitability.
+A unit test or successful CI run is not a substitute for the signed Spot Testnet workflow. Testnet does not validate Mainnet execution quality or profitability. The workflow now signs the exact JUnit report with GitHub artifact provenance and runs only from `main`. Before using that report in the local approval gate, install and authenticate the GitHub CLI, then verify the report with `gh attestation verify`; the gate performs this check itself and requires the workflow run's full source commit SHA. A hand-written or edited XML file is not accepted.
 
 The live engine uses public depth snapshots, depth streams, trades and candles from the same network as its order client. Testnet uses the [official Spot Testnet endpoints](https://developers.binance.com/en/docs/products/spot/testnet/web-socket-streams); it neither falls back to Mainnet market data nor runs the Mainnet auto-universe screen. The bounded signed workflow tests the executor, not automatic strategy entry.
 
@@ -67,7 +67,8 @@ From the intended launch directory, export a human-reviewable candidate profile 
       --live-profile /path/to/reviewed-live-profile.json \
       --mainnet-account-uid "$APPROVED_BINANCE_UID" \
       --oos-report /path/to/rolling-walk-forward.json \
-      --testnet-junit /path/to/testnet-e2e-results.xml
+      --testnet-junit /path/to/testnet-e2e-results.xml \\
+      --testnet-source-sha "$TESTNET_WORKFLOW_HEAD_SHA"
 
 The gate removes any prior approval stamp before checking and does not change trading mode or submit orders. It writes an approval bound to the build, effective non-secret settings, dedicated account and exact artifact bytes. Keep evidence files at their original absolute paths with restricted write permissions. Legacy, expired or mismatched stamps are rejected at startup, and the exchange account must match before attaching the live journal. A passing gate is not a profitability guarantee. The final mainnet switch still requires the operator's explicit decision and a separately reviewed configuration.
 
