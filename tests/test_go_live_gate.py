@@ -27,6 +27,11 @@ def run_gate(
     profile_path = tmp_path / "profile.json"
     oos_path = tmp_path / "out-of-sample.json"
     testnet_path = tmp_path / "signed-testnet.xml"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_gh = fake_bin / "gh"
+    fake_gh.write_text("#!/bin/sh\\nexit 0\\n", encoding="utf-8")
+    fake_gh.chmod(0o755)
     capture_path = tmp_path / "btcusdt.jsonl"
     manifest_path = tmp_path / "manifest.json"
     capture_path.write_text("{}\\n", encoding="utf-8")
@@ -62,6 +67,7 @@ def run_gate(
     env = os.environ.copy()
     env["TRADING_MODE"] = mode
     env["PYTHONPATH"] = str(ROOT)
+    env["PATH"] = str(fake_bin) + os.pathsep + env.get("PATH", "")
     env["PYTHON_DOTENV_DISABLED"] = "true"
     profile_path.write_text(subprocess.check_output(
         [sys.executable, "-m", "app.config", "--describe-mainnet-profile"],
@@ -111,6 +117,7 @@ def run_gate(
             "--mainnet-account-uid", "77",
             "--oos-report", str(oos_path),
             "--testnet-junit", str(testnet_path),
+            "--testnet-source-sha", "a" * 40,
             "--stamp", str(stamp_path),
         ],
         cwd=ROOT, env=env, capture_output=True, text=True, check=False,
@@ -125,6 +132,7 @@ def test_gate_creates_source_bound_stamp_only_after_full_evidence_pass(tmp_path)
     assert payload["ok"] is True
     assert payload["source_fingerprint"] == source_fingerprint(ROOT)
     assert payload["artifacts"]["scorecard"]["sha256"]
+    assert payload["testnet_source_sha"] == "a" * 40
     profile = json.loads((tmp_path / "profile.json").read_text())
     assert read_mainnet_approval(stamp, root=ROOT, profile=profile) == SpotEvidenceScope(77, False, "BTCUSDT").stamp()[
         "account_binding"
