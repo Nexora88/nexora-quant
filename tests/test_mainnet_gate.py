@@ -3,19 +3,20 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
-from app.build_info import source_fingerprint
+from tests._approval_fixtures import write_approval_stamp
 
 
 def _approval_stamp(path: Path) -> None:
-    root = Path(__file__).resolve().parents[1]
-    path.write_text(json.dumps({
-        "ok": True,
-        "ts": datetime.now(timezone.utc).isoformat(),
-        "source_fingerprint": source_fingerprint(root),
-    }), encoding="utf-8")
+    env = {**os.environ, "TRADING_MODE": "live", "BINANCE_TESTNET": "false", "PYTHON_DOTENV_DISABLED": "true"}
+    env.pop("LIVE_DB_PATH", None)
+    profile = subprocess.check_output(
+        [sys.executable, "-m", "app.config", "--describe-mainnet-profile"],
+        env=env, text=True,
+    )
+    assert not ({"binance_api_key", "binance_api_secret", "jwt_secret"} & json.loads(profile).keys())
+    write_approval_stamp(path, json.loads(profile))
 
 
 def _import_config_with(**overrides: str) -> subprocess.CompletedProcess[str]:
@@ -32,6 +33,7 @@ def _import_config_with(**overrides: str) -> subprocess.CompletedProcess[str]:
     ):
         env.pop(key, None)
     env.update(overrides)
+    env["PYTHON_DOTENV_DISABLED"] = "true"
     return subprocess.run(
         [sys.executable, "-c", "import app.config"],
         env=env,
@@ -65,6 +67,23 @@ def test_mainnet_live_requires_confirmation_and_validated_stamp(tmp_path) -> Non
         GO_LIVE_STAMP_PATH=str(stamp),
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_mainnet_live_cannot_reuse_approval_after_risk_or_artifact_change(tmp_path) -> None:
+    stamp = tmp_path / "GO_LIVE_OK"
+    _approval_stamp(stamp)
+    env = {
+        "TRADING_MODE": "live", "BINANCE_TESTNET": "false", "BINANCE_API_KEY": "test-key",
+        "BINANCE_API_SECRET": "test-secret", "LIVE_CONFIRM": "I_UNDERSTAND_REAL_MONEY",
+        "GO_LIVE_STAMP_PATH": str(stamp),
+    }
+    result = _import_config_with(**env, MAX_DAILY_LOSS_USDT="1.25")
+    assert result.returncode != 0
+    assert "settings changed" in result.stderr
+    (tmp_path / "fixture-testnet").write_text("modified!", encoding="utf-8")
+    result = _import_config_with(**env)
+    assert result.returncode != 0
+    assert "testnet artifact changed" in result.stderr
 
 
 def test_mainnet_gate_cannot_be_disabled_with_environment_override() -> None:

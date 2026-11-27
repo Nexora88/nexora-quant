@@ -360,7 +360,7 @@ def test_live_engine_startup_stops_before_balance_sync_when_order_unknown(tmp_pa
     monkeypatch.setattr(engine.es, "executor", None)
     monkeypatch.setattr(engine, "state", SimpleNamespace())
     monkeypatch.setattr(engine, "settings", SimpleNamespace(
-        symbol="btcusdt", trading_mode="live", store_path=str(path),
+        symbol="btcusdt", trading_mode="live", store_path=str(path), binance_testnet=True,
     ))
     killed = []
     monkeypatch.setattr(engine, "risk", SimpleNamespace(activate_kill_switch=killed.append))
@@ -412,7 +412,7 @@ def test_live_restart_with_invisible_protection_keeps_readiness_closed(tmp_path,
     ex = LiveExecutor(exchange, symbol="BTCUSDT", fee_rate=0.001)
     state = SimpleNamespace(paused=False, exchange_reconciliation_max_age_seconds=30)
     killed = []
-    settings = SimpleNamespace(symbol="btcusdt", trading_mode="live", store_path=str(path))
+    settings = SimpleNamespace(symbol="btcusdt", trading_mode="live", store_path=str(path), binance_testnet=True)
     monkeypatch.setattr(ex, "sync_balances", lambda: pytest.fail("balance sync must not run"))
     monkeypatch.setattr(engine.es, "_build_executor", lambda: ex)
     monkeypatch.setattr(engine.es, "executor", None)

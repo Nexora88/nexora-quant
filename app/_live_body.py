@@ -624,13 +624,21 @@ class LiveExecutor:
             decision_mid_observed=decision_mid is not None,
         )
 
-    def attach_order_journal(self, store: PaperStore, key: str, *, verify_account: bool = False) -> None:
+    def attach_order_journal(
+        self, store: PaperStore, key: str, *, verify_account: bool = False,
+        expected_account_binding: str | None = None,
+    ) -> None:
+        if expected_account_binding is not None and not verify_account:
+            raise ValueError("An approval binding requires exchange account verification")
         if verify_account or isinstance(self.client, BinanceRestClient):
             uid = self.client.account().get("uid")
             if type(uid) is not int or uid <= 0:
                 raise RuntimeError("Exchange did not identify the live account")
+            scope = SpotEvidenceScope(uid, self.client.testnet, self.symbol)
+            if expected_account_binding is not None and scope.stamp()["account_binding"] != expected_account_binding:
+                raise RuntimeError("Exchange account does not match the Mainnet approval")
             store.bind_live_account(symbol=self.symbol, testnet=self.client.testnet, uid=uid)
-            self.execution_evidence_scope = SpotEvidenceScope(uid, self.client.testnet, self.symbol)
+            self.execution_evidence_scope = scope
         self._order_store = store
         self._order_store_key = key
         self._checkpoint_trade_count = len(self.trades)

@@ -129,6 +129,21 @@ def attached(client, store):
     return ex
 
 
+def test_wrong_approval_account_cannot_bind_journal_or_send_an_order(tmp_path):
+    exchange = Exchange()
+    with PaperStore(tmp_path / "live.sqlite3", async_writes=False) as store:
+        ex = LiveExecutor(exchange, symbol="BTCUSDT", fee_rate=0.001)
+        wrong = SpotEvidenceScope(78, False, "BTCUSDT").stamp()["account_binding"]
+        with pytest.raises(RuntimeError, match="does not match the Mainnet approval"):
+            ex.attach_order_journal(store, KEY, verify_account=True, expected_account_binding=wrong)
+        assert ex.execution_evidence_scope is None
+        assert exchange.order_id == 0
+        assert store.pending_live_order() is None
+        correct = SCOPE.stamp()["account_binding"]
+        ex.attach_order_journal(store, KEY, verify_account=True, expected_account_binding=correct)
+        assert ex.execution_evidence_scope == SCOPE
+
+
 def test_real_executor_checkpoints_evidence_and_reloads_after_restart(tmp_path):
     exchange = Exchange()
     path = tmp_path / "live.sqlite3"

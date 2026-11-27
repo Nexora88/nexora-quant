@@ -17,7 +17,9 @@ from statistics import median
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from app.build_info import source_fingerprint
 from app.history_windows import DEFAULT_EMBARGO_SECONDS, embargo_nanoseconds, event_timestamps, purged_bounds
+from app.market_history import verify_capture_archive
 from scripts.walk_forward_params import evaluate_train_then_test
 
 
@@ -57,11 +59,14 @@ def run_rolling_walk_forward(
     order_size: float = 12.0,
     fee_rate: float = 0.001,
     embargo_seconds: float = DEFAULT_EMBARGO_SECONDS,
+    capture_manifests: dict[str, Path] | None = None,
 ) -> dict[str, Any]:
     if not histories:
         raise ValueError("at least one asset history is required")
     if any(not symbol.isascii() or not symbol.isalnum() for symbol in histories):
         raise ValueError("history labels must be alphanumeric ASCII identifiers")
+    if capture_manifests is not None and set(capture_manifests) != set(histories):
+        raise ValueError("A capture manifest is required for every reported history")
     embargo_ns = embargo_nanoseconds(embargo_seconds)
     report: dict[str, Any] = {
         "mode": "rolling_walk_forward_research_only",
@@ -70,11 +75,17 @@ def run_rolling_walk_forward(
         "windows_requested": windows,
         "fee_rate": fee_rate,
         "starting_cash_per_asset_usdt": cash,
+        "order_size_usdt": order_size,
+        "source_fingerprint": source_fingerprint(Path(__file__).resolve().parents[1]),
         "assets": {},
     }
     with tempfile.TemporaryDirectory(prefix="nexora-rolling-wf-") as tmp:
         temp = Path(tmp)
         for symbol, source in sorted(histories.items()):
+            digest = (
+                verify_capture_archive(source, capture_manifests[symbol], symbol=symbol)
+                if capture_manifests is not None else None
+            )
             rows, timestamps = _read_events(source)
             asset_windows = []
             for number, (_, proposed_start, proposed_end) in enumerate(
@@ -117,7 +128,7 @@ def run_rolling_walk_forward(
                             "entries", "exits", "closed_position_count",
                             "expectancy_usdt_per_exit_fill", "profit_factor_per_exit_fill",
                             "fees_paid_usdt", "max_drawdown_pct", "final_equity",
-                            "return_pct", "final_open_quantity",
+                            "return_pct", "realized_pnl", "final_open_quantity",
                             "unfilled_orders", "pending_orders_at_end", "invalid_depth_frames",
                             "ending_valuation",
                         )
@@ -125,7 +136,11 @@ def run_rolling_walk_forward(
                 })
             returns = [w["unseen_test_metrics"]["return_pct"] for w in asset_windows]
             report["assets"][symbol] = {
-                "source": str(source),
+                "source": str(source.resolve()),
+                "verified_capture_sha256": digest,
+                "verified_capture_manifest": (
+                    str(capture_manifests[symbol].resolve()) if capture_manifests is not None else None
+                ),
                 "events": len(rows),
                 "windows": asset_windows,
                 "window_return_median_pct": median(returns) if returns else None,
@@ -151,6 +166,10 @@ def main() -> int:
     parser.add_argument("--fee", type=float, default=0.001)
     parser.add_argument("--embargo-seconds", type=float, default=DEFAULT_EMBARGO_SECONDS)
     parser.add_argument("--output", type=Path, default=Path("rolling-walk-forward.json"))
+    parser.add_argument(
+        "--require-capture-manifests", action="store_true",
+        help="verify each archive against its sibling manifest.json before evaluating it",
+    )
     args = parser.parse_args()
     if args.cash <= 0 or args.order_size <= 0 or not 0 <= args.fee < 0.1:
         parser.error("cash/order-size must be positive and fee must be in [0, 0.1)")
@@ -165,6 +184,10 @@ def main() -> int:
         report = run_rolling_walk_forward(
             histories, windows=args.windows, cash=args.cash,
             order_size=args.order_size, fee_rate=args.fee, embargo_seconds=args.embargo_seconds,
+            capture_manifests=(
+                {symbol: path.with_name("manifest.json") for symbol, path in histories.items()}
+                if args.require_capture_manifests else None
+            ),
         )
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
         print(f"ROLLING_WALK_FORWARD_FAIL: {exc}")
