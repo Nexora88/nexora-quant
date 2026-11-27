@@ -153,6 +153,7 @@ Capital discipline (recommended): small float on exchange (e.g. 100 USDT), compo
 |-----|-------|
 | [docs/HONEST_LIMITS.md](docs/HONEST_LIMITS.md) | Overfit, fees, what this is not |
 | [docs/GO_LIVE_CHECKLIST.md](docs/GO_LIVE_CHECKLIST.md) | Paper → live |
+| [docs/SPOT_TESTNET_SETUP.md](docs/SPOT_TESTNET_SETUP.md) | Testnet account, Actions secrets and signed E2E run |
 | [docs/AWS_TOKYO.md](docs/AWS_TOKYO.md) | Low-latency host |
 | [docs/DEPLOY_24_7.md](docs/DEPLOY_24_7.md) | Docker / VPS |
 | [docs/SCALP_MODE.md](docs/SCALP_MODE.md) | Scalp band notes |
