@@ -28,7 +28,7 @@ def run_gate(
     oos_path = tmp_path / "out-of-sample.json"
     testnet_path = tmp_path / "signed-testnet.xml"
     fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
+    fake_bin.mkdir(exist_ok=True)
     fake_gh = fake_bin / "gh"
     fake_gh.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     fake_gh.chmod(0o755)
