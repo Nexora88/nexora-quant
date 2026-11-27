@@ -14,6 +14,8 @@ import json
 import math
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
@@ -141,6 +143,29 @@ def check_testnet_xml(payload: bytes) -> None:
         raise ValueError("Signed Spot Testnet lifecycle did not pass")
 
 
+
+def verify_testnet_attestation(path: Path, source_sha: str) -> None:
+    """Verify the JUnit bytes against GitHub's signed provenance for this exact workflow."""
+    if not re.fullmatch(r"[0-9a-f]{40}", source_sha):
+        raise ValueError("Testnet source SHA must be a full 40-character lowercase commit SHA")
+    gh = shutil.which("gh")
+    if not gh:
+        raise ValueError("GitHub CLI (gh) is required to verify the signed Testnet artifact provenance")
+    command = [
+        gh, "attestation", "verify", str(path),
+        "--repo", "Nexora88/nexora-quant",
+        "--signer-workflow",
+        "Nexora88/nexora-quant/.github/workflows/spot-testnet-e2e.yml",
+        "--source-ref", "refs/heads/main",
+        "--source-digest", source_sha,
+        "--deny-self-hosted-runners",
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    if result.returncode:
+        detail = (result.stderr or result.stdout or "no verifier output").strip()
+        raise ValueError(f"GitHub Testnet artifact attestation verification failed: {detail[:1200]}")
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--i-understand-real-money", action="store_true", required=True)
@@ -151,6 +176,8 @@ def main() -> int:
     p.add_argument("--mainnet-account-uid", type=int, required=True, help="Expected Binance account UID (not an API key)")
     p.add_argument("--oos-report", type=Path, required=True)
     p.add_argument("--testnet-junit", type=Path, required=True)
+    p.add_argument("--testnet-source-sha", required=True,
+                   help="Full commit SHA shown for the successful main-branch Testnet workflow run")
     p.add_argument("--stamp", type=Path, default=ROOT / "data" / "GO_LIVE_OK")
     args = p.parse_args()
 
@@ -280,6 +307,7 @@ def main() -> int:
     if "testnet" in raw:
         try:
             check_testnet_xml(raw["testnet"])
+            verify_testnet_attestation(args.testnet_junit, args.testnet_source_sha)
         except (ValueError, ET.ParseError) as exc:
             reasons.append(f"invalid Testnet evidence: {exc}")
 
@@ -297,6 +325,7 @@ def main() -> int:
         "source_fingerprint": fingerprint,
         "profile_sha256": profile_hash,
         "account_binding": SpotEvidenceScope(args.mainnet_account_uid, False, symbol.upper()).stamp()["account_binding"],
+        "testnet_source_sha": args.testnet_source_sha,
         "artifacts": {label: {
             "path": str(path.resolve()), "sha256": hashlib.sha256(raw[label]).hexdigest(),
         } for label, path in inputs.items()},
