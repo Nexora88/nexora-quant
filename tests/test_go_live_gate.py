@@ -30,7 +30,7 @@ def run_gate(
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     fake_gh = fake_bin / "gh"
-    fake_gh.write_text("#!/bin/sh\\nexit 0\\n", encoding="utf-8")
+    fake_gh.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     fake_gh.chmod(0o755)
     capture_path = tmp_path / "btcusdt.jsonl"
     manifest_path = tmp_path / "manifest.json"
